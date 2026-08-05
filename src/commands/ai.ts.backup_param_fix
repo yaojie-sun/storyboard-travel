@@ -1,0 +1,651 @@
+import { invoke, isTauri } from '@tauri-apps/api/core';
+
+export interface GenerateRequest {
+  prompt: string;
+  model: string;
+  size: string;
+  aspect_ratio: string;
+  reference_images?: string[];
+  extra_params?: Record<string, unknown>;
+}
+
+// Banana API 相关类型
+export interface BananaLoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface BananaLoginResponse {
+  access_token: string;
+  token_type: string;
+  device_token: string;
+  user_id: number;
+  email: string;
+  username: string;
+  credits: number;
+}
+
+export interface BananaUserInfo {
+  user_id: number;
+  username: string;
+  email: string;
+  is_active: boolean;
+  is_account_active: boolean;
+  credits: number;
+  total_credits: number;
+  used_credits: number;
+}
+
+export interface BananaCreditsInfo {
+  credits: number;
+  total_credits: number;
+  used_credits: number;
+}
+
+export interface BananaPaymentOrder {
+  order_id: string;
+  payment_url: string;
+  qr_code?: string;
+  amount: number;
+  credits: number;
+}
+
+export interface BananaPaymentStatus {
+  order_id: string;
+  status: string;
+  paid: boolean;
+  paid_at?: string;
+}
+
+export interface BananaApiConfig {
+  id: number;
+  api_name: string;
+  api_type: string;
+  api_url: string;
+  api_key: string;
+  curl_template?: string;
+  is_active: boolean;
+  supports_image_generation: boolean;
+  supports_reference_image: boolean;
+  default_image_width: number;
+  default_image_height: number;
+  max_image_size: number;
+  image_quality: string;
+  additional_params?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// 支付弹窗事件类型
+export interface PaymentRequiredEvent {
+  orderId: string;
+  paymentUrl: string;
+  amount: number;
+  credits: number;
+  qrCode?: string;
+}
+
+// 全局事件
+declare global {
+  interface WindowEventMap {
+    'payment-required': CustomEvent<PaymentRequiredEvent>;
+    'payment-success': CustomEvent<{ orderId: string }>;
+    'payment-failed': CustomEvent<{ orderId: string; error: string }>;
+    'login-required': CustomEvent;
+  }
+}
+
+export type GenerationJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'not_found';
+
+export interface GenerationJobStatus {
+  job_id: string;
+  status: GenerationJobState;
+  result?: string | null;
+  error?: string | null;
+}
+
+const BASE64_PREVIEW_HEAD = 96;
+const BASE64_PREVIEW_TAIL = 24;
+
+function truncateText(value: string, max = 200): string {
+  if (value.length <= max) {
+    return value;
+  }
+  return `${value.slice(0, max)}...(${value.length} chars)`;
+}
+
+function truncateBase64Like(value: string): string {
+  if (!value) {
+    return value;
+  }
+
+  if (value.startsWith('data:')) {
+    const [meta, payload = ''] = value.split(',', 2);
+    if (payload.length <= BASE64_PREVIEW_HEAD + BASE64_PREVIEW_TAIL) {
+      return value;
+    }
+    return `${meta},${payload.slice(0, BASE64_PREVIEW_HEAD)}...${payload.slice(-BASE64_PREVIEW_TAIL)}(${payload.length} chars)`;
+  }
+
+  const base64Like = /^[A-Za-z0-9+/=]+$/.test(value) && value.length > 256;
+  if (!base64Like) {
+    return truncateText(value, 280);
+  }
+
+  return `${value.slice(0, BASE64_PREVIEW_HEAD)}...${value.slice(-BASE64_PREVIEW_TAIL)}(${value.length} chars)`;
+}
+
+function sanitizeGenerateRequestForLog(request: GenerateRequest): Record<string, unknown> {
+  return {
+    prompt: truncateText(request.prompt, 240),
+    model: request.model,
+    size: request.size,
+    aspect_ratio: request.aspect_ratio,
+    reference_images_count: request.reference_images?.length ?? 0,
+    reference_images_preview: (request.reference_images ?? []).map((item) =>
+      truncateBase64Like(item)
+    ),
+    extra_params: request.extra_params ?? {},
+  };
+}
+
+interface ErrorWithDetails extends Error {
+  details?: string;
+}
+
+function normalizeInvokeError(error: unknown): { message: string; details?: string } {
+  if (error instanceof Error) {
+    const detailsText =
+      'details' in error
+        ? typeof (error as { details?: unknown }).details === 'string'
+          ? (error as { details?: string }).details
+          : undefined
+        : undefined;
+    return { message: error.message || 'Generation failed', details: detailsText };
+  }
+
+  if (typeof error === 'string') {
+    return { message: error || 'Generation failed', details: error || undefined };
+  }
+
+  if (error && typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    const message =
+      (typeof record.message === 'string' && record.message) ||
+      (typeof record.error === 'string' && record.error) ||
+      (typeof record.msg === 'string' && record.msg) ||
+      'Generation failed';
+    let details: string | undefined;
+    try {
+      details = truncateText(JSON.stringify(record, null, 2), 2000);
+    } catch {
+      details = truncateText(String(record), 2000);
+    }
+    return { message, details };
+  }
+
+  return { message: 'Generation failed' };
+}
+
+function createErrorWithDetails(message: string, details?: string): ErrorWithDetails {
+  const error: ErrorWithDetails = new Error(message);
+  if (details) {
+    error.details = details;
+  }
+  return error;
+}
+
+export async function setApiKey(provider: string, apiKey: string): Promise<void> {
+  console.info('[AI] set_api_key', {
+    provider,
+    apiKeyMasked: apiKey ? `${apiKey.slice(0, 4)}***${apiKey.slice(-2)}` : '',
+    tauri: isTauri(),
+  });
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境，请使用 `npm run tauri dev` 启动');
+  }
+  return await invoke('set_api_key', { provider, apiKey });
+}
+
+export async function generateImage(request: GenerateRequest): Promise<string> {
+  // 尝试使用Banana API
+  try {
+    return await enhancedGenerateImage(request);
+  } catch (bananaError) {
+    console.warn('[AI] Banana API调用失败，使用原始实现:', bananaError);
+
+    // 回退到原始实现
+    const startedAt = performance.now();
+    console.info('[AI] generate_image request (原始实现)', {
+      ...sanitizeGenerateRequestForLog(request),
+      tauri: isTauri(),
+    });
+
+    if (!isTauri()) {
+      throw new Error('当前不是 Tauri 容器环境，请使用 `npm run tauri dev` 启动');
+    }
+
+    try {
+      const rawResult = await invoke<unknown>('generate_image', { request });
+      if (typeof rawResult !== 'string') {
+        throw createErrorWithDetails(
+          'Generation returned non-string payload',
+          truncateText(
+            (() => {
+              try {
+                return JSON.stringify(rawResult, null, 2);
+              } catch {
+                return String(rawResult);
+              }
+            })(),
+            2000
+          )
+        );
+      }
+      const result = rawResult.trim();
+      if (!result) {
+        throw createErrorWithDetails('Generation returned empty image source');
+      }
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      console.info('[AI] generate_image success', {
+        elapsedMs,
+        resultPreview: truncateText(result, 220),
+      });
+      return result;
+    } catch (error) {
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      const normalizedError = normalizeInvokeError(error);
+      console.error('[AI] generate_image failed', {
+        elapsedMs,
+        request: sanitizeGenerateRequestForLog(request),
+        error,
+        normalizedError,
+      });
+      const commandError: ErrorWithDetails = new Error(normalizedError.message);
+      commandError.details = normalizedError.details;
+      throw commandError;
+    }
+  }
+}
+
+export async function submitGenerateImageJob(request: GenerateRequest): Promise<string> {
+  console.info('[AI] submit_generate_image_job request', {
+    ...sanitizeGenerateRequestForLog(request),
+    tauri: isTauri(),
+  });
+
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境，请使用 `npm run tauri dev` 启动');
+  }
+
+  const jobId = await invoke<string>('submit_generate_image_job', { request });
+  if (typeof jobId !== 'string' || !jobId.trim()) {
+    throw new Error('submit_generate_image_job returned invalid job id');
+  }
+  return jobId.trim();
+}
+
+export async function getGenerateImageJob(jobId: string): Promise<GenerationJobStatus> {
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境，请使用 `npm run tauri dev` 启动');
+  }
+
+  const result = await invoke<GenerationJobStatus>('get_generate_image_job', { jobId });
+  if (!result || typeof result !== 'object' || typeof result.status !== 'string') {
+    throw new Error('get_generate_image_job returned invalid payload');
+  }
+  return result;
+}
+
+export async function listModels(): Promise<string[]> {
+  return await invoke('list_models');
+}
+
+// ===================== Banana API 集成 =====================
+
+/**
+ * 初始化Banana API集成
+ * @returns 如果已登录返回true，否则返回false
+ */
+export async function bananaInitialize(): Promise<boolean> {
+  if (!isTauri()) {
+    return false;
+  }
+  try {
+    return await invoke<boolean>('banana_initialize');
+  } catch (error) {
+    console.warn('[Banana] 初始化失败:', error);
+    return false;
+  }
+}
+
+/**
+ * 使用用户名密码登录Banana API
+ */
+export async function bananaLogin(username: string, password: string): Promise<BananaLoginResponse> {
+  console.log('[Banana] 调用bananaLogin, username:', username);
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境');
+  }
+  try {
+    const result = await invoke<BananaLoginResponse>('banana_login', { username, password });
+    console.log('[Banana] bananaLogin成功, result:', result);
+    return result;
+  } catch (error) {
+    console.error('[Banana] bananaLogin失败, error:', error);
+    throw error;
+  }
+}
+
+/**
+ * 登出Banana API
+ */
+export async function bananaLogout(): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+  await invoke('banana_logout');
+}
+
+/**
+ * 获取当前用户信息
+ */
+export async function bananaGetCurrentUser(): Promise<BananaUserInfo> {
+  console.log('[Banana] 调用bananaGetCurrentUser');
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境');
+  }
+  try {
+    const result = await invoke<BananaUserInfo>('banana_get_current_user');
+    console.log('[Banana] bananaGetCurrentUser成功, result:', result);
+    return result;
+  } catch (error) {
+    console.error('[Banana] bananaGetCurrentUser失败, error:', error);
+    throw error;
+  }
+}
+
+/**
+ * 检查剩余次数
+ */
+export async function bananaCheckCredits(): Promise<BananaCreditsInfo> {
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境');
+  }
+  return await invoke<BananaCreditsInfo>('banana_check_credits');
+}
+
+/**
+ * 创建支付订单
+ */
+export async function bananaCreatePaymentOrder(
+  amount: number,
+  credits: number,
+  paymentMethod: string = 'alipay'
+): Promise<BananaPaymentOrder> {
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境');
+  }
+  return await invoke<BananaPaymentOrder>('banana_create_payment_order', {
+    amount,
+    credits,
+    payment_method: paymentMethod,
+  });
+}
+
+/**
+ * 检查支付状态
+ */
+export async function bananaCheckPaymentStatus(orderId: string): Promise<BananaPaymentStatus> {
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境');
+  }
+  return await invoke<BananaPaymentStatus>('banana_check_payment_status', { order_id: orderId });
+}
+
+/**
+ * 获取活动API配置
+ */
+export async function bananaGetActiveApiConfigs(): Promise<BananaApiConfig[]> {
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境');
+  }
+  return await invoke<BananaApiConfig[]>('banana_get_active_api_configs');
+}
+
+/**
+ * 根据Banana API配置更新本地API密钥
+ */
+export async function bananaUpdateLocalApiKeys(configs: BananaApiConfig[]): Promise<void> {
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境');
+  }
+  await invoke('banana_update_local_api_keys', { api_configs: configs });
+}
+
+/**
+ * 清除所有本地API密钥
+ */
+export async function clearAllApiKeys(): Promise<void> {
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境');
+  }
+  await invoke('clear_all_api_keys');
+}
+
+/**
+ * 注册Banana API用户
+ */
+export async function bananaRegister(
+  username: string,
+  email: string,
+  password: string
+): Promise<BananaLoginResponse> {
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境');
+  }
+  return await invoke<BananaLoginResponse>('banana_register', {
+    username,
+    email,
+    password,
+  });
+}
+
+/**
+ * 触发支付弹窗事件
+ */
+export function triggerPaymentRequired(order: BananaPaymentOrder): void {
+  const event = new CustomEvent<PaymentRequiredEvent>('payment-required', {
+    detail: {
+      orderId: order.order_id,
+      paymentUrl: order.payment_url,
+      amount: order.amount,
+      credits: order.credits,
+      qrCode: order.qr_code,
+    },
+  });
+  window.dispatchEvent(event);
+}
+
+/**
+ * 触发登录弹窗事件
+ */
+export function triggerLoginRequired(): void {
+  const event = new CustomEvent('login-required');
+  window.dispatchEvent(event);
+}
+
+/**
+ * 通过Banana API生成图像（新版本）
+ */
+export async function bananaGenerateImage(request: GenerateRequest): Promise<string> {
+  const startedAt = performance.now();
+  console.info('[Banana] generate_image request', {
+    ...sanitizeGenerateRequestForLog(request),
+    tauri: isTauri(),
+  });
+
+  if (!isTauri()) {
+    throw new Error('当前不是 Tauri 容器环境，请使用 `npm run tauri dev` 启动');
+  }
+
+  try {
+    const result = await invoke<string>('banana_call_image_api', {
+      prompt: request.prompt,
+      model: request.model,
+      size: request.size,
+      aspect_ratio: request.aspect_ratio,
+      reference_images: request.reference_images,
+      extra_params: request.extra_params,
+    });
+
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    console.info('[Banana] generate_image success', {
+      elapsedMs,
+      resultPreview: truncateText(result, 220),
+    });
+    return result;
+  } catch (error) {
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    const normalizedError = normalizeInvokeError(error);
+    console.error('[Banana] generate_image failed', {
+      elapsedMs,
+      request: sanitizeGenerateRequestForLog(request),
+      error,
+      normalizedError,
+    });
+
+    // 检查是否为余额不足错误
+    if (normalizedError.message.includes('INSUFFICIENT_CREDITS')) {
+      // 触发支付流程
+      await handleInsufficientCredits();
+      // 支付成功后重试
+      return bananaGenerateImage(request);
+    }
+
+    // 检查是否为未登录错误
+    if (normalizedError.message.includes('设备令牌未找到') ||
+        normalizedError.message.includes('未授权') ||
+        normalizedError.message.includes('401')) {
+      triggerLoginRequired();
+      throw createErrorWithDetails('请先登录', '需要登录后才能使用AI生成功能');
+    }
+
+    const commandError: ErrorWithDetails = new Error(normalizedError.message);
+    commandError.details = normalizedError.details;
+    throw commandError;
+  }
+}
+
+/**
+ * 处理余额不足的情况
+ */
+async function handleInsufficientCredits(): Promise<void> {
+  console.info('[Banana] 余额不足，启动支付流程');
+
+  try {
+    // 获取定价配置（这里可以使用默认值或从服务器获取）
+    // 暂时使用固定值：899元=50次，1599元=100次
+    const pricingOptions = [
+      { amount: 899, credits: 50 },
+      { amount: 1599, credits: 100 },
+    ];
+
+    // 默认选择第一个选项
+    const selectedOption = pricingOptions[0];
+
+    // 创建支付订单
+    const paymentOrder = await bananaCreatePaymentOrder(
+      selectedOption.amount,
+      selectedOption.credits,
+      'alipay'
+    );
+
+    console.info('[Banana] 创建支付订单成功:', paymentOrder.order_id);
+
+    // 触发支付弹窗
+    triggerPaymentRequired(paymentOrder);
+
+    // 等待支付完成
+    const paid = await waitForPaymentCompletion(paymentOrder.order_id);
+
+    if (!paid) {
+      throw new Error('支付未完成或已取消');
+    }
+
+    console.info('[Banana] 支付成功，可以继续使用');
+  } catch (error) {
+    console.error('[Banana] 支付流程失败:', error);
+    throw new Error('支付流程失败: ' + (error instanceof Error ? error.message : String(error)));
+  }
+}
+
+/**
+ * 等待支付完成
+ */
+async function waitForPaymentCompletion(orderId: string, maxAttempts: number = 60): Promise<boolean> {
+  console.info('[Banana] 等待支付完成:', orderId);
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      await new Promise(resolve => setTimeout(resolve, 5000)); // 每5秒检查一次
+
+      const status = await bananaCheckPaymentStatus(orderId);
+      console.info(`[Banana] 支付状态检查 ${attempt + 1}/${maxAttempts}:`, status.status);
+
+      if (status.paid) {
+        return true;
+      }
+
+      if (status.status === 'failed' || status.status === 'cancelled') {
+        throw new Error(`支付失败或已取消: ${status.status}`);
+      }
+    } catch (error) {
+      console.error('[Banana] 检查支付状态失败:', error);
+      // 继续重试
+    }
+  }
+
+  return false;
+}
+
+/**
+ * 检查是否已登录Banana API
+ */
+export async function isBananaLoggedIn(): Promise<boolean> {
+  if (!isTauri()) {
+    return false;
+  }
+
+  try {
+    await bananaGetCurrentUser();
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * 增强版的generateImage函数，优先使用Banana API
+ * 如果Banana API不可用，则回退到原始实现
+ */
+export async function enhancedGenerateImage(request: GenerateRequest): Promise<string> {
+  // 首先检查是否已初始化Banana API
+  const initialized = await bananaInitialize();
+
+  if (initialized) {
+    try {
+      return await bananaGenerateImage(request);
+    } catch (error) {
+      console.warn('[AI] Banana API调用失败，回退到原始实现:', error);
+      // 回退到原始实现
+    }
+  }
+
+  // 使用原始实现
+  return generateImage(request);
+}
+
+// 覆盖原始generateImage函数，使用增强版本
+// 注意：这可能会破坏现有代码，根据实际情况决定是否启用
+// export { enhancedGenerateImage as generateImage };

@@ -1,0 +1,29 @@
+{
+  "version": "11",
+  "integration": {
+    "model": "pixverse/c1",
+    "max_tokens": 2048,
+    "system_prompt": ""
+  },
+  "prompt_rule": "Strictly reproduce the storyboard grid frame by frame. The grid is the only visual truth.\n\nRULES:\n1. 1:1 frame match — every object, character, pose, position, prop count, lighting must exactly match each grid cell. Zero additions. Zero deletions. Zero AI imagination.\n2. Real physics — gravity pulls down, objects move by contact force, weight shifts follow biomechanics, inertia prevents instant stops.\n3. Photorealism — neutral white balance (5600K daylight). No warm film cast, no orange-teal color grading, no cinematic LUT. Natural micro-textures: skin pores, fabric weave, surface grain. Photographic sharpness with subtle sensor noise in shadows. NOT oversmoothed, NOT CGI render, NOT plastic skin.\n4. Cinematic camera — C1's core strength. Choose camera movements naturally based on the scene context and narrative flow. Smoothly transition between static and moving shots as the story demands. Full catalog: static | slow push-in | slow pull-out | pan | tilt | tracking | dolly | crane | orbit | dutch-roll | handheld | slow-motion | whip-pan | dolly-zoom | fpv-drone.\n\nOutput in Chinese. Sound from storyboard only. No visible grid lines, borders, or split screens.",
+  "constraints": {
+    "global_rule": "故事板=唯一视觉真相。每一格100%还原，禁止添加/删减/脑补任何内容。",
+    "keyframe_rule": "每格=视频关键帧，严格按从左到右从上到下顺序还原。禁止跳过/合并/替换任何一格。",
+    "anti_hallucination": "禁止AI自行添加故事板中没有的人物、道具、场景元素。故事板有几把剑就是几把剑，有几个人就是几个人。数字必须与故事板完全一致。",
+    "physics_law": "所有物体运动符合牛顿力学。重力落地，禁止悬浮。接触推动，禁止隔空取物。惯性定律，不可瞬间起停。步态重心符合生物力学。",
+    "object_persistence": "所有物体在视频全程逐帧存在，数量与故事板完全一致。禁止物体消失、新增或数量变化。",
+    "motion_catalog": "固定机位|缓慢推近|缓慢拉远|摇镜左→右|摇镜右→左|俯仰上摇|俯仰下摇|平稳跟拍|侧面平移左|侧面平移右|升降上升|升降下降|环绕逆时针|环绕顺时针|旋转镜头|手持晃动|慢动作捕捉|快速摇镜|希区柯克变焦|FPV穿梭",
+    "hard_constraints": [
+      "故事板=唯一视觉真相，每一格画面内容100%还原",
+      "禁止添加故事板中没有的人物、道具、任何元素",
+      "禁止删减或替换故事板中已有内容",
+      "禁止AI自行脑补联想",
+      "物理定律：重力落地、接触推动、惯性减速、重心稳定",
+      "每格按从左到右从上到下顺序依次出现",
+      "禁止跳过/合并/替换任何一格",
+      "运镜根据剧情自然选择，保持视觉语言连贯"
+      "禁止分割线/方框/分屏/边框",
+      "全部用中文"
+    ]
+  }
+}

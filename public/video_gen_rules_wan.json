@@ -1,0 +1,37 @@
+{
+  "version": "31",
+  "guidance_scale": 8.0,
+  "shot_type": "multi",
+  "negative_prompt": "invented objects, hallucinated props,凭空出现的物品, disappearing objects, object deformation, bad anatomy, deformed hands, extra fingers, distorted faces, extra characters, identity shift, facial discoloration, oversharpening, plastic skin, waxy skin, blurry, jitter, noise, flickering, ghosting, frame skipping, lowres, dark, overexposure, text artifacts, AI watermark, AI subtitle, empty frame, grid lines, split screen, static image, abrupt transition, broken camera",
+  "prompt_rule": "【运镜铁律·最高优先级】6张宫格=一个连续长镜头，不是6个独立片段。从图1开始，用平滑运镜（推近/拉远/跟拍/摇镜）串联图2→图3→图4→图5，一镜到底在图6结束。绝对禁止跳切、硬切、帧间跳跃——每一帧之间必须有运镜过渡，让视频如同一个连续拍摄的长镜头。\n\n【铁律】图1=视频首帧，经过图2-图5平滑运镜过渡，在图6结束。按左→右、上→下顺序逐格处理，不跳过任何一张。每张宫格=一个关键帧，6张全部呈现。画面内容100%来自参考图，文字仅提供运镜+动作+声音。禁止添加参考图不存在的物品/人物/道具/背景。物体位置数量由参考图锁定。禁止拉伸、裁切。",
+  "constraints": {
+    "global_rule": "STORYBOARD = GROUND TRUTH. Visual content 100% anchored by 6 storyboard frames. Text provides camera instructions only. Zero AI invention, addition, deletion, or alteration of storyboard content. All camera movement within frame boundaries.",
+    "frame_inventory": "ABSOLUTE FRAME LOCK: The storyboard frame is the COMPLETE and EXCLUSIVE inventory of what may appear in the shot. Every object visible in the frame must be in the video. NO object absent from the frame may appear — even if semantically associated, contextually expected, or 'common sense.' The model must not add spoons, utensils, tools, accessories, or any item not visibly present in the reference frame. Semantic association does not override this constraint. Example: a milk powder can scene does NOT authorize a spoon — if the spoon is not in the frame, it must not appear.",
+    "frame_alignment": "Each shot must align with its corresponding storyboard frame — character position, props, background, lighting direction match precisely. No frame skipping, no extra frames, no missing frames. Process all 6 frames L→R T→B in sequence.",
+    "action_density": "Max 2-3 actions per shot. Split complex action chains across multiple shots. Single-shot action overload causes the model to silently drop actions. Each action needs ~1.5s, a shot with 3 actions needs 4-5s minimum.",
+    "object_persistence": "All objects (characters, animals, props, background elements) exist every frame. Count and position locked by storyboard. No disappear, replace, morph, count change, or addition. ABSOLUTE CONSTRAINT — works together with frame_inventory to prevent both object loss AND object invention.",
+    "face_closeup_protection": "For close-up and portrait shots: reduce motion amplitude. Use gentle breathing, natural blinks, slow 3-5% push-in, micro head turns ≤5°. No sudden gestures, hair flips, rapid face turns, or hand-to-face contact. These cause face warping and ghosting in Wan models.",
+    "motion_boundaries": "State constraints as positive assertions: \"They do not stand up. No extra people enter. No extra objects appear. The camera does not pan.\" Critical for Wan modes where negative prompts have reduced effect. Explicitly deny all objects not visible in the storyboard frame.",
+    "facing_lock": "Character facing direction anchored by storyboard. Camera movement does not alter character orientation.",
+    "motion_catalog": "fixed | slow push-in | slow pull-out | smooth pan L→R | smooth pan R→L | smooth tracking | slight handheld shake | orbit L | orbit R | tilt up | tilt down | crane up | crane down | Hitchcock zoom | handheld tracking",
+    "shot_continuity": "Storyboard L→R, T→B = shot sequence. AI must actively judge inter-frame continuity. Prioritize camera transitions (push, pull, pan, track, orbit) to connect adjacent shots. Hard cut only when scene, time, or emotion fundamentally shifts and no camera transition can bridge.",
+    "match_grading": "Consistent color palette and lighting direction across all shots. When lighting changes during video, describe the evolution explicitly. Key frames must share lighting direction and depth of field.",
+    "hard_constraints": [
+      "ABSOLUTE FRAME LOCK: Each storyboard frame is the complete and EXCLUSIVE visual inventory. Zero objects beyond what is visible in the frame. No AI-invented props, tools, utensils, or items — even if contextually plausible or semantically expected.",
+      "Every object in the video MUST be visible in its corresponding storyboard frame. Reference frame = sole authority on what exists. If an object is not in the frame, it MUST NOT be in the video. No exceptions.",
+      "Storyboard = ground truth. Visual content from storyboard only. Text = camera instructions.",
+      "Each shot aligns with corresponding storyboard frame. No frame skipping or extra frames.",
+      "Frame-to-frame transitions must be smooth. Connect shots with camera movement. No sudden scene changes or object flashes.",
+      "All camera movement within storyboard frame boundaries. Focus never leaves frame.",
+      "Storyboard is a complete continuous scene. No dividing lines, boxes, split screens, or borders.",
+      "All objects exist every frame. Count consistent with 6 storyboard frames. No object invention.",
+      "AI actively judges storyboard frame continuity. Prioritize camera transitions. Hard cut only when transition impossible.",
+      "Camera serves narrative. Flexibly choose movement based on story continuity and scene flow.",
+      "No image stretching. No character cropping.",
+      "Process all 6 storyboard frames L→R, T→B in sequence. No skipping. No early termination.",
+      "No AI dialogue, voiceover, narration, or extra sounds."
+    ],
+    "prompt_extend": "DEFAULT OFF. Storyboard prompts are carefully written. Enabling prompt_extend causes AI to rewrite prompts, making video deviate from storyboard. Only enable for very short prompts (<30 chars) when user explicitly requests.",
+    "seed": "Optional fixed random seed (integer). Same seed + same prompt = reproducible video. Leave unset in production for diversity; specify for debugging or deduplication."
+  }
+}

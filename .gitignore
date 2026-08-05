@@ -1,0 +1,86 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.env
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+ComfyUI/
+ComfyUI_frontend/
+Henji-AI/
+
+# Claude Code session data
+.claude/
+
+# Backup directories
+backup/
+backups/
+*.backup
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/settings.json
+qiniu/
+src-tauri/.cargo/config.toml
+wx/
+macos-build/
+*.dmg
+*.exe
+version.json
+skills-lock.json
+.playwright-mcp/
+
+# Dev notes and temp files
+*.py
+*.sh
+*.bat
+*.ps1
+*.pem
+mem.md
+short.md
+settings.json
+grid_prompt_rules.json
+macos-app/
+jiaoyan/
+jy/
+reference/
+icons/
+
+# Exclude old release notes and dev docs (contain credential patterns)
+docs/xiugai*.md
+docs/shengji.md
+docs/modules.md
+docs/plans/
+docs/releases/
+docs/skills/MEMORY.md
+docs/skills/README.md
+docs/skills/best_practices.json
+docs/skills/examples/
+docs/skills/templates/
+docs/skills/quick-reference.md
+1.md
+test1.md

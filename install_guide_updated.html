@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小鸭分镜大师 — 专业影视分镜提示词生成系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif;
+            background: #050505;
+            color: #a1a1aa;
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .hero {
+            position: relative;
+            padding: 160px 2rem 140px;
+            text-align: center;
+            background: radial-gradient(ellipse 60% 50% at 50% 30%, #1a1a1a 0%, #0a0a0a 60%, #050505 100%);
+            overflow: hidden;
+        }
+        .hero::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 200px;
+            background: linear-gradient(to bottom, transparent, #050505);
+            pointer-events: none;
+        }
+        .hero h1 {
+            font-size: clamp(3rem, 7vw, 5rem);
+            font-weight: 200;
+            letter-spacing: -0.03em;
+            color: #f5f5f5;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+        }
+        .hero h1 b { font-weight: 500; }
+        .hero .tagline {
+            font-size: clamp(1.1rem, 2vw, 1.4rem);
+            color: #71717a;
+            max-width: 640px;
+            margin: 0 auto;
+            letter-spacing: 0.04em;
+            font-weight: 300;
+        }
+        .features-row {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 3rem 5rem;
+            max-width: 1000px;
+            margin: 4rem auto 0;
+            padding: 0 2rem;
+        }
+        .features-row .feat {
+            font-size: 0.95rem;
+            color: #71717a;
+            letter-spacing: 0.04em;
+            font-weight: 300;
+        }
+        .section { max-width: 960px; margin: 0 auto; padding: 0 2rem; }
+        .download-section { margin-top: -60px; position: relative; z-index: 1; }
+        .download-card {
+            background: #0a0a0a;
+            border: 1px solid #1a1a1a;
+            border-radius: 20px;
+            padding: 64px 72px;
+            margin-bottom: 20px;
+            transition: border-color 0.3s;
+        }
+        .download-card:hover { border-color: #2a2a2a; }
+        .download-card .label {
+            display: inline-block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #52525b;
+            margin-bottom: 1rem;
+        }
+        .download-card h2 {
+            font-size: 2.2rem;
+            font-weight: 400;
+            color: #e4e4e7;
+            margin-bottom: 1rem;
+            letter-spacing: -0.02em;
+            line-height: 1.2;
+        }
+        .download-card .desc {
+            font-size: 1rem;
+            color: #71717a;
+            margin-bottom: 3rem;
+            line-height: 1.8;
+            font-weight: 300;
+            max-width: 680px;
+        }
+        .download-card .desc strong { color: #a1a1aa; font-weight: 500; }
+        .platforms { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2.5rem; }
+        .platform-box {
+            background: #080808;
+            border: 1px solid #181818;
+            border-radius: 14px;
+            padding: 28px 32px;
+            text-align: center;
+        }
+        .platform-box .os-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: #52525b;
+            margin-bottom: 1rem;
+        }
+        .platform-box .btn-dl {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.6rem;
+            width: 100%;
+            padding: 0.9rem 1.5rem;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            text-decoration: none;
+            letter-spacing: 0.01em;
+            transition: all 0.2s;
+            background: #fafafa;
+            color: #0a0a0a;
+        }
+        .platform-box .btn-dl:hover {
+            background: #ffffff;
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.05), 0 8px 30px rgba(0,0,0,0.6);
+        }
+        .platform-box .hint {
+            font-size: 0.8rem;
+            color: #3f3f46;
+            margin-top: 1rem;
+            line-height: 1.6;
+        }
+        .after-install {
+            text-align: center;
+            font-size: 0.88rem;
+            color: #52525b;
+            line-height: 1.8;
+            border-top: 1px solid #181818;
+            padding-top: 2rem;
+        }
+        .after-install strong { color: #a1a1aa; font-weight: 500; }
+        .after-install a {
+            color: #a1a1aa;
+            text-decoration: none;
+            border-bottom: 1px solid #2a2a2a;
+            transition: border-color 0.2s;
+        }
+        .after-install a:hover { border-color: #71717a; }
+        .video-card {
+            background: #0a0a0a;
+            border: 1px solid #1a1a1a;
+            border-radius: 20px;
+            padding: 48px 72px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 2rem;
+            align-items: flex-start;
+        }
+        .video-card .icon { font-size: 2.8rem; line-height: 1; flex-shrink: 0; }
+        .video-card h3 {
+            font-size: 1.4rem;
+            font-weight: 400;
+            color: #d4d4d8;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.01em;
+        }
+        .video-card p {
+            font-size: 0.9rem;
+            color: #71717a;
+            margin-bottom: 1.5rem;
+            line-height: 1.7;
+            font-weight: 300;
+        }
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 720px;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #1a1a1a;
+        }
+        .video-wrapper video { width: 100%; display: block; }
+        .footer {
+            text-align: center;
+            padding: 100px 2rem 60px;
+            font-size: 0.82rem;
+            color: #3f3f46;
+            font-weight: 300;
+            letter-spacing: 0.02em;
+        }
+        @media (max-width: 768px) {
+            .hero { padding: 100px 1.5rem 80px; }
+            .hero h1 { font-size: 2.2rem; }
+            .download-card { padding: 36px 24px; }
+            .download-card h2 { font-size: 1.6rem; }
+            .platforms { grid-template-columns: 1fr; }
+            .video-card { flex-direction: column; padding: 36px 24px; }
+            .features-row { gap: 1.5rem 2rem; }
+        }
+    </style>
+</head>
+<body>
+
+<section class="hero">
+    <h1><b>小鸭分镜大师</b>&nbsp;&middot;&nbsp;专业影视分镜引擎</h1>
+    <p class="tagline">将百年电影工业的创作语言，编译为 AI 可精确执行的视觉指令。</p>
+    <div class="features-row">
+        <span class="feat">全球导演技法库</span>
+        <span class="feat">智能布光推理</span>
+        <span class="feat">美术置景指导</span>
+        <span class="feat">动作编排设计</span>
+        <span class="feat">专业运镜语言</span>
+        <span class="feat">场景空间推理</span>
+        <span class="feat">宫格约束引擎</span>
+        <span class="feat">空间定位系统</span>
+        <span class="feat">自动参考图匹配</span>
+        <span class="feat">AI 智能对话</span>
+        <span class="feat">剧集资产管理</span>
+        <span class="feat">每周技能更新</span>
+    </div>
+</section>
+
+<section class="section download-section">
+    <div class="download-card">
+        <div class="label">Short Video Edition</div>
+        <h2>小鸭分镜大师 &middot; 短视频版</h2>
+        <p class="desc">
+            经过努力，我们终于上线小鸭分镜大师短视频版。短视频版针对短视频行业生成专业的短视频能力而开发，
+            集成专业的视频生成能力，综合价格是目前市场主流产品的一半，但在我们核心底层系统的支撑下，
+            质量却不输于任何主流产品，欢迎下载使用。
+        </p>
+        <div class="platforms">
+            <div class="platform-box">
+                <div class="os-label">Windows</div>
+                <a href="https://aixiaoxi.top/jy/uploads/app/Storyboard-ShortVideo_1.0.55_x64-setup.exe" download class="btn-dl">
+                    下载 Windows 版 &middot; v1.0.55
+                </a>
+            </div>
+            <div class="platform-box">
+                <div class="os-label">macOS</div>
+                <a href="https://aixiaoxi.top/jy/uploads/app/Storyboard-ShortVideo_1.0.55_universal.dmg" download class="btn-dl">
+                    下载 macOS 版 &middot; v1.0.55
+                </a>
+                <div class="hint">通用二进制 &middot; Apple Silicon &amp; Intel<br>首次打开如遇安全提示，前往 系统设置 &rarr; 隐私与安全性 &rarr; 仍要打开</div>
+            </div>
+        </div>
+        <div class="after-install">
+            <strong>安装完成后</strong> &nbsp;打开小鸭分镜大师短视频版，注册或登录即可开始创作。
+            也可访问 <a href="http://aixiaoxi.top/jy/api-portal/" target="_blank">用户中心</a> 管理账号和点数。
+        </div>
+    </div>
+
+    <div class="video-card">
+        <div class="icon">&#x25B6;&#xFE0F;</div>
+        <div style="flex:1;">
+            <h3>小鸭分镜大师短视频版 &middot; 使用教程</h3>
+            <p>快速上手小鸭分镜大师短视频版，了解如何使用专业宫格分镜约束引擎进行短视频创作。从新建项目到生成高品质分镜画面，一步到位。</p>
+            <div class="video-wrapper">
+                <video controls preload="metadata">
+                    <source src="http://xiaoya.aixiaoxi.top/videos/%E5%88%86%E9%95%9C%E5%A4%A7%E5%B8%882.mp4" type="video/mp4">
+                    您的浏览器不支持视频播放
+                </video>
+            </div>
+        </div>
+    </div>
+
+    <div class="download-card">
+        <div class="label">Professional Edition</div>
+        <h2>小鸭分镜大师 &middot; 专业版</h2>
+        <p class="desc">
+            为专业影视创作者打造。内置<strong> 190+ 位全球知名导演拍摄技法知识库</strong>，
+            横跨布光设计、妆造造型、美术置景、武打动作设计、运镜语言、剪辑节奏、
+            表演情绪引导、声音氛围设计、特效合成方案、天气时令选择 —— 将百年电影工业的
+            创作智慧，编译为 AI 可精确执行的视觉指令。
+        </p>
+        <p class="desc">
+            <strong>专业宫格约束引擎 + 空间定位系统</strong> —— 业内首创节点化分镜工作流。
+            自动推导角色站位、镜头轴线与场景空间关系，4 / 6 / 9 宫格批量生成，
+            跨帧人物、服饰、场景逻辑自洽。<strong>AI 智能对话</strong>将自然语言创意
+            直接转化为结构化提示词，<strong>自动匹配资产库参考图</strong>，
+            把原本需要数小时的手工调参压缩为一次对话。<strong>从根源降低 AI 视频抽卡率</strong>，
+            让每一帧都经得起推敲。
+        </p>
+        <p class="desc" style="border-left: 2px solid #2a2a2a; padding-left: 1.2rem; color: #a1a1aa;">
+            <strong>提示词技能每周迭代，宫格约束持续进化</strong> —— 持续追踪前沿模型特性与
+            影视行业趋势，让您的创作工具永远领先一步。
+        </p>
+        <div class="platforms">
+            <div class="platform-box">
+                <div class="os-label">Windows</div>
+                <a href="files/Storyboard-Copilot_6.0.54_x64-setup.exe" download class="btn-dl">
+                    下载 Windows 版 &middot; v1.0.31
+                </a>
+            </div>
+            <div class="platform-box">
+                <div class="os-label">macOS</div>
+                <a href="files/Storyboard-Copilot_6.0.54_universal.dmg" download class="btn-dl">
+                    下载 macOS 版 &middot; v1.0.31
+                </a>
+                <div class="hint">通用二进制 &middot; Apple Silicon &amp; Intel<br>首次打开如遇安全提示，前往 系统设置 &rarr; 隐私与安全性 &rarr; 仍要打开</div>
+            </div>
+        </div>
+        <div class="after-install">
+            <strong>安装完成后</strong> &nbsp;打开小鸭分镜大师，注册或登录即可开始创作。
+            也可访问 <a href="http://aixiaoxi.top/jy/api-portal/" target="_blank">用户中心</a> 管理账号和点数。
+        </div>
+    </div>
+</section>
+
+<section class="section">
+    <div class="video-card">
+        <div class="icon">&#x25B6;&#xFE0F;</div>
+        <div style="flex:1;">
+            <h3>小鸭分镜大师 &middot; 使用教程</h3>
+            <p>快速上手小鸭分镜大师，了解如何使用专业宫格约束引擎进行分镜创作。从新建项目到生成高品质分镜画面，一步到位。</p>
+            <div class="video-wrapper">
+                <video controls preload="metadata">
+                    <source src="http://xiaoya.aixiaoxi.top/videos/%E5%88%86%E9%95%9C%E5%A4%A7%E5%B8%881.mp4" type="video/mp4">
+                    您的浏览器不支持视频播放
+                </video>
+            </div>
+        </div>
+    </div>
+</section>
+
+<div class="footer">
+    <p>小鸭分镜大师 &copy; 2026 &nbsp;&middot;&nbsp; 专业影视分镜提示词生成系统</p>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,2 @@
+name: xiaoya-ai-cinema-travel
+version=1.0.0

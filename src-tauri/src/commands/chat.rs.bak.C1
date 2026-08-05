@@ -1,0 +1,841 @@
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
+use tracing::{info, warn};
+use uuid::Uuid;
+
+use crate::ai::deepseek;
+use crate::commands::banana_api;
+
+const SKILL_VERSION_URL: &str = "https://aixiaoxi.top/jy/uploads/install_guide/files/version_shortvideo.txt";
+
+const GATEWAY_MESSAGES_URL: &str = "https://aixiaoxi.top/jy/api/v1/gateway/v1/messages";
+const CHAT_MODEL: &str = "claude-sonnet-4-6";
+const CHAT_MAX_TOKENS: u32 = 8192;
+const ANALYSIS_MODEL: &str = "deepseek-v4-flash";
+const ANALYSIS_MAX_TOKENS: u32 = 2048;
+
+const STORY_ANALYSIS_SYSTEM_PROMPT: &str = r#"你是一位资深的影视项目策划专家，擅长分析故事大纲并提取结构化参数。请分析用户提供的项目信息，输出以下 JSON 格式（仅 JSON，不要其他文字）：
+
+{
+  "logline": "用一句话概括故事核心",
+  "genre": "故事类型/风格",
+  "themes": ["主题1", "主题2"],
+  "characters": [
+    { "name": "角色名", "archetype": "角色原型", "arc": "角色弧线" }
+  ],
+  "visual_style": {
+    "color_palette": "色彩倾向",
+    "lighting": "光影风格",
+    "camera": "运镜风格"
+  },
+  "pacing": "叙事节奏描述",
+  "analysis_summary": "对项目的综合分析，200字以内的连贯段落描述"
+}"#;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatMessageDto {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatRequest {
+    model: String,
+    system: String,
+    messages: Vec<ChatMessageDto>,
+    max_tokens: u32,
+    stream: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ChatResponse {
+    pub chat_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct StoryAnalysisResult {
+    pub logline: String,
+    pub genre: String,
+    pub themes: Vec<String>,
+    pub characters: Vec<AnalysisCharacter>,
+    pub visual_style: AnalysisVisualStyle,
+    pub pacing: String,
+    pub analysis_summary: String,
+    pub raw_json: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct AnalysisCharacter {
+    pub name: String,
+    pub archetype: String,
+    pub arc: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct AnalysisVisualStyle {
+    pub color_palette: String,
+    pub lighting: String,
+    pub camera: String,
+}
+
+fn get_skill_dir() -> Result<std::path::PathBuf, String> {
+    let home = directories::UserDirs::new()
+        .ok_or("无法解析用户主目录")?
+        .home_dir()
+        .to_path_buf();
+    Ok(home.join(".claude/skills/xiaoya-ai-cinema-shortvideo"))
+}
+
+/// Ensure SKILL.md exists. If not, try to download the skill package on the fly.
+async fn ensure_skill_md() -> Result<String, String> {
+    let skill_dir = get_skill_dir()?;
+    let skill_path = skill_dir.join("SKILL.md");
+
+    if !skill_path.exists() {
+        // Skill not yet downloaded — try to fetch it now
+        info!("[Chat] SKILL.md 不存在，尝试自动下载...");
+        let skills_parent = skill_dir
+            .parent()
+            .ok_or("无法解析 skills 目录")?;
+        crate::commands::banana_api::sync_xiaoya_skill_public(skills_parent).await;
+    }
+
+    std::fs::read_to_string(&skill_path)
+        .map_err(|_| "技能文件下载失败，请检查网络后重新打开对话面板".to_string())
+}
+
+/// Extract text from an LLM-format response.
+/// Response format: { "content": [ { "type": "text", "text": "..." } ] }
+fn extract_anthropic_text(response: &serde_json::Value) -> String {
+    response
+        .get("content")
+        .and_then(|c| c.as_array())
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| {
+                    block
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .filter(|&t| t == "text")
+                        .and_then(|_| block.get("text"))
+                        .and_then(|t| t.as_str())
+                })
+                .collect::<Vec<&str>>()
+                .join("")
+        })
+        .unwrap_or_default()
+}
+
+/// Fallback: try to extract text from choices[0].message.content (LLM format)
+fn extract_openai_text(response: &serde_json::Value) -> String {
+    response
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[tauri::command]
+pub(crate) async fn chat_send_message(
+    messages: Vec<ChatMessageDto>,
+    project_context: String,
+) -> Result<ChatResponse, String> {
+    let chat_id = Uuid::new_v4().to_string();
+    info!("[Chat] 新对话请求 chat_id={}", chat_id);
+
+    let mut system_prompt = ensure_skill_md().await?;
+    info!("[Chat] SKILL.md 已加载 ({} 字符)", system_prompt.len());
+
+    // 注入项目全局上下文（如果有）
+    if !project_context.is_empty() {
+        system_prompt.push_str("\n\n【项目全局上下文】\n");
+        system_prompt.push_str(&project_context);
+        info!("[Chat] 项目上下文已注入 ({} 字符)", project_context.len());
+    }
+
+    // Append marker wrapper instructions for UI parsing
+    system_prompt.push_str(
+        "\n\n【分镜大师覆盖指令 — 以下规则覆盖SKILL.md中任何冲突内容，不可协商】\n\
+        1. 宫格分镜图永远是 2×3 六宫格。绝对禁止 3×3 九宫格。\n\
+        2. 宫格图基于人工智能模型生成。\n\
+        3. 运镜（C1影视引擎专长，共20种专业运镜）：\n\n\
+        【基础运镜】固定机位 | 缓慢推近(35mm焦距) | 缓慢拉远 | 摇镜(左→右) | 摇镜(右→左) | 俯仰(上摇) | 俯仰(下摇)\n\
+        【移动运镜】平稳跟拍 | 侧面平移(左) | 侧面平移(右) | 升降(上升) | 升降(下降)\n\
+        【环绕旋转】环绕(逆时针) | 环绕(顺时针) | 旋转镜头(Dutch Roll)\n\
+        【特效运镜】手持晃动(纪实感) | 慢动作捕捉 | 快速摇镜(Whip Pan) | 希区柯克变焦(Dolly Zoom) | FPV穿梭\n\
+        每个镜头使用一种主要运镜方式。可搭配物理参数增强：35mm焦距、F2.8光圈、ISO 800、快门1/60s、侧逆光+5500K色温。\n\n\
+        【视频提示词格式 — 三层结构（覆盖SKILL.md格式示例）】\n\
+        三层结构：风格锚定(必填：相机机身+焦段/光圈+色温+画幅+时长，1句) + 总体描述(1-2句) + 宫格叙事\n\
+        宫格格式：6段描述，空行分隔，每段必须用数字1-6编号（1、2、3、4、5、6）。每段：景别，主体描述 + 动作 + 场景 + 光线 + 运镜 + 声音\n\
+        每格 ≤100中文字符，运镜和声音各只写一个。禁止时间分段[X-Ys]。禁止写中文编号格式(第N格：/Shot N等)，统一用纯数字编号。\n\
+        正确格式：1、全景，年轻女性赤脚站在黄昏湖边，七只白天鹅从右侧湖面缓缓游近，身后逆光拉出金色轮廓光，35mm焦距，F2.8浅景深。固定机位。湖水轻拍声。\n\n\
+        2、中景，跟随天鹅游近的节奏平稳跟拍，女性下蹲伸出右手，天鹅伸长脖颈轻啄她掌心，暖色侧光(5500K)从左侧斜射在面部和羽毛上形成柔和高光。轻柔啄食声。\n\n\
+        【输出标记要求】\n\
+        - 【视频提示词】后放完整三层结构：风格锚定(1句) + 总体描述(1-2句) + 宫格叙事(6段编号)\n\
+        - 【分镜提示词】后只放6段宫格分镜描述，直接用数字1-6编号开始，禁止在编号前加风格锚定或总体描述\n\n\
+        【人物朝向规则 — 覆盖SKILL.md的「6格朝向必须统一」，此为最高优先级】\n\
+        SKILL.md要求「6格朝向必须统一」是错误规则，立即作废。人物朝向必须从分镜提示词（视频提示词）中的Shot动作逐格推导，不可全部\"面向镜头\"：\n\
+        1. 回读已生成的视频提示词，提取每个Shot对应的动作（第1个镜头→宫格1，依此类推）\n\
+        2. 根据该Shot中人物的动作决定朝向：\n\
+           - 人物在喂天鹅/与他人互动 → 面向被互动的对象（左或右）\n\
+           - 人物在走路/跑步 → 面向移动方向\n\
+           - 人物在找东西/看风景 → 面向画外或侧方\n\
+           - 人物在对话/直接表达 → 可面向镜头\n\
+        3. 同一人物在不同宫格中朝向可以不同——动作变了，朝向就变\n\
+        4. 180度轴线规则是指摄像机保持不变（不越轴），不是指人物朝向不变\n\
+        5. 禁止6格全部\"面向镜头\"——那是照片，不是视频。绝大多数镜头人物应面向左或右\n\n\
+        【宫格跨帧一致性铁律】\n\
+        6格全部生成后逐格交叉校验：\n\
+        1. 光线：方向/光质/色温6格统一\n\
+        2. 场景：元素不消失不漂移\n\
+        3. 人物：位置跨格连贯，朝向随Shot动作自然变化（禁止全\"面向镜头\"）\n\
+        4. 道具：位置+状态6格不变\n\
+        5. 外观：年龄/体型/发型/服装6格一致\n\
+        违反 = 不合格。\n\n\
+        【视频物体持久铁律】\n\
+        所有物体（人物/动物/道具）在视频全程逐帧存在，数量与宫格完全一致。禁止物体消失、新增或数量变化。\n\n\
+        【C1 特别提醒】\n\
+        风格锚定必须包含相机机身，根据剧情类型从下表选择（禁止全部使用同一机型，必须匹配故事气质）：\n\
+        - 古代/奇幻/史诗/武侠 → ARRI Alexa 35 + 变形宽银幕镜头（肤色柔和自然，暖调，高动态范围，史诗感）\n\
+        - 悬疑/犯罪/黑色电影/惊悚 → RED Komodo + 35mm定焦（暗部细节丰富，冷峻色调，不安定感）\n\
+        - 现代都市/爱情/生活/职场 → Sony FX3 + 24-70mm变焦（干净锐利，写实感，轻便手持呼吸感）\n\
+        - 科幻/赛博朋克/未来/人工智能 → Blackmagic 12K + 广角镜头（超高分辨率，冷峻机械感，高反差）\n\
+        - 自然/风景/宏大场面/战争 → IMAX + 超广角（超宽画幅，壮阔沉浸感，大景深）\n\
+        - 复古/怀旧/年代剧/文艺 → 16mm胶片 + 35mm定焦（明显颗粒感，暖调褪色，怀旧质感）\n\
+        - 实验/艺术/音乐/MV → 变形宽银幕 + 50mm（椭圆光斑，独特画幅比，风格化）禁止用\"电影感\"\"大片质感\"\"高清摄影\"\"顶级CG\"\"史诗级\"等模板触发词（会触发C1内置模板库，导致千篇一律片头效果）。用具体物理参数和场景细节替代。",
+    );
+
+    // Unified instruction — same system prompt for every request so DeepSeek cache hits
+    system_prompt.push_str(
+        "\n\nCRITICAL — READ THE USER'S LAST MESSAGE:\n\
+        - If user described a video idea (not \"A\"): output ONLY up to step 7 of your workflow. Output 【视频提示词】+ full 6-shot prompt. Then STOP.\n\
+        - If user said \"A\" or \"A-生成\": output 【分镜提示词】+ all 6 grid frames per step 8. Grid frames must start directly from numbered items (1、2、…6、) — NO style anchor, NO camera specs, NO overall description before the numbered frames.\n\
+        \n\
+        MANDATORY: When user describes a video idea, your response MUST end with this exact line (copy verbatim):\n\
+        需要生成2×3六宫格分镜图吗？A-生成 B-不生成\n\
+        DO NOT output 【分镜提示词】 or grid frames until user replies \"A\". Violation = failure.",
+    );
+
+    let device_token = {
+        let store = banana_api::get_device_token_store();
+        let guard = store.lock().await;
+        guard
+            .clone()
+            .ok_or("未登录，请先登录".to_string())?
+    };
+
+    let api_key = match banana_api::get_user_api_key(&device_token).await {
+        Ok(key) if !key.is_empty() => key,
+        other => {
+            warn!("[Chat] get_user_api_key 失败({:?})，回退到 ensure_user_api_token", other.as_ref().err());
+            banana_api::ensure_user_api_token(&device_token).await?
+        }
+    };
+    info!("[Chat] API Key 已获取");
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+    let request_body = ChatRequest {
+        model: CHAT_MODEL.to_string(),
+        system: system_prompt,
+        messages,
+        max_tokens: CHAT_MAX_TOKENS,
+        stream: false,
+    };
+
+    let response = client
+        .post(GATEWAY_MESSAGES_URL)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("网关请求失败: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        let err_msg = format!("网关返回错误 ({}): {}", status, body);
+        warn!("[Chat] {}", err_msg);
+        return Err(err_msg);
+    }
+
+    let response_json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("解析响应 JSON 失败: {}", e))?;
+
+    let text = {
+        let anthropic_text = extract_anthropic_text(&response_json);
+        if !anthropic_text.is_empty() {
+            anthropic_text
+        } else {
+            extract_openai_text(&response_json)
+        }
+    };
+
+    let text_len = text.len();
+    info!("[Chat] 响应完成 chat_id={} len={}", chat_id, text_len);
+
+    if text.is_empty() {
+        warn!("[Chat] 响应文本为空 chat_id={}", chat_id);
+    }
+
+    Ok(ChatResponse { chat_id, text })
+}
+
+/// 清洗视频分镜提示词 — DeepSeek 去掉光影/场景/外观，只保留运镜+精简动作+声音
+/// 确保文字描述不超出宫格图已锚定的画面内容
+#[tauri::command]
+pub(crate) async fn integrate_video_prompt(
+    storyboard_prompt: String,
+    grid_frames: Vec<String>,
+) -> Result<String, String> {
+    let chat_id = Uuid::new_v4().to_string();
+    info!("[Integrate] 视频提示词清洗 chat_id={}, grid_frames={}", chat_id, grid_frames.len());
+
+    let device_token = {
+        let store = banana_api::get_device_token_store();
+        store.lock().await.clone().unwrap_or_default()
+    };
+    let api_key = match banana_api::get_user_api_key(&device_token).await {
+        Ok(key) => key,
+        Err(_) => {
+            banana_api::ensure_user_api_token(&device_token).await.unwrap_or_default()
+        }
+    };
+
+    match deepseek::clean_video_prompt(&storyboard_prompt, &grid_frames, &api_key).await {
+        Ok(cleaned) => {
+            info!("[Integrate] 清洗完成 chat_id={} len={}", chat_id, cleaned.len());
+            Ok(cleaned)
+        }
+        Err(e) => {
+            warn!("[Integrate] 清洗失败，降级为原文: {}", e);
+            // 降级：清洗失败时返回原文，不阻塞流程
+            Ok(storyboard_prompt)
+        }
+    }
+}
+
+/// Analyze story outline via gateway API, reusing same auth/billing flow as chat
+#[tauri::command]
+pub(crate) async fn analyze_story(
+    story_outline: String,
+    aspect_ratio: String,
+    style: String,
+    tone: String,
+    director_ref: String,
+    emphasis_dimensions: Vec<String>,
+) -> Result<StoryAnalysisResult, String> {
+    let chat_id = Uuid::new_v4().to_string();
+    info!("[Analyze] 故事分析请求 chat_id={}", chat_id);
+
+    // Build user message with story + params
+    let mut user_content = format!("【故事大纲】\n{}\n\n", story_outline);
+    if !aspect_ratio.is_empty() {
+        user_content.push_str(&format!("画幅比例: {}\n", aspect_ratio));
+    }
+    if !style.is_empty() {
+        user_content.push_str(&format!("视觉风格: {}\n", style));
+    }
+    if !tone.is_empty() {
+        user_content.push_str(&format!("项目调性: {}\n", tone));
+    }
+    if !director_ref.is_empty() {
+        user_content.push_str(&format!("短视频风格: {}\n", director_ref));
+    }
+    if !emphasis_dimensions.is_empty() {
+        user_content.push_str(&format!("提示词重点维度: {}\n", emphasis_dimensions.join(", ")));
+    }
+
+    let device_token = {
+        let store = banana_api::get_device_token_store();
+        let guard = store.lock().await;
+        guard
+            .clone()
+            .ok_or("未登录，请先登录".to_string())?
+    };
+
+    let api_key = match banana_api::get_user_api_key(&device_token).await {
+        Ok(key) if !key.is_empty() => key,
+        other => {
+            warn!("[Analyze] get_user_api_key 失败({:?})，回退到 ensure_user_api_token", other.as_ref().err());
+            banana_api::ensure_user_api_token(&device_token).await?
+        }
+    };
+    info!("[Analyze] API Key 已获取");
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+    let request_body = serde_json::json!({
+        "model": ANALYSIS_MODEL,
+        "system": STORY_ANALYSIS_SYSTEM_PROMPT,
+        "messages": [
+            { "role": "user", "content": user_content }
+        ],
+        "max_tokens": ANALYSIS_MAX_TOKENS,
+        "stream": false
+    });
+
+    let response = client
+        .post(GATEWAY_MESSAGES_URL)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("网关请求失败: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("网关返回错误 ({}): {}", status, body));
+    }
+
+    let response_json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("解析响应 JSON 失败: {}", e))?;
+
+    let text = {
+        let anthropic_text = extract_anthropic_text(&response_json);
+        if !anthropic_text.is_empty() {
+            anthropic_text
+        } else {
+            extract_openai_text(&response_json)
+        }
+    };
+
+    info!("[Analyze] 分析完成 chat_id={} len={}", chat_id, text.len());
+
+    if text.is_empty() {
+        return Err("AI 返回为空，请重试".to_string());
+    }
+
+    // Try to parse JSON from the response
+    let json_str = text.trim();
+    // Strip markdown code block if present
+    let json_str = if json_str.starts_with("```") {
+        let start = json_str.find('\n').map(|i| i + 1).unwrap_or(0);
+        let end = json_str.rfind("```").unwrap_or(json_str.len());
+        json_str[start..end].trim()
+    } else {
+        json_str
+    };
+
+    let parsed: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| format!("AI 返回的 JSON 解析失败: {}，原文: {}", e, text))?;
+
+    let default_list = || Vec::<String>::new();
+    let default_characters = || Vec::<AnalysisCharacter>::new();
+    let default_visual = || AnalysisVisualStyle {
+        color_palette: String::new(),
+        lighting: String::new(),
+        camera: String::new(),
+    };
+
+    Ok(StoryAnalysisResult {
+        logline: parsed.get("logline").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        genre: parsed.get("genre").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        themes: parsed.get("themes").and_then(|v| v.as_array()).map(|a| {
+            a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+        }).unwrap_or_else(default_list),
+        characters: parsed.get("characters").and_then(|v| v.as_array()).map(|a| {
+            a.iter().filter_map(|item| {
+                Some(AnalysisCharacter {
+                    name: item.get("name")?.as_str()?.to_string(),
+                    archetype: item.get("archetype")?.as_str()?.to_string(),
+                    arc: item.get("arc")?.as_str()?.to_string(),
+                })
+            }).collect()
+        }).unwrap_or_else(default_characters),
+        visual_style: parsed.get("visual_style").map(|v| AnalysisVisualStyle {
+            color_palette: v.get("color_palette").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            lighting: v.get("lighting").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            camera: v.get("camera").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        }).unwrap_or_else(default_visual),
+        pacing: parsed.get("pacing").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        analysis_summary: parsed.get("analysis_summary").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        raw_json: json_str.to_string(),
+    })
+}
+
+const CHAT_CONVERSATIONS_FILENAME: &str = "chat_conversations.json";
+
+fn resolve_chat_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = crate::sync::get_user_dir(app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 user data dir 失败: {}", e))?;
+    Ok(dir.join(CHAT_CONVERSATIONS_FILENAME))
+}
+
+#[tauri::command]
+pub(crate) fn save_chat_conversations(app: AppHandle, json: String) -> Result<(), String> {
+    let path = resolve_chat_path(&app)?;
+    std::fs::write(&path, &json).map_err(|e| format!("保存对话失败: {}", e))?;
+    info!("[Chat] 对话已保存到 {}", path.display());
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn load_chat_conversations(app: AppHandle) -> Result<String, String> {
+    let path = resolve_chat_path(&app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(json) => Ok(json),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok("[]".to_string())
+        }
+        Err(e) => Err(format!("加载对话失败: {}", e)),
+    }
+}
+
+// ── Skill upgrade check ──
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SkillUpgradeInfo {
+    pub upgrade_available: bool,
+    pub local_version: String,
+    pub server_version: String,
+    pub description: String,
+}
+
+/// Read local skill version from ~/.claude/skills/xiaoya-ai-cinema-shortvideo/version.txt
+fn read_local_skill_version() -> Result<String, String> {
+    let home = directories::UserDirs::new()
+        .ok_or("无法解析用户主目录")?
+        .home_dir()
+        .to_path_buf();
+    let version_path = home.join(".claude/skills/xiaoya-ai-cinema-shortvideo/version.txt");
+    let content = std::fs::read_to_string(&version_path)
+        .map_err(|e| format!("读取本地 version.txt 失败: {}", e))?;
+    parse_version_field(&content).ok_or("本地 version.txt 中未找到 version 字段".into())
+}
+
+/// Extract `version=X.Y.Z` from a key=value file
+fn parse_version_field(content: &str) -> Option<String> {
+    for line in content.lines() {
+        if let Some(value) = line.strip_prefix("version=") {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Extract `description=` from a key=value file
+fn parse_description_field(content: &str) -> String {
+    for line in content.lines() {
+        if let Some(value) = line.strip_prefix("description=") {
+            return value.trim().to_string();
+        }
+    }
+    String::new()
+}
+
+/// Compare two semver strings (X.Y.Z). Returns true if a > b.
+fn version_greater(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> {
+        v.split('.')
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect()
+    };
+    let va = parse(a);
+    let vb = parse(b);
+    if va.is_empty() || vb.is_empty() {
+        return false;
+    }
+    va > vb
+}
+
+#[tauri::command]
+pub(crate) async fn check_skill_upgrade() -> Result<SkillUpgradeInfo, String> {
+    // Read local version
+    let local_version = read_local_skill_version().unwrap_or_else(|e| {
+        warn!("[SkillUpgrade] {}", e);
+        "0.0.0".to_string()
+    });
+    info!("[SkillUpgrade] 本地技能版本: {}", local_version);
+
+    // Fetch server version
+    let server_text = match reqwest::get(SKILL_VERSION_URL).await {
+        Ok(r) => match r.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("[SkillUpgrade] 读取服务器 version.txt 失败: {}", e);
+                return Ok(SkillUpgradeInfo {
+                    upgrade_available: false,
+                    local_version,
+                    server_version: "?".to_string(),
+                    description: String::new(),
+                });
+            }
+        },
+        Err(e) => {
+            warn!("[SkillUpgrade] 请求服务器 version.txt 失败: {}", e);
+            return Ok(SkillUpgradeInfo {
+                upgrade_available: false,
+                local_version,
+                server_version: "?".to_string(),
+                description: String::new(),
+            });
+        }
+    };
+
+    let server_version = parse_version_field(&server_text).unwrap_or_else(|| "0.0.0".to_string());
+    let description = parse_description_field(&server_text);
+    info!("[SkillUpgrade] 服务器技能版本: {}", server_version);
+
+    let upgrade_available = version_greater(&server_version, &local_version);
+
+    Ok(SkillUpgradeInfo {
+        upgrade_available,
+        local_version,
+        server_version,
+        description,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn perform_skill_upgrade() -> Result<SkillUpgradeInfo, String> {
+    // Get server version info first
+    let server_text = reqwest::get(SKILL_VERSION_URL)
+        .await
+        .map_err(|e| format!("请求服务器 version.txt 失败: {}", e))?
+        .text()
+        .await
+        .map_err(|e| format!("读取服务器 version.txt 失败: {}", e))?;
+
+    let server_version = parse_version_field(&server_text).unwrap_or_else(|| "?".to_string());
+    let description = parse_description_field(&server_text);
+    let local_version = read_local_skill_version().unwrap_or_else(|_| "0.0.0".to_string());
+
+    info!("[SkillUpgrade] 开始升级技能: {} -> {}", local_version, server_version);
+
+    // Download and extract the skill zip
+    let skill_dir = {
+        let home = directories::UserDirs::new()
+            .ok_or("无法解析用户主目录")?
+            .home_dir()
+            .to_path_buf();
+        home.join(".claude").join("skills")
+    };
+    let target_dir = skill_dir.join("xiaoya-ai-cinema-shortvideo");
+
+    let zip_url = format!(
+        "https://aixiaoxi.top/jy/uploads/install_guide/files/xiaoya-ai-cinema-shortvideo.zip"
+    );
+
+    let response = reqwest::get(&zip_url)
+        .await
+        .map_err(|e| format!("下载 skill zip 失败: {}", e))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("读取 skill zip 失败: {}", e))?;
+
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| format!("打开 zip 失败: {}", e))?;
+
+    // Detect strip prefix (same logic as sync_xiaoya_skill)
+    let first_entry = archive.by_index(0).ok().map(|e| e.name().to_string());
+    let strip_prefix = first_entry.as_ref().and_then(|name| {
+        let slash_pos = name.find('/');
+        slash_pos.map(|pos| format!("{}/", &name[..pos]))
+    });
+
+    // Collect entries first (ZipFile is not Send, can't hold across await)
+    let mut entries: Vec<(String, bool, Vec<u8>)> = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = match archive.by_index(i) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let entry_name = entry.name().to_string();
+        let is_dir = entry.is_dir();
+        let data = if is_dir {
+            Vec::new()
+        } else {
+            let mut d = Vec::new();
+            if std::io::copy(&mut entry, &mut d).is_err() {
+                continue;
+            }
+            d
+        };
+        entries.push((entry_name, is_dir, data));
+    }
+    drop(archive);
+
+    tokio::fs::create_dir_all(&target_dir)
+        .await
+        .map_err(|e| format!("创建目标目录失败: {}", e))?;
+
+    for (entry_name, is_dir, data) in &entries {
+        let relative = match &strip_prefix {
+            Some(prefix) if entry_name.starts_with(prefix) => &entry_name[prefix.len()..],
+            _ => entry_name,
+        };
+        if relative.is_empty() {
+            continue;
+        }
+        let out_path = target_dir.join(relative);
+        if *is_dir {
+            let _ = tokio::fs::create_dir_all(&out_path).await;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            let _ = tokio::fs::write(&out_path, data).await;
+        }
+    }
+
+    info!("[SkillUpgrade] 升级完成: {} -> {}", local_version, server_version);
+
+    // 同步 SKILL.md 安全标记，确保小鸭自报版本与 version.txt 一致
+    let skill_md_path = target_dir.join("SKILL.md");
+    if let Ok(content) = tokio::fs::read_to_string(&skill_md_path).await {
+        let marker_prefix = "<!-- SECURITY_MARKER: xiaoya-ai-cinema-shortvideo-protected-skill-v";
+        if let Some(start) = content.find(marker_prefix) {
+            if let Some(end) = content[start..].find(" -->") {
+                let new_marker = format!(
+                    "<!-- SECURITY_MARKER: xiaoya-ai-cinema-shortvideo-protected-skill-v{} -->",
+                    server_version
+                );
+                let updated = format!(
+                    "{}{}{}",
+                    &content[..start],
+                    new_marker,
+                    &content[start + end + 4..]
+                );
+                if updated != content {
+                    let _ = tokio::fs::write(&skill_md_path, &updated).await;
+                    info!("[SkillUpgrade] 安全标记已更新为 v{}", server_version);
+                }
+            }
+        }
+    }
+
+    Ok(SkillUpgradeInfo {
+        upgrade_available: true, // true because we just upgraded
+        local_version,
+        server_version,
+        description,
+    })
+}
+
+// ── Video Gen Store persistence ─────────────────────────────────
+
+const VIDEOGEN_STORE_FILENAME: &str = "videogen_store.json";
+
+fn videogen_store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    // 仅使用用户隔离目录，未登录时直接报错，不 fallback 全局路径
+    crate::sync::get_user_dir(app).map(|dir| dir.join(VIDEOGEN_STORE_FILENAME))
+}
+
+#[tauri::command]
+pub async fn load_videogen_store(
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let path = videogen_store_path(&app)?;
+    let bak_path = path.with_extension("json.bak");
+    tracing::debug!("[videogen_store] 读取路径: {:?}", &path);
+
+    match tokio::fs::read_to_string(&path).await {
+        Ok(content) => {
+            tracing::debug!("[videogen_store] 读取成功, {} 字节", content.len());
+            Ok(content)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // 主文件不存在，尝试 .bak 恢复
+            tracing::debug!("[videogen_store] 主文件不存在，尝试 .bak: {:?}", &bak_path);
+            match tokio::fs::read_to_string(&bak_path).await {
+                Ok(content) => {
+                    tracing::info!("[videogen_store] .bak 恢复成功, {} 字节", content.len());
+                    // 恢复主文件
+                    let _ = tokio::fs::write(&path, &content).await;
+                    Ok(content)
+                }
+                Err(_) => {
+                    tracing::debug!("[videogen_store] .bak 也不存在，返回空");
+                    Ok("{}".into())
+                }
+            }
+        }
+        Err(e) => {
+            // 主文件读取失败（可能损坏），尝试 .bak 恢复
+            tracing::error!("[videogen_store] 主文件读取失败: {}，尝试 .bak", e);
+            match tokio::fs::read_to_string(&bak_path).await {
+                Ok(content) => {
+                    tracing::info!("[videogen_store] 主文件损坏，.bak 恢复成功, {} 字节", content.len());
+                    let _ = tokio::fs::write(&path, &content).await;
+                    Ok(content)
+                }
+                Err(e2) => {
+                    tracing::error!("[videogen_store] .bak 也读取失败: {}", e2);
+                    Err(format!("读取 videogen_store 失败，备份也无效: {}", e))
+                }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn persist_videogen_store(
+    app: tauri::AppHandle,
+    json: String,
+) -> Result<(), String> {
+    let path = videogen_store_path(&app)?;
+    let tmp_path = path.with_extension("json.tmp");
+    let bak_path = path.with_extension("json.bak");
+
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+
+    // 保护旧数据：如果旧文件存在且有真实数据（> 1KB），
+    // 新数据为空壳（< 100 字节），拒绝写入防止覆盖
+    let new_len = json.len();
+    if let Ok(meta) = tokio::fs::metadata(&path).await {
+        let old_len = meta.len();
+        if old_len > 1024 && new_len < 100 {
+            tracing::error!(
+                "[videogen_store] 拒绝写入：旧文件 {} 字节（有数据），新数据仅 {} 字节（空壳），跳过！",
+                old_len, new_len
+            );
+            return Ok(());
+        }
+    }
+
+    // 原子写入：先写 .tmp，再替换旧文件为 .bak，最后 .tmp → 正式文件
+    tokio::fs::write(&tmp_path, &json)
+        .await
+        .map_err(|e| format!("写入临时文件失败: {}", e))?;
+
+    // 将现有正式文件重命名为 .bak（如果存在）
+    if let Ok(meta) = tokio::fs::metadata(&path).await {
+        if meta.len() > 0 {
+            let _ = tokio::fs::rename(&path, &bak_path).await;
+        }
+    }
+
+    // .tmp → 正式文件
+    tokio::fs::rename(&tmp_path, &path)
+        .await
+        .map_err(|e| format!("重命名临时文件失败: {}", e))?;
+
+    tracing::debug!("[videogen_store] 原子写入完成, {} 字节", new_len);
+    Ok(())
+}
+
+

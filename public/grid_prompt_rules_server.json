@@ -1,0 +1,43 @@
+{
+  "version": "8",
+  "grid_prompt": {
+    "global_header": "photorealistic, CRITICAL: Unless user explicitly requests anime/manga/cartoon style, ALL content MUST be photorealistic — hyper-realistic humans, realistic skin/hair/fabrics, cinematic lighting. Generate ONE image at {aspect_ratio}, containing exactly {rows}×{cols}={total} panels in FIXED grid with thin white gutters. All cells equal. All panels = SAME scene, SAME characters.",
+    "reference_image_priority": "REFERENCE IMAGE ABSOLUTE PRIORITY: References are SINGLE SOURCE OF TRUTH for ALL visual aspects — characters, clothing, props, colors, materials, environment, style. Copy EXACTLY from references — do NOT guess, interpret, or embellish. Text has ZERO authority over anything visible in references. Text ONLY describes actions, emotions, camera angles. Reference=LAW. Text=actions/feelings ONLY.",
+    "continuity_and_axis": "CHARACTER & PROP CONTINUITY + 180 DEG AXIS LOCK: All panels share ONE continuous physical reality. Each panel inherits posture, stance, body axis, facing, AND nearby prop/object positions from PREVIOUS panel UNCHANGED unless user EXPLICITLY states a change. DEFAULT=CONTINUITY. Body axis, head direction, limb placement identical across panels. All props/objects/animals maintain FIXED relative positions across ALL panels — no drift, teleporting, or side-switching. Cat in front of character in panel 1 = in front in ALL panels. 180 DEG CAMERA AXIS LOCK: Camera must NEVER cross the axis line. Consistent screen direction across ALL panels.",
+    "grid_layout": "GRID: Exactly {rows}×{cols}={total} panels. Cells equal size, uniform gutters. Do NOT rearrange, reflow, or change cell count. NON-NEGOTIABLE.",
+    "section_camera": "CAMERA STYLE",
+    "camera_style": "All {total} panels must use consistent cinematography: same lens, depth of field, color grading, lighting direction across every panel.",
+    "section_frames": "PANEL DESCRIPTIONS",
+    "frame_title_template": "Panel {index} of {total} (Row {row}, Col {col}):",
+    "frame_default_shot": "Medium shot",
+    "frame_default_emotion": "neutral",
+    "frame_default_facing": "front-facing",
+    "frame_field_source_auto": "(auto)",
+    "frame_field_source_user": "(user)",
+    "frame_ref_image_instruction": "",
+    "frame_fields": [
+      "shot",
+      "action",
+      "emotion",
+      "facing"
+    ],
+    "frame_field_labels": {
+      "shot": "Shot",
+      "action": "Action",
+      "emotion": "Emotion",
+      "facing": "Facing"
+    },
+    "section_layout": "GRID LAYOUT",
+    "layout_strictness": "Grid is EXACTLY {rows} rows × {cols} columns = {total} panels. All cells equal size with uniform gutters. Do NOT reflow, rearrange, or change cell count. {rows}×{cols} is NON-NEGOTIABLE.",
+    "section_hard_constraints": "HARD CONSTRAINTS",
+    "hard_constraints": [
+      "Aspect ratio MUST be exactly {aspect_ratio}.",
+      "Exactly {total} panels in fixed {rows}x{cols} grid — no rearrangement, reflow, or merging.",
+      "Character appearance 100% identical across all panels — face, hair, clothing, skin tone, eye color.",
+      "ALL props, objects, and animals maintain FIXED spatial positions across ALL panels. No drift, teleporting, or side-switching.",
+      "Reference images override ALL text for any visual element. Default=continuity.",
+      "Do NOT render text, labels, subtitles, or UI elements inside the generated image."
+    ],
+    "disable_text_in_image_text": "Keep all existing text, logos, labels, and branding from the reference images exactly as they appear. Do NOT add new text overlays, subtitles, UI elements, or panel numbers to the generated image. Reference image text must be preserved faithfully."
+  }
+}

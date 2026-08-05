@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>行业专版 — 小鸭分镜大师</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif;
+            background: #050505;
+            color: #a1a1aa;
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .hero {
+            position: relative;
+            padding: 120px 2rem 80px;
+            text-align: center;
+            background: radial-gradient(ellipse 60% 50% at 50% 30%, #1a1a1a 0%, #0a0a0a 60%, #050505 100%);
+            overflow: hidden;
+        }
+        .hero::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 120px;
+            background: linear-gradient(to bottom, transparent, #050505);
+            pointer-events: none;
+        }
+        .hero .badge {
+            display: inline-block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: #d4a574;
+            border: 1px solid #3a2a1a;
+            padding: 0.4rem 1.2rem;
+            border-radius: 20px;
+            margin-bottom: 2rem;
+        }
+        .hero h1 {
+            font-size: clamp(2.5rem, 6vw, 4rem);
+            font-weight: 200;
+            letter-spacing: -0.03em;
+            color: #f5f5f5;
+            line-height: 1.2;
+            margin-bottom: 1.5rem;
+        }
+        .hero h1 b { font-weight: 500; }
+        .hero .tagline {
+            font-size: clamp(1rem, 1.8vw, 1.2rem);
+            color: #71717a;
+            max-width: 640px;
+            margin: 0 auto;
+            letter-spacing: 0.04em;
+            font-weight: 300;
+        }
+        .section { max-width: 960px; margin: 0 auto; padding: 0 2rem; }
+        .download-section { margin-top: -40px; position: relative; z-index: 1; }
+
+        .download-card {
+            background: #0a0a0a;
+            border: 1px solid #1a1a1a;
+            border-radius: 20px;
+            padding: 56px 64px;
+            margin-bottom: 24px;
+            transition: border-color 0.3s;
+        }
+        .download-card:hover { border-color: #2a2a2a; }
+        .download-card.featured {
+            border-color: #2a1a0a;
+            box-shadow: 0 0 60px rgba(180, 120, 60, 0.04);
+        }
+        .download-card .label {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 1rem;
+        }
+        .download-card.featured .label { color: #d4a574; }
+        .download-card h2 {
+            font-size: 2rem;
+            font-weight: 400;
+            color: #e4e4e7;
+            margin-bottom: 1rem;
+            letter-spacing: -0.02em;
+            line-height: 1.3;
+        }
+        .download-card .desc {
+            font-size: 0.95rem;
+            color: #71717a;
+            margin-bottom: 2rem;
+            line-height: 1.8;
+            font-weight: 300;
+        }
+        .download-card .desc strong { color: #a1a1aa; font-weight: 500; }
+        .download-card .desc .highlight {
+            border-left: 2px solid #d4a574;
+            padding-left: 1rem;
+            color: #d4a574;
+            margin-top: 1rem;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .feature-item {
+            background: #080808;
+            border: 1px solid #181818;
+            border-radius: 10px;
+            padding: 1.2rem 1.5rem;
+            font-size: 0.88rem;
+            color: #a1a1aa;
+        }
+        .feature-item .icon { font-size: 1.5rem; margin-bottom: 0.5rem; display: block; }
+        .feature-item strong { color: #d4d4d8; font-weight: 500; }
+
+        .platforms { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
+        .platform-box {
+            background: #080808;
+            border: 1px solid #181818;
+            border-radius: 14px;
+            padding: 28px 32px;
+            text-align: center;
+        }
+        .platform-box .os-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: #52525b;
+            margin-bottom: 1rem;
+        }
+        .platform-box .btn-dl {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.6rem;
+            width: 100%;
+            padding: 0.9rem 1.5rem;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            text-decoration: none;
+            letter-spacing: 0.01em;
+            transition: all 0.2s;
+            background: #fafafa;
+            color: #0a0a0a;
+        }
+        .platform-box .btn-dl:hover {
+            background: #ffffff;
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.05), 0 8px 30px rgba(0,0,0,0.6);
+        }
+        .platform-box .hint {
+            font-size: 0.8rem;
+            color: #3f3f46;
+            margin-top: 1rem;
+            line-height: 1.6;
+        }
+        .after-install {
+            text-align: center;
+            font-size: 0.88rem;
+            color: #52525b;
+            line-height: 1.8;
+            border-top: 1px solid #181818;
+            padding-top: 2rem;
+        }
+        .after-install strong { color: #a1a1aa; font-weight: 500; }
+        .after-install a { color: #a1a1aa; text-decoration: none; border-bottom: 1px solid #2a2a2a; transition: border-color 0.2s; }
+        .after-install a:hover { border-color: #71717a; }
+
+        .coming-soon {
+            background: #0a0a0a;
+            border: 1px dashed #1a1a1a;
+            border-radius: 20px;
+            padding: 48px 64px;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+        .coming-soon h3 {
+            font-size: 1.3rem;
+            font-weight: 400;
+            color: #52525b;
+            margin-bottom: 0.5rem;
+        }
+        .coming-soon p { font-size: 0.9rem; color: #3f3f46; }
+
+        .back-link {
+            text-align: center;
+            padding: 2rem;
+            font-size: 0.88rem;
+        }
+        .back-link a { color: #52525b; text-decoration: none; border-bottom: 1px solid #1a1a1a; transition: all 0.2s; }
+        .back-link a:hover { color: #a1a1aa; border-color: #52525b; }
+
+        .footer {
+            text-align: center;
+            padding: 60px 2rem 40px;
+            font-size: 0.82rem;
+            color: #3f3f46;
+            font-weight: 300;
+            letter-spacing: 0.02em;
+        }
+        @media (max-width: 768px) {
+            .hero { padding: 80px 1.5rem 60px; }
+            .hero h1 { font-size: 2rem; }
+            .download-card { padding: 32px 24px; }
+            .download-card h2 { font-size: 1.4rem; }
+            .platforms { grid-template-columns: 1fr; }
+            .feature-grid { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<section class="hero">
+    <div class="badge">Industry Editions</div>
+    <h1><b>行业专版</b> &middot; 垂直领域AI视频引擎</h1>
+    <p class="tagline">每个行业都有独特的视觉语言。我们为不同领域定制专属的AI导演引擎，内置行业方法论、场景词库和专业运镜体系。</p>
+</section>
+
+<section class="section download-section">
+
+    <!-- 旅游版 -->
+    <div class="download-card featured">
+        <div class="label">现已发布 &middot; Travel Edition</div>
+        <h2>&#x2708;&#xFE0F; 小鸭分镜大师 &middot; 旅游专业版</h2>
+        <p class="desc">
+            为<strong>酒店、景区、文旅局、旅行社、旅游KOL</strong>量身打造的AI旅游目的地内容营销工具。
+            围绕一个目的地，系统性产出<strong>酒店宣传片、民宿探店、景区风光、城市打卡Vlog、美食探店、文化古迹</strong>等系列化营销内容。
+        </p>
+
+        <div class="feature-grid">
+            <div class="feature-item">
+                <span class="icon">&#x1F3EC;</span>
+                <strong>空间叙事引擎</strong><br>
+                <span style="color:#71717a;">门头→大堂→走廊→房间→窗外，从外到内层层递进</span>
+            </div>
+            <div class="feature-item">
+                <span class="icon">&#x2600;&#xFE0F;</span>
+                <strong>光影时刻系统</strong><br>
+                <span style="color:#71717a;">黄金时刻/蓝调时刻/夜景灯光/室内氛围光精准匹配</span>
+            </div>
+            <div class="feature-item">
+                <span class="icon">&#x1F3B5;</span>
+                <strong>环境音强制规则</strong><br>
+                <span style="color:#71717a;">海浪/鸟鸣/风/街头人声/杯碟声，旅游视频必配环境音</span>
+            </div>
+            <div class="feature-item">
+                <span class="icon">&#x1F4F7;</span>
+                <strong>15种旅游运镜</strong><br>
+                <span style="color:#71717a;">无人机拉升/环绕/POV步行/延时摄影/微距特写</span>
+            </div>
+            <div class="feature-item">
+                <span class="icon">&#x1F30D;</span>
+                <strong>在地感捕捉</strong><br>
+                <span style="color:#71717a;">海岛慵懒/古镇静谧/都市潮流/野奢隐世，每帧画面都在"说话"</span>
+            </div>
+            <div class="feature-item">
+                <span class="icon">&#x1F393;</span>
+                <strong>旅游写实锁死</strong><br>
+                <span style="color:#71717a;">禁止CG感/塑料感/3D渲染，强制专业旅游摄影美学</span>
+            </div>
+        </div>
+
+        <div class="platforms">
+            <div class="platform-box">
+                <div class="os-label">Windows</div>
+                <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Travel_1.0.0_x64-setup.exe" download class="btn-dl">
+                    下载 Windows 版 &middot; v1.0.0
+                </a>
+                <div class="hint">Windows 10/11 &middot; 64位</div>
+            </div>
+            <div class="platform-box">
+                <div class="os-label">macOS</div>
+                <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Travel_1.0.0_universal.dmg" download class="btn-dl">
+                    下载 macOS 版 &middot; v1.0.0
+                </a>
+                <div class="hint">通用二进制 &middot; Apple Silicon &amp; Intel<br>首次打开如遇安全提示，前往 系统设置 &rarr; 隐私与安全性 &rarr; 仍要打开</div>
+            </div>
+        </div>
+        <div class="after-install">
+            <strong>安装完成后</strong> &nbsp;打开小鸭分镜大师旅游专业版，注册或登录即可开始创作。
+            <br>
+            <strong style="color: #d4a574;">适用行业</strong>：酒店推广 &middot; 民宿展示 &middot; 景区宣传 &middot;
+            文旅局目的地营销 &middot; 旅行社产品包装 &middot; 旅游KOL内容创作 &middot; 美食探店视频
+        </div>
+    </div>
+
+    <!-- 即将推出 -->
+    <div class="coming-soon">
+        <h3>&#x1F6D2; 电商专版 &middot; 即将推出</h3>
+        <p>产品360°展示 / 材质细节呈现 / 使用场景演示 / 对比评测视频 — 为电商卖家定制的AI产品视频引擎</p>
+    </div>
+    <div class="coming-soon">
+        <h3>&#x1F52C; 科普专版 &middot; 即将推出</h3>
+        <p>概念可视化 / 过程演示 / 数据动画 / 实验记录 — 为科普创作者定制的AI知识视频引擎</p>
+    </div>
+
+    <div class="back-link">
+        <a href="http://47.108.237.10/jy/uploads/install_guide/">&larr; 返回小鸭分镜大师首页</a>
+    </div>
+</section>
+
+<div class="footer">
+    <p>小鸭分镜大师 &copy; 2026 &nbsp;&middot;&nbsp; 行业垂直AI视频创作平台</p>
+</div>
+
+</body>
+</html>

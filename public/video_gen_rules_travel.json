@@ -1,0 +1,25 @@
+{
+  "version": "1",
+  "integration": {
+    "model": "none",
+    "max_tokens": 0,
+    "system_prompt": ""
+  },
+  "negative_prompt": "chromatic aberration, motion blur excess, morphing, distortion, warping, flicker, unnatural physics, floating objects, anti-gravity, building shape drift, landmark distortion, bad weather, overcast sky, haze, construction site, trash on ground, crowded background clutter, ugly modern buildings, power lines",
+  "prompt_rule": "【核心指令·旅游视频专家】根据分镜图生成一段完整的、带运镜的旅游短视频。你不是在拍幻灯片，而是用摄像机运动串联空间——引导观众'步入'目的地，从外到内、从全景到细节、从环境到体验。\n\n【物理规律·强制】所有运动必须符合真实世界物理规律。\n\n【故事板宫格·最高优先级】宫格1→2→3→4→5→6 是一个连续旅游体验，不是6张独立照片。场景/光影/氛围跨宫格一致，空间递进从前一格自然延续到后一格。\n\n【旅游运镜·核心】优先使用以下运镜：drone pull-up（无人机拉升·大景） | drone orbit（无人机环绕·地标） | POV walkthrough（第一人称步行·探店） | slow push-in signage（慢推招牌·酒店门头） | macro close-up（微距特写·美食） | time-lapse（延时·日出云海）。基础运镜：static | slow push-in | slow pull-out | smooth pan L->R | smooth pan R->L | smooth tracking | slight handheld shake | orbit L | orbit R | tilt up | tilt down | crane up | crane down。\n\n【空间叙事·强制】严格遵循'从外到内'递进逻辑：外部全景→入口门头→内部大厅→核心体验区→高潮亮点→收尾全景+信息。禁止跳跃式切换空间。\n\n【光影时刻·旅游专属】户外场景精确到黄金时刻（日出后/日落前1小时）或蓝调时刻（日落后20分钟）。室内场景写明灯光类型和色温。\n\n【导演语法】每个Shot一行：S1: {运镜}。{动作≤15字}。for N seconds。{声音}\n\n【禁止】禁止插入额外镜头、禁止跳过宫格、禁止独立分镜切换、禁止在prompt中写光影/场景/外观描述（参考图已锁定画面）、禁止@图N或Image N语法、禁止分辨率/画幅/模型名。全部通过DeepSeek清洗后输出英文。No text overlays, no watermarks, no subtitles.",
+  "constraints": {
+    "global_rule": "故事板宫格=连续旅游体验时间线。空间递进从外到内、从全景到细节，不跳跃、不重置。提示词只写运镜+动作+声音，画面由参考图锁定。",
+    "shot_continuity": "六格→一个连续旅游视频。空间递进均匀串联，每格停留足够时间展示亮点。光影/天气/氛围跨格一致。",
+    "hard_constraints": [
+      "宫格1-6是连续空间体验，顺序不变",
+      "从外到内递进：全景→入口→内部→亮点→高潮→收尾",
+      "不添加/不删减/不修改画面内容",
+      "用摄像机运动串联，不跳切",
+      "提示词只写运镜+动作+声音，不写光影/场景/外观",
+      "光影时段精确（黄金时刻/蓝调时刻/夜景）",
+      "每Shot格式：S1: {运镜}。{动作≤15字}。for N seconds。{声音}",
+      "所有运动必须符合真实物理规律",
+      "地标建筑外形严格锁死参考图，禁止AI自行修改建筑外观"
+    ]
+  }
+}
