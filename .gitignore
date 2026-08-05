@@ -68,7 +68,8 @@ macos-app/
 jiaoyan/
 jy/
 reference/
-icons/
+# Icons exclusion was blocking macOS build - icons are required by Tauri
+# icons/ (removed - src-tauri/icons are build-essential)
 
 # Exclude old release notes and dev docs (contain credential patterns)
 docs/xiugai*.md
