@@ -95,36 +95,28 @@
 
 ---
 
-## 待修复的编译问题
+## 编译问题（已全部修复 ✅）
 
-### 1. icon.ico 格式问题 ❌
+### 1. icon.ico 格式问题 ✅ 已修复
 
-```
-error RC2175 : resource file D:\Story-Fashion\src-tauri\icons\icon.ico is not in 3.00 format
-```
+**问题**: `icon.ico` 实际是 PNG 文件（header 为 `\x89PNG`），Windows RC 编译器要求 3.00 格式。
 
-**原因**: 图标文件从旅游版复制时损坏或格式不兼容。
+**修复**: 用 Node.js 脚本从 PNG 源文件（32x32.png, 128x128.png, 128x128@2x.png）生成标准 ICO 文件：
+- ICO header（6 字节）+ 3× ICONDIRENTRY（16 字节）+ PNG 数据
+- 每个 entry 的 offset 指向对应 PNG 的嵌入位置
 
-**修复方法**: 替换 `src-tauri/icons/icon.ico` 为有效的 ICO 文件。可以用 ImageMagick 从 PNG 转换：
+### 2. Tauri 版本不匹配 ✅ 已修复
+
+**问题**: npm 包版本（`@tauri-apps/api@2.11.1`, `@tauri-apps/plugin-dialog@2.7.2`）与 Rust crate（`tauri@2.10.2`, `tauri-plugin-dialog@2.6.0`）不一致。
+
+**修复**:
 ```bash
-magick convert icon.png -resize 256x256 icon.ico
+npm install @tauri-apps/api@2.10.1 @tauri-apps/plugin-dialog@2.6.0
 ```
-或者从在线工具生成新的 ICO 文件。
 
-### 2. Tauri 版本不匹配
+### 3. npm 包安装 ✅ 已完成
 
-**原因**: npm 安装的 `@tauri-apps/cli` 与 Rust 的 `tauri` crate 版本不匹配。
-
-**修复方法**: 
-```bash
-cd D:\Story-Fashion
-npm install @tauri-apps/cli@2
-```
-或者更新 `src-tauri/Cargo.toml` 中的 tauri 版本号对齐。
-
-### 3. npm 包安装
-
-首次运行需要：
+首次运行：
 ```bash
 cd D:\Story-Fashion
 npm install
