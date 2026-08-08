@@ -1,6 +1,6 @@
 {
-  "version": "1.0.3",
+  "version": "1.0.4",
   "releaseDate": "2026-08-09",
   "downloadUrl": "https://aixiaoxi.top/jy/uploads/app/",
-  "notes": "v1.0.3 — 图片增强按钮、视频本地4K免费超分、硬件确认弹窗，对齐服饰版交互体验"
+  "notes": "v1.0.4 — 修复图片增强功能：安装包缺少超分模型文件导致增强无响应"
 }
