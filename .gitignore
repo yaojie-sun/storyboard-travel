@@ -68,6 +68,10 @@ macos-app/
 jiaoyan/
 jy/
 reference/
+# Allow bundled resource binaries (realesrgan, ffmpeg)
+!src-tauri/resources/**/*.exe
+!src-tauri/resources/**/*.dll
+
 # Icons exclusion was blocking macOS build - icons are required by Tauri
 # icons/ (removed - src-tauri/icons are build-essential)
 
