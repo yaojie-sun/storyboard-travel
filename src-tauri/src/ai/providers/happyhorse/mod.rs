@@ -453,15 +453,38 @@ impl HappyHorseProvider {
                         )));
                     }
                 }
+                // Check video_gen_info embedded status — it may be SUCCEEDED even when
+                // the top-level status is still RUNNING (post-processing / upload in progress).
+                let inner_status = resp.video_gen_info
+                    .as_ref()
+                    .and_then(|vi| vi.get("status"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_uppercase();
+                // Always try to extract video URL first — mediaBasicInfos may be populated
+                // before the top-level status flips to SUCCESS.
+                if let Some(url) = Self::extract_baidu_vod_video_url(&resp) {
+                    info!("[{}] task {} succeeded (media ready): {}", log_tag, task_id, url);
+                    return Ok(ProviderTaskPollResult::Succeeded(url));
+                }
+                // If inner generation explicitly failed, report failure.
+                if inner_status == "FAILED" || inner_status == "ERROR" {
+                    let msg = resp.video_gen_info
+                        .as_ref()
+                        .and_then(|vi| vi.get("message").or_else(|| vi.get("error")))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("生成失败");
+                    info!("[{}] task {} FAILED (inner): {}", log_tag, task_id, msg);
+                    return Ok(ProviderTaskPollResult::Failed(msg.to_string()));
+                }
                 let task_status = resp.status.as_deref().unwrap_or("").to_uppercase();
                 match task_status.as_str() {
                     "SUCCEEDED" | "COMPLETED" | "SUCCESS" => {
-                        let url = Self::extract_baidu_vod_video_url(&resp)
-                            .ok_or_else(|| {
-                                AIError::Provider(format!("{} succeeded but no video URL", log_tag))
-                            })?;
-                        info!("[{}] task {} succeeded: {}", log_tag, task_id, url);
-                        Ok(ProviderTaskPollResult::Succeeded(url))
+                        // Already tried extract_baidu_vod_video_url above; if we get here,
+                        // the status says success but no URL was found.
+                        info!("[{}] task {} status={} but no media URL yet, keep polling",
+                            log_tag, task_id, task_status);
+                        Ok(ProviderTaskPollResult::Running)
                     }
                     "FAILED" | "ERROR" => {
                         let msg = resp.message.unwrap_or_else(|| "生成失败".to_string());
@@ -469,6 +492,12 @@ impl HappyHorseProvider {
                         Ok(ProviderTaskPollResult::Failed(msg))
                     }
                     "READY" | "PENDING" | "RUNNING" | "PROCESSING" | _ => {
+                        let detail = if inner_status == "SUCCEEDED" {
+                            " (AI done, waiting for media upload)"
+                        } else {
+                            ""
+                        };
+                        info!("[{}] task {} status={}{}", log_tag, task_id, task_status, detail);
                         Ok(ProviderTaskPollResult::Running)
                     }
                 }

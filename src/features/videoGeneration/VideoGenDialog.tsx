@@ -454,6 +454,10 @@ function VideoGenDialogInner({
             return;
           }
           // running → continue polling
+          // 后端可能在 polling 中返回 error 字段（如网络波动），记录日志帮助排查
+          if (pollResult.error) {
+            console.warn('[VideoGenDialog] poll returned running with error:', pollResult.error);
+          }
           if (Date.now() - startTime > MAX_POLL_MS) {
             // 超时退费
             if (deducted > 0) {
@@ -490,7 +494,10 @@ function VideoGenDialogInner({
     if (pid && !savedConfig?.videoUrl) {
       console.log('[VideoGenDialog] resuming pending task:', pid);
       // PixVerse/BP tasks expire across sessions — don't auto-resume
-      if (pid.startsWith('tsk-')) {
+      // Only PixVerse/BP (non-happyhorse) tsk- tasks expire across sessions.
+      // HappyHorse 1.1 via BaiduVOD also uses tsk- prefix — these MUST auto-resume.
+      const isHappyhorseTask = savedConfig?.videoModel?.includes('happyhorse');
+      if (pid.startsWith('tsk-') && !isHappyhorseTask) {
         console.log('[VideoGenDialog] skipping PixVerse resume (task expires across sessions)');
         setPendingTaskId(null);
         return;

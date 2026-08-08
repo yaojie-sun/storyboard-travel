@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "releaseDate": "2026-07-29",
+  "version": "1.0.1",
+  "releaseDate": "2026-08-09",
   "downloadUrl": "https://aixiaoxi.top/jy/uploads/app/",
-  "notes": "分镜大师旅游版 v1.0.0 正式发布。面向旅游行业的AI视频创作工具，支持酒店宣传片、探店视频、景区风光、打卡Vlog、美食探店、文化古迹等旅游短视频制作。"
+  "notes": "v1.0.1 — 新增本地图片/视频超分功能，修复HappyHorse视频生成轮询中间态问题与宫格提示词解析"
 }

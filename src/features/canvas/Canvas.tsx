@@ -197,51 +197,51 @@ function canNodeTypeBeManualConnectionSource(type: CanvasNodeType): boolean {
 
 /**
  * Parse a grid prompt text into individual frame descriptions.
- * Handles numbered lines (1. / 1)、/ (1) etc.) and blank-line-separated paragraphs.
+ *
+ * Primary: split on "N、" at line boundaries — 顿号 is the key discriminator
+ * that prevents false-matching "2×3" or other non-item numbers in the preamble.
+ * Fallback: line-by-line prefix detection for other formats (N. / N) / 一、/ etc.)
  */
 function parseGridPrompt(prompt: string, maxFrames: number): string[] {
-  let trimmed = prompt.trim();
+  const trimmed = prompt.trim();
   if (!trimmed) {
     return Array.from({ length: maxFrames }, () => '');
   }
 
-  // Aggressively strip any summary/footer after the last "无文字"
-  const lastWuWenzi = trimmed.lastIndexOf('无文字');
-  if (lastWuWenzi > 0) {
-    const cutPoint = trimmed.indexOf('\n', lastWuWenzi);
-    if (cutPoint > 0) {
-      trimmed = trimmed.slice(0, cutPoint).trim();
-    } else {
-      trimmed = trimmed.slice(0, lastWuWenzi + 3).trim();
+  // ── Primary: extract by "N、" (顿号) — standard SKILL format ──
+  const dunhaoParts = trimmed.split(/(?:^|\n)\s*\d+\s*[、]\s*/);
+  // dunhaoParts[0] = preamble (discard), dunhaoParts[1..n] = frames
+  if (dunhaoParts.length > maxFrames) {
+    // Got enough frames from "N、" — clean and return
+    const items = dunhaoParts.slice(1).map((s) => s.trim()).filter(Boolean);
+    const result = Array.from({ length: maxFrames }, () => '');
+    for (let i = 0; i < Math.min(items.length, maxFrames); i++) {
+      result[i] = items[i];
     }
+    return result;
   }
 
-  // Patterns for frame item prefixes
+  // ── Strategy 1: line-by-line prefix detection (handles mixed formats) ──
   const digitRe = /^\d+[\.、\)]\s*/;
   const fullwidthRe = /^（\d+）\s*/;
   const chineseRe = /^(?:第?\s*[格宫]\s*|宫格\s*)[一二三四五六七八九十\d]+\s*[：:]\s*/;
   const sceneRe = /^场景\s*[一二三四五六七八九十\d]+\s*[：:]\s*/;
   const allPrefixRe = /^(?:\d+[\.、\)]\s*|（\d+）\s*|(?:第?\s*[格宫]\s*|宫格\s*)[一二三四五六七八九十\d]+\s*[：:]\s*|场景\s*[一二三四五六七八九十\d]+\s*[：:]\s*)/;
 
-  // Post-frame markers — lines that indicate frame content has ended
   const postFrameRe = /^(?:[-—]{3,}|\*\*说明|跨格一致性|一致性检查|动作连贯|（\d+[格帧]|【注|注[：:]|总结[：:]|\d+格[^，。]*[保持严格一致统一]|\d+[帧格]画面)/;
   const copyInstructionRe = /复制\s*以上|打开.*分镜大师|粘贴生成|如需进一步|请告诉我/;
 
-  // Strategy 1: identify frame items by known prefixes, discard preamble
   const lines = trimmed.split('\n').map((l) => l.trim()).filter(Boolean);
   const items: string[] = [];
   let inFrames = false;
 
   for (const line of lines) {
-    // Detect end of frame content: post-frame markers or copy instructions
     if (inFrames && items.length > 0 && (postFrameRe.test(line) || copyInstructionRe.test(line))) break;
     const isDigit = digitRe.test(line);
     const isFullwidth = fullwidthRe.test(line);
     const isChinese = chineseRe.test(line);
     const isScene = sceneRe.test(line);
     if (isDigit || isFullwidth || isChinese || isScene) {
-      // If previous frame ends without a sentence terminator or "无文字",
-      // the AI likely wrapped text mid-sentence — treat as continuation.
       if (inFrames && items.length > 0) {
         const prev = items[items.length - 1];
         const endsComplete = /[。！？.!]$/.test(prev) || prev.endsWith('无文字');
@@ -254,16 +254,12 @@ function parseGridPrompt(prompt: string, maxFrames: number): string[] {
       const cleaned = line.replace(allPrefixRe, '').trim();
       items.push(cleaned);
     } else if (inFrames && items.length > 0) {
-      // Skip summary/footer lines
       if (/[\(（]?\d+[格帧][^。，]*(?:保持|一致|严格|统一|不变)/.test(line)) continue;
-      // Continuation of previous multi-line frame description
       items[items.length - 1] += ' ' + line;
     }
-    // Before first frame item: skip preamble
   }
 
   if (items.length >= 2) {
-    // Clean: truncate each frame at "无文字" — summary text bleeds in as continuation
     for (let i = 0; i < items.length; i++) {
       const idx = items[i].indexOf('无文字');
       if (idx > 0) items[i] = items[i].slice(0, idx + 3).trim();
@@ -275,18 +271,12 @@ function parseGridPrompt(prompt: string, maxFrames: number): string[] {
     return result;
   }
 
-  // Strategy 2: fallback — split by double newlines
+  // ── Fallback: split by blank lines, use first-N ──
   const paraSplit = trimmed.split(/\n\s*\n/).filter((s) => s.trim());
   if (paraSplit.length >= 2) {
-    const clean = paraSplit.map((s) => s.trim()).filter(Boolean);
-    return clean.slice(0, maxFrames).concat(Array.from({ length: Math.max(0, maxFrames - clean.length) }, () => ''));
-  }
-
-  // Strategy 3: fallback — split by single newlines
-  const lineSplit = trimmed.split('\n').filter((s) => s.trim());
-  if (lineSplit.length >= 2) {
-    const clean = lineSplit.map((s) => s.trim()).filter(Boolean);
-    return clean.slice(0, maxFrames).concat(Array.from({ length: Math.max(0, maxFrames - clean.length) }, () => ''));
+    return paraSplit.slice(0, maxFrames).concat(
+      Array.from({ length: Math.max(0, maxFrames - paraSplit.length) }, () => ''),
+    );
   }
 
   // Single block: put it all in the first frame

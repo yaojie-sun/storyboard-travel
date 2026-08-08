@@ -134,42 +134,44 @@ function mergeConversations(lists: Conversation[]): Conversation[] {
 }
 
 /**
- * Frame start patterns — matches lines starting with numbered/lettered list items.
- * Supports: 1. / A、/ 一、/ **1. Title：** / 场景1： / （1） / (A) etc.
+ * Parse grid prompts by extracting numbered items with Chinese enumeration comma (顿号).
+ *
+ * The SKILL generates standard "N、" prefixes for each frame item.
+ * By requiring "、" we avoid false-matching "2×3" or other non-item numbers
+ * that appear in the preamble intro line.
+ *
+ * Fallback: if no "N、" items found, try broader patterns (N. / N) / 一、etc.)
  */
 function parseGridFrames(gridContent: string): PromptBlockFrame[] {
-  // Split by blank lines — each paragraph is one frame description
-  const paragraphs = gridContent.split(/\n\s*\n/);
   const frames: PromptBlockFrame[] = [];
 
-  const postFrameRe = /^(?:[-—]{3,}|\*\*说明|跨格一致性|一致性检查|动作连贯)/;
+  // Split on "N、" at line boundaries — 顿号 is the key discriminator
+  // This won't match "2×3六宫格" because × ≠ 、
+  const parts = gridContent.split(/(?:^|\n)\s*\d+\s*[、]\s*/);
 
-  for (const para of paragraphs) {
-    const text = para.trim();
-    if (!text) continue;
-    if (postFrameRe.test(text)) break;
-    if (/^(?:复制以上|打开.*分镜大师|粘贴生成|如需进一步|请告诉我)/.test(text)) break;
+  // parts[0] = everything before first "N、" (preamble) — discard
+  // parts[1..n] = frame descriptions
+  for (let i = 1; i < parts.length; i++) {
+    let desc = parts[i].trim();
+    if (!desc) continue;
 
-    // Strip any frame prefix: N. / N、/ 第N格： / 场景N： / etc.
-    let desc = text
-      .replace(/^\s*(?:\*\*)?\s*(?:\d+|[A-Z]|[一二三四五六七八九十]+)\s*[\.、\)）]\s*(?:\*\*)?/, '')
-      .replace(/^\s*(?:场景|第)\s*(?:\d+|[一二三四五六七八九十]+)\s*格?\s*[：:]\s*/, '')
-      .trim();
+    // Stop at post-frame markers
+    if (/^(?:[-—]{3,}|\*\*说明|跨格一致性|一致性检查|动作连贯)/.test(desc)) break;
+    if (/^(?:复制以上|打开.*分镜大师|粘贴生成|如需进一步|请告诉我)/.test(desc)) break;
 
-    if (desc) {
-      frames.push({ description: desc });
-    }
+    frames.push({ description: desc });
   }
 
-  // Strip known instruction suffixes
-  const instructionPatterns = [
-    /[>\s]*复制以上.*$/,
-    /[>\s]*打开分镜大师.*粘贴生成.*$/,
-    /[>\s]*粘贴生成分镜图像.*$/,
-  ];
-  for (let i = 0; i < frames.length; i++) {
-    for (const pattern of instructionPatterns) {
-      frames[i] = { ...frames[i], description: frames[i].description.replace(pattern, '').trim() };
+  // Fallback: if no "N、" items found, try broader patterns
+  if (frames.length < 2) {
+    frames.length = 0;
+    const fbParts = gridContent.split(/(?:^|\n)\s*(?:\d+|[一二三四五六七八九十]+)\s*[\.\)）]\s*/);
+    for (let i = 1; i < fbParts.length; i++) {
+      let desc = fbParts[i].trim();
+      if (!desc) continue;
+      if (/^(?:[-—]{3,}|\*\*说明|跨格一致性|一致性检查|动作连贯)/.test(desc)) break;
+      if (/^(?:复制以上|打开.*分镜大师|粘贴生成|如需进一步|请告诉我)/.test(desc)) break;
+      frames.push({ description: desc });
     }
   }
 
@@ -177,13 +179,18 @@ function parseGridFrames(gridContent: string): PromptBlockFrame[] {
 }
 
 /**
- * When grid content is a flat paragraph (no numbered items), try splitting by
- * sentinel patterns like **N.** embedded mid-text.
+ * When grid content is a flat paragraph (no "N、" numbered items), try splitting by
+ * sentinel patterns like **1.  **2.  etc. embedded mid-text.
  */
 function splitFlatGridContent(content: string): PromptBlockFrame[] {
-  // Attempt to split on mid-text bold-numbered markers: **1.  **2.  etc.
-  const parts = content.split(/(?:\*\*)?(?:\d+|[A-Z])\s*[\.、\)）]\s*(?:\*\*)?\s*/g);
-  // First part before any marker is preamble — discard
+  // Try "N、" split first (顿号 prevents false match on "2x3")
+  const dunhaoParts = content.split(/(?:^|\n)\s*\d+\s*[、]\s*/);
+  if (dunhaoParts.length > 2) {
+    return dunhaoParts.slice(1).map((s) => ({ description: s.trim() })).filter((f) => f.description);
+  }
+
+  // Fallback: split on bold-numbered markers mid-text: **1.  **2.  etc.
+  const parts = content.split(/(?:\*\*)?\s*\d+\s*[\.\)）]\s*(?:\*\*)?\s*/);
   const frames: PromptBlockFrame[] = [];
   for (let i = 1; i < parts.length; i++) {
     const desc = parts[i].trim();
@@ -191,9 +198,8 @@ function splitFlatGridContent(content: string): PromptBlockFrame[] {
       frames.push({ description: desc });
     }
   }
-  // If we didn't get multiple frames, try other strategies
+  // If still not enough, try splitting by double newlines
   if (frames.length < 2) {
-    // Split by double newlines
     const paras = content.split(/\n\s*\n/).filter((s) => s.trim());
     if (paras.length >= 2) {
       return paras.map((p) => ({ description: p.trim() }));

@@ -9,6 +9,7 @@ use commands::ai as ai_commands;
 use commands::asset;
 use commands::banana_api;
 use commands::chat;
+use commands::enhance;
 use commands::image;
 use commands::project_state;
 use commands::seedance_integration;
@@ -208,6 +209,8 @@ pub fn run() {
             image::save_image_source_to_app_debug_dir,
             #[cfg(not(target_os = "android"))]
             image::copy_image_source_to_clipboard,
+            enhance::enhance_image,
+            enhance::enhance_video,
             ai_commands::set_api_key,
             ai_commands::clear_all_api_keys,
             ai_commands::submit_generate_image_job,
