@@ -1,5 +1,5 @@
 {
-  "version": "1.0.2",
+  "version": "1.0.3",
   "releaseDate": "2026-08-09",
   "downloadUrl": "https://aixiaoxi.top/jy/uploads/app/",
   "notes": "v1.0.1 — 新增本地图片/视频超分功能，修复HappyHorse视频生成轮询中间态问题与宫格提示词解析"
