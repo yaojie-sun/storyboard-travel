@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NodeToolbar as ReactFlowNodeToolbar } from '@xyflow/react';
-import { Copy, Crop, Download, Film, FolderOpen, PenLine, RefreshCw, Scissors, Sparkles, Trash2, Unlink2, X } from 'lucide-react';
+import { Copy, Crop, Download, Film, FolderOpen, PenLine, RefreshCw, Scissors, Sparkles, Trash2, Unlink2 } from 'lucide-react';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 
@@ -84,7 +84,6 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
   const [isCopyTextSuccess, setIsCopyTextSuccess] = useState(false);
   const [isCopyErrorSuccess, setIsCopyErrorSuccess] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
-  const [enhanceError, setEnhanceError] = useState<string | null>(null);
   const [showEnhanceConfirm, setShowEnhanceConfirm] = useState(false);
   const enhanceSuppressConfirmRef = useRef(
     localStorage.getItem('enhance:suppressConfirm') === '1',
@@ -325,7 +324,7 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
     if (!imageSource) return;
 
     setIsEnhancing(true);
-    setEnhanceError(null);
+    // 复用 ImageNode 已有的渐变进度条
     updateNodeData(node.id, {
       isGenerating: true,
       generationStartedAt: Date.now(),
@@ -335,6 +334,7 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
     try {
       const enhancedPath = await enhanceImage(imageSource, 4);
 
+      // 清除进度条，更新为增强后图片
       updateNodeData(node.id, {
         isGenerating: false,
         generationStartedAt: null,
@@ -342,6 +342,7 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
         previewImageUrl: null,
       } as any);
 
+      // 生成新预览缩略图
       const { prepareNodeImage } = await import('@/features/canvas/application/imageData');
       const prepared = await prepareNodeImage(enhancedPath);
       updateNodeData(node.id, {
@@ -351,7 +352,7 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
       } as any);
     } catch (e: any) {
       console.error('[Enhance] 增强失败:', e);
-      setEnhanceError(e?.message || String(e));
+      // 失败时清除进度条，恢复原图
       updateNodeData(node.id, {
         isGenerating: false,
         generationStartedAt: null,
@@ -550,14 +551,6 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
           {t('common.delete')}
         </UiChipButton>
       </UiPanel>
-
-      {/* 增强错误提示 */}
-      {enhanceError && (
-        <div className="mt-1.5 flex items-start gap-1.5 rounded-lg border border-red-400/25 bg-red-500/10 px-2.5 py-1.5 text-xs text-red-300 max-w-[320px]">
-          <X className="mt-0.5 h-3 w-3 shrink-0" onClick={() => setEnhanceError(null)} />
-          <span className="break-all">{enhanceError}</span>
-        </div>
-      )}
 
       {!isImageEdit && downloadMenu && (
         <div
