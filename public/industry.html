@@ -5,38 +5,42 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>行业专版 — 小鸭分镜大师</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Noto Sans SC", "Helvetica Neue", sans-serif;
             background: #050505;
             color: #a1a1aa;
             line-height: 1.6;
             -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
         }
+
+        /* ==================== HERO ==================== */
         .hero {
             position: relative;
-            padding: 120px 2rem 80px;
+            padding: clamp(80px, 10vw, 120px) 2rem clamp(60px, 8vw, 80px);
             text-align: center;
-            background: radial-gradient(ellipse 60% 50% at 50% 30%, #1a1a1a 0%, #0a0a0a 60%, #050505 100%);
+            background: radial-gradient(ellipse 70% 55% at 50% 25%, rgba(30,30,30,0.6) 0%, rgba(10,10,10,0.3) 50%, transparent 100%);
             overflow: hidden;
         }
         .hero::after {
             content: '';
             position: absolute;
             bottom: 0; left: 0; right: 0;
-            height: 120px;
+            height: 100px;
             background: linear-gradient(to bottom, transparent, #050505);
             pointer-events: none;
         }
-        .hero .badge {
+        .hero-badge {
             display: inline-block;
-            font-size: 0.75rem;
+            font-size: 0.78rem;
             font-weight: 600;
-            letter-spacing: 0.1em;
+            letter-spacing: 0.14em;
             text-transform: uppercase;
-            color: #d4a574;
-            border: 1px solid #3a2a1a;
-            padding: 0.4rem 1.2rem;
+            color: #8a8680;
+            border: 1px solid #2a2a2a;
+            padding: 0.32rem 0.9rem;
             border-radius: 20px;
             margin-bottom: 2rem;
         }
@@ -44,397 +48,617 @@
             font-size: clamp(2.5rem, 6vw, 4rem);
             font-weight: 200;
             letter-spacing: -0.03em;
-            color: #f5f5f5;
+            color: #ede8e0;
             line-height: 1.2;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.2rem;
         }
         .hero h1 b { font-weight: 500; }
-        .hero .tagline {
-            font-size: clamp(1rem, 1.8vw, 1.2rem);
-            color: #71717a;
-            max-width: 640px;
+        .hero .hero-sub {
+            font-size: clamp(1rem, 1.6vw, 1.2rem);
+            color: #6b6b72;
+            max-width: 600px;
             margin: 0 auto;
             letter-spacing: 0.04em;
             font-weight: 300;
+            line-height: 1.7;
         }
-        .section { max-width: 960px; margin: 0 auto; padding: 0 2rem; }
-        .download-section { margin-top: -40px; position: relative; z-index: 1; }
 
-        .download-card {
-            background: #0a0a0a;
-            border: 1px solid #1a1a1a;
-            border-radius: 20px;
-            padding: 56px 64px;
-            margin-bottom: 24px;
-            transition: border-color 0.3s;
+        /* ==================== MAIN ==================== */
+        .main {
+            max-width: 1100px;
+            margin: -24px auto 0;
+            padding: 0 2rem;
+            position: relative;
+            z-index: 1;
         }
-        .download-card:hover { border-color: #2a2a2a; }
-        .download-card.featured {
-            border-color: #2a1a0a;
-            box-shadow: 0 0 60px rgba(180, 120, 60, 0.04);
-        }
-        .download-card .label {
-            display: inline-block;
-            font-size: 0.72rem;
-            font-weight: 600;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            margin-bottom: 1rem;
-        }
-        .download-card.featured .label { color: #d4a574; }
-        .download-card h2 {
-            font-size: 2rem;
-            font-weight: 400;
-            color: #e4e4e7;
-            margin-bottom: 1rem;
-            letter-spacing: -0.02em;
-            line-height: 1.3;
-        }
-        .download-card .desc {
-            font-size: 0.95rem;
-            color: #71717a;
-            margin-bottom: 2rem;
-            line-height: 1.8;
-            font-weight: 300;
-        }
-        .download-card .desc strong { color: #a1a1aa; font-weight: 500; }
-        .download-card .desc .highlight {
-            border-left: 2px solid #d4a574;
-            padding-left: 1rem;
-            color: #d4a574;
-            margin-top: 1rem;
-        }
-        .feature-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        .section-label {
+            display: flex;
+            align-items: center;
             gap: 1rem;
-            margin-bottom: 2rem;
-        }
-        .feature-item {
-            background: #080808;
-            border: 1px solid #181818;
-            border-radius: 10px;
-            padding: 1.2rem 1.5rem;
-            font-size: 0.88rem;
-            color: #a1a1aa;
-        }
-        .feature-item .icon { font-size: 1.5rem; margin-bottom: 0.5rem; display: block; }
-        .feature-item strong { color: #d4d4d8; font-weight: 500; }
-
-        .platforms { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
-        .platform-box {
-            background: #080808;
-            border: 1px solid #181818;
-            border-radius: 14px;
-            padding: 28px 32px;
-            text-align: center;
-        }
-        .platform-box .os-label {
-            font-size: 0.7rem;
+            margin: 2.5rem 0 1.5rem;
+            color: #3d3d45;
+            font-size: 0.78rem;
             font-weight: 600;
-            letter-spacing: 0.1em;
+            letter-spacing: 0.12em;
             text-transform: uppercase;
-            color: #52525b;
-            margin-bottom: 1rem;
         }
-        .platform-box .btn-dl {
+        .section-label::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: #1a1a1a;
+        }
+
+        /* ==================== EDITION ROW ==================== */
+        .edition-row {
+            --accent: #d4a574;
+            --accent-rgb: 212, 165, 116;
+            position: relative;
+            padding: 2.4rem 2.8rem;
+            margin-bottom: 0.75rem;
+            border-radius: 18px;
+            border: 1px solid transparent;
+            background:
+                linear-gradient(105deg,
+                    rgba(var(--accent-rgb), 0.10) 0%,
+                    rgba(var(--accent-rgb), 0.06) 40%,
+                    rgba(var(--accent-rgb), 0.03) 70%,
+                    transparent 100%
+                );
+            transition: background 0.7s ease, border-color 0.7s ease, transform 0.7s ease, box-shadow 0.7s ease;
+            overflow: hidden;
+            cursor: default;
+        }
+        .edition-row::before {
+            content: '';
+            position: absolute;
+            left: 0; top: 10%; bottom: 10%;
+            width: 3px;
+            border-radius: 0 3px 3px 0;
+            background: var(--accent);
+            opacity: 0.65;
+            transition: opacity 0.7s ease, box-shadow 0.7s ease;
+        }
+        .edition-row::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(ellipse 80% 80% at 5% 50%, rgba(var(--accent-rgb), 0.04) 0%, transparent 60%);
+            opacity: 0;
+            transition: opacity 0.7s ease;
+            pointer-events: none;
+        }
+        .edition-row:hover {
+            background:
+                linear-gradient(105deg,
+                    rgba(var(--accent-rgb), 0.22) 0%,
+                    rgba(var(--accent-rgb), 0.14) 40%,
+                    rgba(var(--accent-rgb), 0.07) 70%,
+                    transparent 100%
+                );
+            border-color: rgba(var(--accent-rgb), 0.18);
+            transform: scale(1.004);
+            box-shadow: 0 4px 40px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(var(--accent-rgb), 0.04);
+        }
+        .edition-row:hover::before {
+            opacity: 1;
+            box-shadow: 0 0 24px rgba(var(--accent-rgb), 0.35);
+        }
+        .edition-row:hover::after { opacity: 1; }
+
+        /* ===== Row Top: Icon + Name + Buttons ===== */
+        .row-top {
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+            margin-bottom: 1.2rem;
+        }
+        .row-icon {
+            font-size: 2.8rem;
+            line-height: 1;
+            flex-shrink: 0;
+            margin-top: 0.1rem;
+        }
+        .row-header {
+            flex: 1;
+            min-width: 0;
+        }
+        .row-title {
+            font-size: 1.35rem;
+            font-weight: 500;
+            color: #e8e8ec;
+            letter-spacing: -0.01em;
+            line-height: 1.3;
+            margin-bottom: 0.5rem;
+        }
+        .row-version {
+            display: inline-block;
+            font-size: 0.76rem;
+            font-weight: 600;
+            color: var(--accent);
+            border: 1px solid rgba(var(--accent-rgb), 0.25);
+            padding: 0.1rem 0.42rem;
+            border-radius: 4px;
+            letter-spacing: 0.04em;
+            margin-left: 0.4rem;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+        .row-downloads-inline {
+            display: flex;
+            gap: 0.6rem;
+            margin-top: 0.1rem;
+        }
+        .btn-dl {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 0.6rem;
-            width: 100%;
-            padding: 0.9rem 1.5rem;
-            border-radius: 10px;
-            font-size: 0.95rem;
+            gap: 0.4rem;
+            padding: 0.6rem 1.2rem;
+            border-radius: 8px;
+            font-size: 0.9rem;
             font-weight: 500;
             text-decoration: none;
             letter-spacing: 0.01em;
-            transition: all 0.2s;
-            background: #fafafa;
+            transition: all 0.4s ease;
+            background: #f0ede8;
             color: #0a0a0a;
+            border: none;
+            cursor: pointer;
+            white-space: nowrap;
         }
-        .platform-box .btn-dl:hover {
+        .btn-dl:hover {
             background: #ffffff;
-            box-shadow: 0 0 0 1px rgba(255,255,255,0.05), 0 8px 30px rgba(0,0,0,0.6);
+            box-shadow: 0 4px 24px rgba(var(--accent-rgb), 0.2);
+            transform: translateY(-1px);
         }
-        .platform-box .hint {
-            font-size: 0.8rem;
-            color: #3f3f46;
-            margin-top: 1rem;
-            line-height: 1.6;
-        }
-        .after-install {
-            text-align: center;
-            font-size: 0.88rem;
-            color: #52525b;
-            line-height: 1.8;
-            border-top: 1px solid #181818;
-            padding-top: 2rem;
-        }
-        .after-install strong { color: #a1a1aa; font-weight: 500; }
-        .after-install a { color: #a1a1aa; text-decoration: none; border-bottom: 1px solid #2a2a2a; transition: border-color 0.2s; }
-        .after-install a:hover { border-color: #71717a; }
+        .btn-dl .dl-icon { font-size: 1rem; flex-shrink: 0; }
 
-        .coming-soon {
-            background: #0a0a0a;
-            border: 1px dashed #1a1a1a;
-            border-radius: 20px;
-            padding: 48px 64px;
-            margin-bottom: 24px;
-            text-align: center;
+        /* ===== Description ===== */
+        .row-desc {
+            font-size: 1.05rem;
+            color: #8a8680;
+            line-height: 1.8;
+            font-weight: 300;
+            margin-bottom: 1.4rem;
+            padding-left: 3.8rem;
         }
-        .coming-soon h3 {
+        .row-desc strong { color: #b8b4b0; font-weight: 500; }
+
+        /* ===== Feature Grid ===== */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.75rem;
+            padding-left: 3.8rem;
+        }
+        .feature-item {
+            background: rgba(255,255,255,0.015);
+            border: 1px solid #181818;
+            border-radius: 10px;
+            padding: 1rem 1.2rem;
+            transition: border-color 0.7s ease, background 0.7s ease;
+        }
+        .edition-row:hover .feature-item {
+            border-color: rgba(var(--accent-rgb), 0.12);
+            background: rgba(var(--accent-rgb), 0.03);
+        }
+        .feature-item .fi-icon {
             font-size: 1.3rem;
+            display: block;
+            margin-bottom: 0.35rem;
+        }
+        .feature-item strong {
+            display: block;
+            color: #d0d0d6;
+            font-weight: 500;
+            font-size: 0.88rem;
+            margin-bottom: 0.15rem;
+        }
+        .feature-item .fi-sub {
+            font-size: 0.78rem;
+            color: #6b6b72;
+            line-height: 1.45;
+        }
+
+        /* ==================== COMING SOON ==================== */
+        .coming-soon-row {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            padding: 1.5rem 2.5rem;
+            margin-bottom: 0.75rem;
+            border-radius: 18px;
+            border: 1px dashed #1c1c1c;
+            background: rgba(255,255,255,0.01);
+            transition: border-color 0.5s ease, background 0.5s ease;
+        }
+        .coming-soon-row:hover {
+            border-color: #2a2a2a;
+            background: rgba(255,255,255,0.015);
+        }
+        .cs-icon {
+            font-size: 2.2rem;
+            opacity: 0.35;
+            flex-shrink: 0;
+        }
+        .cs-info { flex: 1; min-width: 0; }
+        .cs-title {
+            font-size: 1rem;
             font-weight: 400;
             color: #52525b;
-            margin-bottom: 0.5rem;
         }
-        .coming-soon p { font-size: 0.9rem; color: #3f3f46; }
+        .cs-badge {
+            display: inline-block;
+            font-size: 0.62rem;
+            font-weight: 600;
+            color: #3d3d45;
+            border: 1px solid #1f1f1f;
+            padding: 0.1rem 0.5rem;
+            border-radius: 12px;
+            letter-spacing: 0.06em;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+        }
+        .cs-desc {
+            font-size: 0.8rem;
+            color: #3d3d45;
+            margin-top: 0.25rem;
+            line-height: 1.5;
+        }
 
+        /* ==================== BACK LINK ==================== */
         .back-link {
             text-align: center;
-            padding: 2rem;
-            font-size: 0.88rem;
+            padding: 2.5rem 1rem 1.5rem;
+            font-size: 0.9rem;
         }
-        .back-link a { color: #52525b; text-decoration: none; border-bottom: 1px solid #1a1a1a; transition: all 0.2s; }
-        .back-link a:hover { color: #a1a1aa; border-color: #52525b; }
+        .back-link a {
+            color: #4a4a52;
+            text-decoration: none;
+            border-bottom: 1px solid #1a1a1a;
+            transition: all 0.2s ease;
+            padding-bottom: 0.12rem;
+        }
+        .back-link a:hover { color: #a1a1aa; border-color: #4a4a52; }
 
+        /* ==================== FOOTER ==================== */
         .footer {
             text-align: center;
-            padding: 60px 2rem 40px;
-            font-size: 0.82rem;
-            color: #3f3f46;
+            padding: 32px 2rem 28px;
+            font-size: 0.8rem;
+            color: #33333a;
             font-weight: 300;
             letter-spacing: 0.02em;
         }
-        @media (max-width: 768px) {
-            .hero { padding: 80px 1.5rem 60px; }
-            .hero h1 { font-size: 2rem; }
-            .download-card { padding: 32px 24px; }
-            .download-card h2 { font-size: 1.4rem; }
-            .platforms { grid-template-columns: 1fr; }
-            .feature-grid { grid-template-columns: 1fr 1fr; }
+
+        /* ==================== RESPONSIVE ==================== */
+        @media (max-width: 900px) {
+            .feature-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 640px) {
+            .hero { padding: 56px 1.25rem 40px; }
+            .hero h1 { font-size: 1.5rem; }
+            .main { padding: 0 1rem; }
+            .edition-row { padding: 1.5rem 1.25rem; }
+            .row-top { flex-wrap: wrap; }
+            .row-downloads-inline { flex-direction: column; width: 100%; }
+            .btn-dl { justify-content: center; }
+            .row-desc { padding-left: 0; font-size: 0.95rem; }
+            .feature-grid { grid-template-columns: 1fr 1fr; padding-left: 0; }
+            .coming-soon-row { flex-direction: column; text-align: center; padding: 1.25rem; }
         }
     </style>
 </head>
 <body>
 
+<!-- ==================== HERO ==================== -->
 <section class="hero">
-    <div class="badge">Industry Editions</div>
+    <div class="hero-badge">Industry Editions</div>
     <h1><b>行业专版</b> &middot; 垂直领域AI视频引擎</h1>
-    <p class="tagline">每个行业都有独特的视觉语言。我们为不同领域定制专属的AI导演引擎，内置行业方法论、场景词库和专业运镜体系。</p>
+    <p class="hero-sub">每个行业都有独特的视觉语言。我们为不同领域定制专属的AI导演引擎，内置行业方法论、场景词库和专业运镜体系。</p>
 </section>
 
-<section class="section download-section">
+<!-- ==================== MAIN ==================== -->
+<div class="main">
 
-    <!-- 旅游版 -->
-    <div class="download-card featured">
-        <div class="label">现已发布 &middot; Travel Edition</div>
-        <h2>&#x2708;&#xFE0F; 小鸭分镜大师 &middot; 旅游专业版</h2>
-        <p class="desc">
+    <div class="section-label">已发布版本</div>
+
+    <!-- 旅游专业版 -->
+    <div class="edition-row" style="--accent:#d4a574;--accent-rgb:212,165,116;">
+        <div class="row-top">
+            <span class="row-icon">&#x2708;&#xFE0F;</span>
+            <div class="row-header">
+                <div class="row-title">小鸭分镜大师 &middot; 旅游专业版<span class="row-version">v1.0.4</span></div>
+                <div class="row-downloads-inline">
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Travel_1.0.4_x64-setup.exe" download class="btn-dl">
+                        <span class="dl-icon">⊞</span> Windows 下载
+                    </a>
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Travel_1.0.4_universal.dmg" download class="btn-dl">
+                        <span class="dl-icon">⌘</span> macOS 下载
+                    </a>
+                </div>
+            </div>
+        </div>
+        <div class="row-desc">
             为<strong>酒店、景区、文旅局、旅行社、旅游KOL</strong>量身打造的AI旅游目的地内容营销工具。
             围绕一个目的地，系统性产出<strong>酒店宣传片、民宿探店、景区风光、城市打卡Vlog、美食探店、文化古迹</strong>等系列化营销内容。
-        </p>
-
+        </div>
         <div class="feature-grid">
             <div class="feature-item">
-                <span class="icon">&#x1F3EC;</span>
-                <strong>空间叙事引擎</strong><br>
-                <span style="color:#71717a;">门头→大堂→走廊→房间→窗外，从外到内层层递进</span>
+                <span class="fi-icon">&#x1F3EC;</span>
+                <strong>空间叙事引擎</strong>
+                <span class="fi-sub">门头→大堂→走廊→房间→窗外，从外到内层层递进</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x2600;&#xFE0F;</span>
-                <strong>光影时刻系统</strong><br>
-                <span style="color:#71717a;">黄金时刻/蓝调时刻/夜景灯光/室内氛围光精准匹配</span>
+                <span class="fi-icon">&#x2600;&#xFE0F;</span>
+                <strong>光影时刻系统</strong>
+                <span class="fi-sub">黄金时刻/蓝调时刻/夜景灯光/室内氛围光精准匹配</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F3B5;</span>
-                <strong>环境音强制规则</strong><br>
-                <span style="color:#71717a;">海浪/鸟鸣/风/街头人声/杯碟声，旅游视频必配环境音</span>
+                <span class="fi-icon">&#x1F3B5;</span>
+                <strong>环境音强制规则</strong>
+                <span class="fi-sub">海浪/鸟鸣/风/街头人声/杯碟声，旅游视频必配环境音</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F4F7;</span>
-                <strong>15种旅游运镜</strong><br>
-                <span style="color:#71717a;">无人机拉升/环绕/POV步行/延时摄影/微距特写</span>
+                <span class="fi-icon">&#x1F4F7;</span>
+                <strong>15种旅游运镜</strong>
+                <span class="fi-sub">无人机拉升/环绕/POV步行/延时摄影/微距特写</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F30D;</span>
-                <strong>在地感捕捉</strong><br>
-                <span style="color:#71717a;">海岛慵懒/古镇静谧/都市潮流/野奢隐世，每帧画面都在"说话"</span>
+                <span class="fi-icon">&#x1F30D;</span>
+                <strong>在地感捕捉</strong>
+                <span class="fi-sub">海岛慵懒/古镇静谧/都市潮流/野奢隐世，每帧画面都在"说话"</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F393;</span>
-                <strong>旅游写实锁死</strong><br>
-                <span style="color:#71717a;">禁止CG感/塑料感/3D渲染，强制专业旅游摄影美学</span>
+                <span class="fi-icon">&#x1F393;</span>
+                <strong>旅游写实锁死</strong>
+                <span class="fi-sub">禁止CG感/塑料感/3D渲染，强制专业旅游摄影美学</span>
             </div>
-        </div>
-
-        <div class="platforms">
-            <div class="platform-box">
-                <div class="os-label">Windows</div>
-                <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Travel_1.0.4_x64-setup.exe" download class="btn-dl">
-                    下载 Windows 版 &middot; v1.0.4
-                </a>
-                <div class="hint">Windows 10/11 &middot; 64位</div>
-            </div>
-            <div class="platform-box">
-                <div class="os-label">macOS</div>
-                <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Travel_1.0.4_universal.dmg" download class="btn-dl">
-                    下载 macOS 版 &middot; v1.0.4
-                </a>
-                <div class="hint">通用二进制 &middot; Apple Silicon &amp; Intel<br>首次打开如遇安全提示，前往 系统设置 &rarr; 隐私与安全性 &rarr; 仍要打开</div>
-            </div>
-        </div>
-        <div class="after-install">
-            <strong>安装完成后</strong> &nbsp;打开小鸭分镜大师旅游专业版，注册或登录即可开始创作。
-            <br>
-            <strong style="color: #d4a574;">适用行业</strong>：酒店推广 &middot; 民宿展示 &middot; 景区宣传 &middot;
-            文旅局目的地营销 &middot; 旅行社产品包装 &middot; 旅游KOL内容创作 &middot; 美食探店视频
         </div>
     </div>
 
-    <!-- 服饰版 -->
-    <div class="download-card featured">
-        <div class="label">现已发布 &middot; Fashion Edition</div>
-        <h2>&#x1F457; 小鸭分镜大师 &middot; 服饰专业版</h2>
-        <p class="desc">
-            为<strong>服装品牌、电商卖家、设计师、时尚博主、面料商</strong>量身打造的AI服装展示视频创作工具。
-            围绕一套服装，系统性产出<strong>T台走秀、穿搭展示、细节特写、一衣多穿、LOOKBOOK、面料动态</strong>等专业时尚视频内容。
-        </p>
-
+    <!-- 大健康专业版 -->
+    <div class="edition-row" style="--accent:#6ee7b7;--accent-rgb:110,231,183;">
+        <div class="row-top">
+            <span class="row-icon">&#x1F33F;</span>
+            <div class="row-header">
+                <div class="row-title">小鸭分镜大师 &middot; 大健康专业版<span class="row-version">v1.0.0</span></div>
+                <div class="row-downloads-inline">
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Health_1.0.0_x64-setup.exe" download class="btn-dl">
+                        <span class="dl-icon">⊞</span> Windows 下载
+                    </a>
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Health_1.0.0_universal.dmg" download class="btn-dl">
+                        <span class="dl-icon">⌘</span> macOS 下载
+                    </a>
+                </div>
+            </div>
+        </div>
+        <div class="row-desc">
+            为<strong>保健品品牌、康养机构、旅居地产、健康食品企业、中医馆、养生内容创作者</strong>量身打造的AI大健康视频创作工具。
+            围绕一款健康产品/服务，系统性产出<strong>产品展示、成分故事、使用教程、生活方式、专家分享、康养体验、空间导览、用户证言</strong>等专业健康行业视频内容。
+        </div>
         <div class="feature-grid">
             <div class="feature-item">
-                <span class="icon">&#x1F45A;</span>
-                <strong>服装呈现旅程</strong><br>
-                <span style="color:#71717a;">整体→细节→动态→CTA，层层深入的服装叙事</span>
+                <span class="fi-icon">&#x1F48A;</span>
+                <strong>健康产品呈现旅程</strong>
+                <span class="fi-sub">全貌→包装→使用→成分→体验→品牌，层层递进的产品叙事</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F4A1;</span>
-                <strong>时装光影体系</strong><br>
-                <span style="color:#71717a;">柔光箱+侧轮廓光，面料质感与廓形同时呈现</span>
+                <span class="fi-icon">&#x2600;&#xFE0F;</span>
+                <strong>自然光影体系</strong>
+                <span class="fi-sub">晨曦窗光/树影光斑/暖调室内光(3000K-4000K)，杜绝冷硬医疗感</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F45C;</span>
-                <strong>5种走位路径</strong><br>
-                <span style="color:#71717a;">直线前进/L型转身/圆形环绕/S型曲线/坐姿切换</span>
+                <span class="fi-icon">&#x1F6AB;</span>
+                <strong>健康合规保护</strong>
+                <span class="fi-sub">智能拦截白大褂/听诊器/处方笺/医院/X光片/药瓶/前后对比</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F4F8;</span>
-                <strong>10种服饰运镜</strong><br>
-                <span style="color:#71717a;">跟拍/环绕/面料特写/推镜头/360°旋转展示</span>
+                <span class="fi-icon">&#x1F50D;</span>
+                <strong>产品质感引擎</strong>
+                <span class="fi-sub">胶囊光泽/粉剂细腻/液体透明度/片剂纹理精准呈现</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F9F5;</span>
-                <strong>面料质感翻译</strong><br>
-                <span style="color:#71717a;">针织线圈/牛仔斜纹/丝绸光泽/毛呢颗粒精准呈现</span>
+                <span class="fi-icon">&#x1F3AC;</span>
+                <strong>8种视频类型</strong>
+                <span class="fi-sub">产品展示/成分故事/使用教程/生活方式/专家分享/康养体验/空间导览/用户证言</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x2728;</span>
-                <strong>服装写实锁死</strong><br>
-                <span style="color:#71717a;">禁止服装变形/颜色偏移/Logo模糊/缝线消失</span>
+                <span class="fi-icon">&#x2728;</span>
+                <strong>健康写实锁死</strong>
+                <span class="fi-sub">禁止CG感/3D渲染/塑料质感，强制自然健康摄影美学</span>
             </div>
-        </div>
-
-        <div class="platforms">
-            <div class="platform-box">
-                <div class="os-label">Windows</div>
-                <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Fashion_1.0.5_x64-setup.exe" download class="btn-dl">
-                    下载 Windows 版 &middot; v1.0.5
-                </a>
-                <div class="hint">Windows 10/11 &middot; 64位</div>
-            </div>
-            <div class="platform-box">
-                <div class="os-label">macOS</div>
-                <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Fashion_1.0.5_universal.dmg" download class="btn-dl">
-                    下载 macOS 版 &middot; v1.0.5
-                </a>
-                <div class="hint">通用二进制 &middot; Apple Silicon &amp; Intel<br>首次打开如遇安全提示，前往 系统设置 &rarr; 隐私与安全性 &rarr; 仍要打开</div>
-            </div>
-        </div>
-        <div class="after-install">
-            <strong>安装完成后</strong> &nbsp;打开小鸭分镜大师服饰专业版，注册或登录即可开始创作。
-            <br>
-            <strong style="color: #d4a574;">适用行业</strong>：服装品牌 &middot; 电商卖家 &middot;
-            设计师 &middot; 时尚博主 &middot; 面料商 &middot; 服装供应链展示 &middot; 穿搭KOL内容创作
         </div>
     </div>
 
-    <!-- 美妆版 -->
-    <div class="download-card featured">
-        <div class="label">现已发布 &middot; Beauty Edition</div>
-        <h2>&#x1F484; 小鸭分镜大师 &middot; 美妆专业版</h2>
-        <p class="desc">
+    <!-- 美妆专业版 -->
+    <div class="edition-row" style="--accent:#e8a0b4;--accent-rgb:232,160,180;">
+        <div class="row-top">
+            <span class="row-icon">&#x1F484;</span>
+            <div class="row-header">
+                <div class="row-title">小鸭分镜大师 &middot; 美妆专业版<span class="row-version">v1.0.0</span></div>
+                <div class="row-downloads-inline">
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Beauty_1.0.0_x64-setup.exe" download class="btn-dl">
+                        <span class="dl-icon">⊞</span> Windows 下载
+                    </a>
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Beauty_1.0.0_universal.dmg" download class="btn-dl">
+                        <span class="dl-icon">⌘</span> macOS 下载
+                    </a>
+                </div>
+            </div>
+        </div>
+        <div class="row-desc">
             为<strong>美妆品牌、化妆品电商、彩妆师、美妆博主、护肤品牌</strong>量身打造的AI美妆视频创作工具。
             围绕一款产品，系统性产出<strong>妆容教程、产品试色、妆效对比、护肤流程、空瓶测评</strong>等专业美妆视频内容。
-        </p>
-
+        </div>
         <div class="feature-grid">
             <div class="feature-item">
-                <span class="icon">&#x1F484;</span>
-                <strong>妆容教程引擎</strong><br>
-                <span style="color:#71717a;">底妆→眼妆→唇妆→修容，分层步骤精准还原化妆顺序</span>
+                <span class="fi-icon">&#x1F484;</span>
+                <strong>妆容教程引擎</strong>
+                <span class="fi-sub">底妆→眼妆→唇妆→修容，分层步骤精准还原化妆顺序</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F4A1;</span>
-                <strong>美妆光影系统</strong><br>
-                <span style="color:#71717a;">柔光/环形光/侧光，适配水光/哑光/丝绒/镜面不同妆效</span>
+                <span class="fi-icon">&#x1F4A1;</span>
+                <strong>美妆光影系统</strong>
+                <span class="fi-sub">柔光/环形光/侧光，适配水光/哑光/丝绒/镜面不同妆效</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F4F7;</span>
-                <strong>产品展示镜头</strong><br>
-                <span style="color:#71717a;">口红管/眼影盘/粉底瓶，包装设计+质地+色号同时呈现</span>
+                <span class="fi-icon">&#x1F4F7;</span>
+                <strong>产品展示镜头</strong>
+                <span class="fi-sub">口红管/眼影盘/粉底瓶，包装设计+质地+色号同时呈现</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F9AC;</span>
-                <strong>模特表情调度</strong><br>
-                <span style="color:#71717a;">微笑展唇妆/闭眼展眼影/侧脸展修容，表情服务妆容</span>
+                <span class="fi-icon">&#x1F9AC;</span>
+                <strong>模特表情调度</strong>
+                <span class="fi-sub">微笑展唇妆/闭眼展眼影/侧脸展修容，表情服务妆容</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x1F50D;</span>
-                <strong>肤质翻译引擎</strong><br>
-                <span style="color:#71717a;">水光肌→柔光微距光泽，哑光肌→柔焦散粉质感精准呈现</span>
+                <span class="fi-icon">&#x1F50D;</span>
+                <strong>肤质翻译引擎</strong>
+                <span class="fi-sub">水光肌→柔光微距光泽，哑光肌→柔焦散粉质感精准呈现</span>
             </div>
             <div class="feature-item">
-                <span class="icon">&#x2728;</span>
-                <strong>美妆写实锁死</strong><br>
-                <span style="color:#71717a;">禁止妆容变形/色号偏移/质地错误/Logo 模糊</span>
+                <span class="fi-icon">&#x2728;</span>
+                <strong>美妆写实锁死</strong>
+                <span class="fi-sub">禁止妆容变形/色号偏移/质地错误/Logo 模糊</span>
             </div>
-        </div>
-
-        <div class="platforms">
-            <div class="platform-box">
-                <div class="os-label">Windows</div>
-                <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Beauty_1.0.0_x64-setup.exe" download class="btn-dl">
-                    下载 Windows 版 &middot; v1.0.0
-                </a>
-                <div class="hint">Windows 10/11 &middot; 64位</div>
-            </div>
-            <div class="platform-box">
-                <div class="os-label">macOS</div>
-                <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Beauty_1.0.0_universal.dmg" download class="btn-dl">
-                    下载 macOS 版 &middot; v1.0.0
-                </a>
-                <div class="hint">通用二进制 &middot; Apple Silicon &amp; Intel<br>首次打开如遇安全提示，前往 系统设置 &rarr; 隐私与安全性 &rarr; 仍要打开</div>
-            </div>
-        </div>
-        <div class="after-install">
-            <strong>安装完成后</strong> &nbsp;打开小鸭分镜大师美妆专业版，注册或登录即可开始创作。
-            <br>
-            <strong style="color: #d4a574;">适用行业</strong>：美妆品牌 &middot; 化妆品电商 &middot;
-            彩妆师 &middot; 美妆博主 &middot; 护肤品牌 &middot; 化妆培训 &middot; 美妆KOL内容创作
         </div>
     </div>
 
-    <!-- 即将推出 -->
-    <div class="coming-soon">
-        <h3>&#x1F6D2; 电商专版 &middot; 即将推出</h3>
-        <p>产品360°展示 / 材质细节呈现 / 使用场景演示 / 对比评测视频 — 为电商卖家定制的AI产品视频引擎</p>
+    <!-- 服饰专业版 -->
+    <div class="edition-row" style="--accent:#c49b7a;--accent-rgb:196,155,122;">
+        <div class="row-top">
+            <span class="row-icon">&#x1F457;</span>
+            <div class="row-header">
+                <div class="row-title">小鸭分镜大师 &middot; 服饰专业版<span class="row-version">v1.0.6</span></div>
+                <div class="row-downloads-inline">
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Fashion_1.0.6_x64-setup.exe" download class="btn-dl">
+                        <span class="dl-icon">⊞</span> Windows 下载
+                    </a>
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-Fashion_1.0.5_universal.dmg" download class="btn-dl">
+                        <span class="dl-icon">⌘</span> macOS 下载
+                    </a>
+                </div>
+            </div>
+        </div>
+        <div class="row-desc">
+            为<strong>服装品牌、电商卖家、设计师、时尚博主、面料商</strong>量身打造的AI服装展示视频创作工具。
+            围绕一套服装，系统性产出<strong>T台走秀、穿搭展示、细节特写、一衣多穿、LOOKBOOK、面料动态</strong>等专业时尚视频内容。
+        </div>
+        <div class="feature-grid">
+            <div class="feature-item">
+                <span class="fi-icon">&#x1F45A;</span>
+                <strong>服装呈现旅程</strong>
+                <span class="fi-sub">整体→细节→动态→CTA，层层深入的服装叙事</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x1F4A1;</span>
+                <strong>时装光影体系</strong>
+                <span class="fi-sub">柔光箱+侧轮廓光，面料质感与廓形同时呈现</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x1F45C;</span>
+                <strong>5种走位路径</strong>
+                <span class="fi-sub">直线前进/L型转身/圆形环绕/S型曲线/坐姿切换</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x1F4F8;</span>
+                <strong>10种服饰运镜</strong>
+                <span class="fi-sub">跟拍/环绕/面料特写/推镜头/360°旋转展示</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x1F9F5;</span>
+                <strong>面料质感翻译</strong>
+                <span class="fi-sub">针织线圈/牛仔斜纹/丝绸光泽/毛呢颗粒精准呈现</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x2728;</span>
+                <strong>服装写实锁死</strong>
+                <span class="fi-sub">禁止服装变形/颜色偏移/Logo模糊/缝线消失</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 短视频专业版 -->
+    <div class="edition-row" style="--accent:#a78bfa;--accent-rgb:167,139,250;">
+        <div class="row-top">
+            <span class="row-icon">&#x1F3AC;</span>
+            <div class="row-header">
+                <div class="row-title">小鸭分镜大师 &middot; 短视频专业版<span class="row-version">v1.0.70</span></div>
+                <div class="row-downloads-inline">
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-ShortVideo_1.0.70_x64-setup.exe" download class="btn-dl">
+                        <span class="dl-icon">⊞</span> Windows 下载
+                    </a>
+                    <a href="http://47.108.237.10/jy/uploads/app/Storyboard-ShortVideo_1.0.70_universal.dmg" download class="btn-dl">
+                        <span class="dl-icon">⌘</span> macOS 下载
+                    </a>
+                </div>
+            </div>
+        </div>
+        <div class="row-desc">
+            为<strong>短视频创作者、自媒体运营、MCN机构、社交平台内容团队</strong>量身打造的高效AI短视频创作工具。
+            围绕一个主题，系统性产出<strong>口播视频、剧情短片、产品种草、知识科普、热点二创</strong>等高传播力短视频内容。
+        </div>
+        <div class="feature-grid">
+            <div class="feature-item">
+                <span class="fi-icon">&#x1F39E;&#xFE0F;</span>
+                <strong>智能分镜引擎</strong>
+                <span class="fi-sub">自动分析脚本结构，生成黄金3秒开场→高潮→CTA结尾的分镜序列</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x1F3AC;</span>
+                <strong>电影级光影体系</strong>
+                <span class="fi-sub">蝴蝶光/伦勃朗光/侧逆光，人物立体感与场景氛围同时呈现</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x23F1;&#xFE0F;</span>
+                <strong>节奏优化调度</strong>
+                <span class="fi-sub">自动匹配BPM，卡点转场/变速剪辑/字幕节奏同步</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x1F465;</span>
+                <strong>角色一致性保障</strong>
+                <span class="fi-sub">多镜头下人物/场景/道具视觉统一，杜绝跳变和违和</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x1F39E;</span>
+                <strong>智能镜头转场</strong>
+                <span class="fi-sub">推拉摇移/匹配剪辑/Jump Cut/L Cut，10+转场自动调度</span>
+            </div>
+            <div class="feature-item">
+                <span class="fi-icon">&#x2728;</span>
+                <strong>写实摄影美学</strong>
+                <span class="fi-sub">禁止过度滤镜/AI塑料感/虚焦模糊，强制自然摄影质感</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== COMING SOON ==================== -->
+    <div class="section-label">即将推出</div>
+
+    <div class="coming-soon-row">
+        <span class="cs-icon">&#x1F6D2;</span>
+        <div class="cs-info">
+            <span class="cs-title">电商专版</span>
+            <span class="cs-badge">敬请期待</span>
+            <p class="cs-desc">产品360°展示 / 材质细节呈现 / 使用场景演示 / 对比评测视频 — 为电商卖家定制的AI产品视频引擎</p>
+        </div>
+    </div>
+
+    <div class="coming-soon-row">
+        <span class="cs-icon">&#x1F52C;</span>
+        <div class="cs-info">
+            <span class="cs-title">科普专版</span>
+            <span class="cs-badge">敬请期待</span>
+            <p class="cs-desc">概念可视化 / 过程演示 / 数据动画 / 实验记录 — 为科普创作者定制的AI知识视频引擎</p>
+        </div>
     </div>
 
     <div class="back-link">
         <a href="http://47.108.237.10/jy/uploads/install_guide/">&larr; 返回小鸭分镜大师首页</a>
     </div>
-</section>
+</div>
 
 <div class="footer">
     <p>小鸭分镜大师 &copy; 2026 &nbsp;&middot;&nbsp; 行业垂直AI视频创作平台</p>
