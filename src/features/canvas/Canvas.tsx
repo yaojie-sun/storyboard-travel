@@ -62,6 +62,7 @@ import { ImageViewerModal } from './ui/ImageViewerModal';
 import { MissingApiKeyHint } from '@/features/settings/MissingApiKeyHint';
 import { ChatPanel } from '@/features/chat';
 import { getEmphasisLabels, getVideoTypeLabel } from '@/features/project/presets';
+import { splitGridPromptIntoFrames } from '@/utils/gridPromptParser';
 
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 
@@ -193,96 +194,6 @@ function resolveAllowedNodeTypes(handleType: HandleType): CanvasNodeType[] {
 
 function canNodeTypeBeManualConnectionSource(type: CanvasNodeType): boolean {
   return type === CANVAS_NODE_TYPES.upload || type === CANVAS_NODE_TYPES.exportImage;
-}
-
-/**
- * Parse a grid prompt text into individual frame descriptions.
- *
- * Primary: split on "N、" at line boundaries — 顿号 is the key discriminator
- * that prevents false-matching "2×3" or other non-item numbers in the preamble.
- * Fallback: line-by-line prefix detection for other formats (N. / N) / 一、/ etc.)
- */
-function parseGridPrompt(prompt: string, maxFrames: number): string[] {
-  const trimmed = prompt.trim();
-  if (!trimmed) {
-    return Array.from({ length: maxFrames }, () => '');
-  }
-
-  // ── Primary: extract by "N、" (顿号) — standard SKILL format ──
-  const dunhaoParts = trimmed.split(/(?:^|\n)\s*\d+\s*[、]\s*/);
-  // dunhaoParts[0] = preamble (discard), dunhaoParts[1..n] = frames
-  if (dunhaoParts.length > maxFrames) {
-    // Got enough frames from "N、" — clean and return
-    const items = dunhaoParts.slice(1).map((s) => s.trim()).filter(Boolean);
-    const result = Array.from({ length: maxFrames }, () => '');
-    for (let i = 0; i < Math.min(items.length, maxFrames); i++) {
-      result[i] = items[i];
-    }
-    return result;
-  }
-
-  // ── Strategy 1: line-by-line prefix detection (handles mixed formats) ──
-  const digitRe = /^\d+[\.、\)]\s*/;
-  const fullwidthRe = /^（\d+）\s*/;
-  const chineseRe = /^(?:第?\s*[格宫]\s*|宫格\s*)[一二三四五六七八九十\d]+\s*[：:]\s*/;
-  const sceneRe = /^场景\s*[一二三四五六七八九十\d]+\s*[：:]\s*/;
-  const allPrefixRe = /^(?:\d+[\.、\)]\s*|（\d+）\s*|(?:第?\s*[格宫]\s*|宫格\s*)[一二三四五六七八九十\d]+\s*[：:]\s*|场景\s*[一二三四五六七八九十\d]+\s*[：:]\s*)/;
-
-  const postFrameRe = /^(?:[-—]{3,}|\*\*说明|跨格一致性|一致性检查|动作连贯|（\d+[格帧]|【注|注[：:]|总结[：:]|\d+格[^，。]*[保持严格一致统一]|\d+[帧格]画面)/;
-  const copyInstructionRe = /复制\s*以上|打开.*分镜大师|粘贴生成|如需进一步|请告诉我/;
-
-  const lines = trimmed.split('\n').map((l) => l.trim()).filter(Boolean);
-  const items: string[] = [];
-  let inFrames = false;
-
-  for (const line of lines) {
-    if (inFrames && items.length > 0 && (postFrameRe.test(line) || copyInstructionRe.test(line))) break;
-    const isDigit = digitRe.test(line);
-    const isFullwidth = fullwidthRe.test(line);
-    const isChinese = chineseRe.test(line);
-    const isScene = sceneRe.test(line);
-    if (isDigit || isFullwidth || isChinese || isScene) {
-      if (inFrames && items.length > 0) {
-        const prev = items[items.length - 1];
-        const endsComplete = /[。！？.!]$/.test(prev) || prev.endsWith('无文字');
-        if (!endsComplete) {
-          items[items.length - 1] = prev + ' ' + line;
-          continue;
-        }
-      }
-      inFrames = true;
-      const cleaned = line.replace(allPrefixRe, '').trim();
-      items.push(cleaned);
-    } else if (inFrames && items.length > 0) {
-      if (/[\(（]?\d+[格帧][^。，]*(?:保持|一致|严格|统一|不变)/.test(line)) continue;
-      items[items.length - 1] += ' ' + line;
-    }
-  }
-
-  if (items.length >= 2) {
-    for (let i = 0; i < items.length; i++) {
-      const idx = items[i].indexOf('无文字');
-      if (idx > 0) items[i] = items[i].slice(0, idx + 3).trim();
-    }
-    const result = Array.from({ length: maxFrames }, () => '');
-    for (let i = 0; i < Math.min(items.length, maxFrames); i++) {
-      result[i] = items[i];
-    }
-    return result;
-  }
-
-  // ── Fallback: split by blank lines, use first-N ──
-  const paraSplit = trimmed.split(/\n\s*\n/).filter((s) => s.trim());
-  if (paraSplit.length >= 2) {
-    return paraSplit.slice(0, maxFrames).concat(
-      Array.from({ length: Math.max(0, maxFrames - paraSplit.length) }, () => ''),
-    );
-  }
-
-  // Single block: put it all in the first frame
-  const result = Array.from({ length: maxFrames }, () => '');
-  result[0] = trimmed;
-  return result;
 }
 
 function canNodeBeManualConnectionSource(nodeId: string | null | undefined, nodes: CanvasNode[]): boolean {
@@ -1520,7 +1431,7 @@ export function Canvas() {
           descriptions.push('');
         }
       } else {
-        descriptions = parseGridPrompt(detail.prompt, totalFrames);
+        descriptions = splitGridPromptIntoFrames(detail.prompt, totalFrames);
       }
 
       const frames = descriptions.map((desc) => ({

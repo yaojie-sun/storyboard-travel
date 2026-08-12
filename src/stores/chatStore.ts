@@ -8,6 +8,7 @@ import {
   type ChatResponse,
 } from '@/commands/chat';
 import { useEpisodeStore } from '@/stores/episodeStore';
+import { splitGridPromptIntoFrames } from '@/utils/gridPromptParser';
 
 export interface PromptBlockFrame {
   description: string;
@@ -134,78 +135,16 @@ function mergeConversations(lists: Conversation[]): Conversation[] {
 }
 
 /**
- * Parse grid prompts by extracting numbered items with Chinese enumeration comma (顿号).
+ * Parse grid prompts by extracting numbered frame items.
  *
- * The SKILL generates standard "N、" prefixes for each frame item.
- * By requiring "、" we avoid false-matching "2×3" or other non-item numbers
- * that appear in the preamble intro line.
- *
- * Fallback: if no "N、" items found, try broader patterns (N. / N) / 一、etc.)
+ * 统一解析：识别所有编号格式（数字+顿号/点/括号/中文数字/第N格/宫格N/场景N），
+ * 丢弃前言概括句，处理编号超量。详见 @/utils/gridPromptParser。
  */
 function parseGridFrames(gridContent: string): PromptBlockFrame[] {
-  const frames: PromptBlockFrame[] = [];
-
-  // Split on "N、" at line boundaries — 顿号 is the key discriminator
-  // This won't match "2×3六宫格" because × ≠ 、
-  const parts = gridContent.split(/(?:^|\n)\s*\d+\s*[、]\s*/);
-
-  // parts[0] = everything before first "N、" (preamble) — discard
-  // parts[1..n] = frame descriptions
-  for (let i = 1; i < parts.length; i++) {
-    let desc = parts[i].trim();
-    if (!desc) continue;
-
-    // Stop at post-frame markers
-    if (/^(?:[-—]{3,}|\*\*说明|跨格一致性|一致性检查|动作连贯)/.test(desc)) break;
-    if (/^(?:复制以上|打开.*分镜大师|粘贴生成|如需进一步|请告诉我)/.test(desc)) break;
-
-    frames.push({ description: desc });
-  }
-
-  // Fallback: if no "N、" items found, try broader patterns
-  if (frames.length < 2) {
-    frames.length = 0;
-    const fbParts = gridContent.split(/(?:^|\n)\s*(?:\d+|[一二三四五六七八九十]+)\s*[\.\)）]\s*/);
-    for (let i = 1; i < fbParts.length; i++) {
-      let desc = fbParts[i].trim();
-      if (!desc) continue;
-      if (/^(?:[-—]{3,}|\*\*说明|跨格一致性|一致性检查|动作连贯)/.test(desc)) break;
-      if (/^(?:复制以上|打开.*分镜大师|粘贴生成|如需进一步|请告诉我)/.test(desc)) break;
-      frames.push({ description: desc });
-    }
-  }
-
-  return frames;
-}
-
-/**
- * When grid content is a flat paragraph (no "N、" numbered items), try splitting by
- * sentinel patterns like **1.  **2.  etc. embedded mid-text.
- */
-function splitFlatGridContent(content: string): PromptBlockFrame[] {
-  // Try "N、" split first (顿号 prevents false match on "2x3")
-  const dunhaoParts = content.split(/(?:^|\n)\s*\d+\s*[、]\s*/);
-  if (dunhaoParts.length > 2) {
-    return dunhaoParts.slice(1).map((s) => ({ description: s.trim() })).filter((f) => f.description);
-  }
-
-  // Fallback: split on bold-numbered markers mid-text: **1.  **2.  etc.
-  const parts = content.split(/(?:\*\*)?\s*\d+\s*[\.\)）]\s*(?:\*\*)?\s*/);
-  const frames: PromptBlockFrame[] = [];
-  for (let i = 1; i < parts.length; i++) {
-    const desc = parts[i].trim();
-    if (desc) {
-      frames.push({ description: desc });
-    }
-  }
-  // If still not enough, try splitting by double newlines
-  if (frames.length < 2) {
-    const paras = content.split(/\n\s*\n/).filter((s) => s.trim());
-    if (paras.length >= 2) {
-      return paras.map((p) => ({ description: p.trim() }));
-    }
-  }
-  return frames;
+  return splitGridPromptIntoFrames(gridContent, 6)
+    .map((description) => description.trim())
+    .filter(Boolean)
+    .map((description) => ({ description }));
 }
 
 /** Detect whether text looks like a video prompt (has time-anchored shots). */
@@ -308,11 +247,7 @@ function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuati
 
   if (gridMatch?.[1]?.trim()) {
     const gridContent = gridMatch[1].trim();
-    let frames = parseGridFrames(gridContent);
-    // Fallback: flat paragraph with embedded markers
-    if (frames.length < 2) {
-      frames = splitFlatGridContent(gridContent);
-    }
+    const frames = parseGridFrames(gridContent);
     blocks.push({
       id: generateId(),
       type: 'grid',
