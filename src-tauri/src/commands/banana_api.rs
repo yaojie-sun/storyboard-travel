@@ -20,7 +20,6 @@ static VIDEO_POLL_ERROR_COUNT: std::sync::LazyLock<Arc<Mutex<HashMap<String, u32
 static DEVICE_TOKEN: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 
 // 服务端下发的第三方 API 密钥（不在 provider 体系内）
-static HAPPYHORSE_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static DEEPSEEK_CHAT_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static QINIU_ACCESS_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static QINIU_SECRET_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
@@ -43,7 +42,6 @@ macro_rules! secret_getter {
     };
 }
 
-secret_getter!(get_happyhorse_key, HAPPYHORSE_KEY);
 secret_getter!(get_deepseek_chat_key, DEEPSEEK_CHAT_KEY);
 secret_getter!(get_qiniu_access_key, QINIU_ACCESS_KEY);
 secret_getter!(get_qiniu_secret_key, QINIU_SECRET_KEY);
@@ -64,7 +62,6 @@ macro_rules! secret_setter {
     };
 }
 
-secret_setter!(set_happyhorse_key, HAPPYHORSE_KEY);
 secret_setter!(set_deepseek_chat_key, DEEPSEEK_CHAT_KEY);
 secret_setter!(set_qiniu_access_key, QINIU_ACCESS_KEY);
 secret_setter!(set_qiniu_secret_key, QINIU_SECRET_KEY);
@@ -2102,16 +2099,10 @@ pub async fn banana_update_local_api_keys(
                 set_deepseek_chat_key(config.api_key.clone()).await;
                 continue;
             },
-            // 欢乐马视频生成密钥
+            // 欢乐马视频生成密钥（1.1 走百度 VOD，与 baidu_video 同源）
             "happyhorse_video" => {
-                info!("存储欢乐马视频生成密钥: {}", config.id);
-                set_happyhorse_key(config.api_key.clone()).await;
-                continue;
-            },
-            // 万相视频生成 — 复用欢乐马 DashScope 密钥
-            "wan_video" => {
-                info!("存储万相视频生成密钥（复用欢乐马 DashScope 密钥）: {}", config.id);
-                set_happyhorse_key(config.api_key.clone()).await;
+                info!("存储欢乐马视频生成密钥（百度 VOD）: {}", config.id);
+                set_baidu_video_key(config.api_key.clone()).await;
                 continue;
             },
             // 百度视频生成密钥 (拍我AI PixVerse C1)
@@ -2636,34 +2627,16 @@ pub async fn banana_submit_video_job(
 
     // 5. 根据模型选择 Provider（仅境内供应商）
     let is_happyhorse = model_name.starts_with("happyhorse/");
-    let is_wan = model_name.starts_with("wan/");
     let is_pixverse = model_name.starts_with("pixverse/");
 
-    let provider: std::sync::Arc<dyn crate::ai::AIProvider> = if is_wan {
-        let api_key = get_happyhorse_key()
-            .ok_or_else(|| "万相视频生成密钥未配置，请联系管理员".to_string())?;
-        let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(crate::ai::providers::wan::WanProvider::new());
-        p.set_api_key(api_key).await.map_err(|e| format!("设置万相API密钥失败: {}", e))?;
+    let provider: std::sync::Arc<dyn crate::ai::AIProvider> = if is_happyhorse {
+        let key = get_baidu_video_key()
+            .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
+        let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(
+            crate::ai::providers::happyhorse::HappyHorseProvider::new_baidu_vod(&model_name),
+        );
+        p.set_api_key(key.clone()).await.map_err(|e| format!("设置欢乐马百度VOD密钥失败: {}", e))?;
         p
-    } else if is_happyhorse {
-        let is_happyhorse_11 = model_name.contains("happyhorse-1.1");
-        if is_happyhorse_11 {
-            let key = get_baidu_video_key()
-                .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
-            let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(
-                crate::ai::providers::happyhorse::HappyHorseProvider::new_baidu_vod(&model_name),
-            );
-            p.set_api_key(key.clone()).await.map_err(|e| format!("设置欢乐马百度VOD密钥失败: {}", e))?;
-            p
-        } else {
-            let key = get_happyhorse_key()
-                .ok_or_else(|| "欢乐马视频生成密钥未配置，请联系管理员".to_string())?;
-            let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(
-                crate::ai::providers::happyhorse::HappyHorseProvider::new(),
-            );
-            p.set_api_key(key.clone()).await.map_err(|e| format!("设置欢乐马API密钥失败: {}", e))?;
-            p
-        }
     } else if is_pixverse {
         let api_key = get_baidu_video_key()
             .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
@@ -2673,7 +2646,7 @@ pub async fn banana_submit_video_job(
     } else {
         return Ok(serde_json::json!({
             "success": false,
-            "error": format!("不支持的视频模型: {}，仅支持 happyhorse/ 、 wan/ 和 pixverse/ 前缀的模型", model_name)
+            "error": format!("不支持的视频模型: {}，仅支持 happyhorse/ 和 pixverse/ 前缀的模型", model_name)
         }));
     };
 
@@ -2791,30 +2764,14 @@ pub async fn banana_poll_video_job(
     use crate::ai::AIProvider;
     let model_name = model.unwrap_or_default();
     let is_happyhorse = model_name.starts_with("happyhorse/");
-    let is_wan = model_name.starts_with("wan/");
     let is_pixverse = model_name.starts_with("pixverse/");
 
-    let provider: Box<dyn AIProvider + Send> = if is_wan {
-        let api_key = get_happyhorse_key()
-            .ok_or_else(|| "万相视频生成密钥未配置，请联系管理员".to_string())?;
-        let p = crate::ai::providers::wan::WanProvider::new();
-        p.set_api_key(api_key).await.map_err(|e| format!("设置万相API密钥失败: {}", e))?;
+    let provider: Box<dyn AIProvider + Send> = if is_happyhorse {
+        let api_key = get_baidu_video_key()
+            .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
+        let p = crate::ai::providers::happyhorse::HappyHorseProvider::new_baidu_vod(&model_name);
+        p.set_api_key(api_key).await.map_err(|e| format!("设置欢乐马百度VOD密钥失败: {}", e))?;
         Box::new(p)
-    } else if is_happyhorse {
-        let is_happyhorse_11 = model_name.contains("happyhorse-1.1");
-        if is_happyhorse_11 {
-            let api_key = get_baidu_video_key()
-                .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
-            let p = crate::ai::providers::happyhorse::HappyHorseProvider::new_baidu_vod(&model_name);
-            p.set_api_key(api_key).await.map_err(|e| format!("设置欢乐马百度VOD密钥失败: {}", e))?;
-            Box::new(p)
-        } else {
-            let api_key = get_happyhorse_key()
-                .ok_or_else(|| "欢乐马视频生成密钥未配置，请联系管理员".to_string())?;
-            let p = crate::ai::providers::happyhorse::HappyHorseProvider::new();
-            p.set_api_key(api_key).await.map_err(|e| format!("设置欢乐马API密钥失败: {}", e))?;
-            Box::new(p)
-        }
     } else if is_pixverse {
         let api_key = get_baidu_video_key()
             .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;

@@ -43,26 +43,21 @@ interface DialogPayload {
   nodeId: string | null;
   initialImages: ReferenceImage[];
   initialGridFrames: string[];
-  gridImageUrl?: string;
   shotFrameMap?: Record<string, unknown>;
 }
 
 // ── Outer shell — only event listener, NO store subscriptions ──
 
 /**
- * 解析万相Wan2.7错误码，返回用户友好提示。
- * 错误来源：Rust端 `[WAN_xxx]` 前缀 + DashScope API 返回的code/message。
+ * 解析视频生成错误码，返回用户友好提示。
  * 频率最高：绿网（内容安全审核），需突出显示。
  */
-function translateWanError(errorMsg: string): { title: string; detail: string } {
+function translateVideoError(errorMsg: string): { title: string; detail: string } {
   const msg = errorMsg || '';
   // 本地操作（超分等）的错误直接透传，不走云端错误翻译
   if (msg.startsWith('[LOCAL]')) {
     return { title: '本地处理失败', detail: msg.slice(7).trim() };
   }
-  // 提取 [WAN_xxx] 错误码（Rust端注入）
-  const codeMatch = msg.match(/\[WAN_([^\]]+)\]/);
-  const code = codeMatch?.[1] || '';
   const lower = msg.toLowerCase();
 
   // —— 内容安全审核（最高频） ——
@@ -72,7 +67,7 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
     'green net', 'greennet', '100008', '100009', '100010',
     'moderation', 'rejected',
   ];
-  if (绿网Keywords.some(k => lower.includes(k)) || 绿网Keywords.some(k => code.toLowerCase().includes(k))) {
+  if (绿网Keywords.some(k => lower.includes(k))) {
     return {
       title: '内容安全审核未通过',
       detail: '本次生成的视频画面触发了网络安全审核。请返回Chat修改分镜提示词，调整画面描述后重新生成宫格图，再试一次。\n\n常见触发场景：裸露、血腥暴力、政治敏感、枪支武器、成人用品等。',
@@ -80,7 +75,7 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
   }
 
   // —— 速率限制 ——
-  if (lower.includes('429') || lower.includes('rate') || lower.includes('限流') || lower.includes('throttl') || code.includes('rate_limit')) {
+  if (lower.includes('429') || lower.includes('rate limit') || lower.includes('rate_limit') || lower.includes('限流') || lower.includes('throttl')) {
     return {
       title: '请求过于频繁',
       detail: '服务器限流中，请等待30秒后再试。积分已保留，不会重复扣费。',
@@ -88,7 +83,7 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
   }
 
   // —— 参数错误 ——
-  if (lower.includes('invalidparameter') || lower.includes('参数') || code.includes('InvalidParameter')) {
+  if (lower.includes('invalidparameter') || lower.includes('参数')) {
     return {
       title: '视频参数有误',
       detail: '视频生成参数不合法。可能是分辨率、时长或参考图格式异常。请检查配置后重试。若持续出现，请联系客服。',
@@ -104,7 +99,7 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
   }
 
   // —— 服务端错误 ——
-  if (lower.includes('internal') || lower.includes('500') || code.includes('internal_error')) {
+  if (lower.includes('internal') || lower.includes('500')) {
     return {
       title: '服务器繁忙',
       detail: '视频生成服务暂时异常，请稍后重试。积分已返还。',
@@ -122,7 +117,7 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
   // —— 未知错误（显示原始信息） ——
   return {
     title: '视频生成失败',
-    detail: msg.replace(/\[WAN_[^\]]+\]\s*/g, '').trim() || '未知错误，请稍后重试。',
+    detail: msg.trim() || '未知错误，请稍后重试。',
   };
 }
 
@@ -185,7 +180,7 @@ export function VideoGenDialog() {
           }
         }
 
-        // 直接调入宫格图，不分割（万相故事板模式）
+        // 直接调入宫格图，不分割（故事板模式）
         if (gridImageUrl) {
           addImage(gridImageUrl);
         } else {
@@ -201,7 +196,6 @@ export function VideoGenDialog() {
         nodeId: p.nodeId ?? null,
         initialImages: images.slice(0, 5),
         initialGridFrames: gridFrames,
-        gridImageUrl,
         shotFrameMap,
       });
       setIsOpen(true);
@@ -217,7 +211,6 @@ export function VideoGenDialog() {
         nodeId={payload.nodeId}
         initialImages={payload.initialImages}
         initialGridFrames={payload.initialGridFrames}
-        gridImageUrl={payload.gridImageUrl}
         shotFrameMap={payload.shotFrameMap}
         onClose={handleClose}
       />
@@ -232,14 +225,12 @@ function VideoGenDialogInner({
   nodeId,
   initialImages,
   initialGridFrames,
-  gridImageUrl,
   shotFrameMap: _shotFrameMap, // 保留但不再注入图N引用
   onClose,
 }: {
   nodeId: string | null;
   initialImages: ReferenceImage[];
   initialGridFrames: string[];
-  gridImageUrl?: string;
   shotFrameMap?: Record<string, unknown>;
   onClose: () => void;
 }) {
@@ -516,9 +507,7 @@ function VideoGenDialogInner({
       const resumeModel = savedConfig?.videoModel
         ? (savedConfig.videoModel.includes('happyhorse')
             ? 'happyhorse/happyhorse-1.1-r2v'
-            : savedConfig.videoModel.includes('pixverse')
-              ? 'pixverse/c1'
-              : 'wan/wan2.7-r2v')
+            : 'pixverse/c1')
         : undefined;
       setIsResuming(true);
       setIsGenerating(true);
@@ -534,7 +523,6 @@ function VideoGenDialogInner({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isHappyhorse = videoModel.includes('happyhorse');
-  const isWan = videoModel.includes('wan');
   const isPixverse = videoModel.includes('pixverse');
 
   const handleClose = useCallback(() => {
@@ -709,12 +697,12 @@ function VideoGenDialogInner({
       // 2. DeepSeek 清洗：去掉光影/场景/外观，只保留运镜+精简动作+声音
       //    确保文字描述不超出宫格图已锚定的画面内容（第3锁）
       let userContent = trimmedPrompt;
-      if (isWan || isHappyhorse) {
+      if (isHappyhorse) {
         try {
           userContent = await cleanVideoPrompt({
             storyboardPrompt: trimmedPrompt,
             gridFrames,
-            targetModel: isHappyhorse ? 'happyhorse' : 'wan',
+            targetModel: 'happyhorse',
             referenceImages: referenceImages.map(img => img.rawUrl),
           });
           console.log('[VideoGenDialog] DeepSeek cleaned prompt:', userContent.length, 'chars (was:', trimmedPrompt.length, 'chars)');
@@ -725,7 +713,6 @@ function VideoGenDialogInner({
 
       // 2.5 shotFrameMap 保留在节点缓存中（用于后续分析/调试），
       // 但不再注入图N引用到 prompt。
-      // 官方文档：Wan2.7 R2V 自动识别宫格逻辑，"无需描述每个宫格"。
       // 让模型从整张六宫格图中自行匹配帧，避免指定图N干扰模型判断。
 
       let finalPrompt: string;
@@ -736,41 +723,28 @@ function VideoGenDialogInner({
       const guidanceScale = rules.guidance_scale;
       const shotType = rules.shot_type;
 
-      // Wan 模型画面锁定尾句（代码层 100% 可靠追加，AI 无法遗忘）
+      // 画面锁定尾句（代码层 100% 可靠追加，AI 无法遗忘）
       finalPrompt = promptRule
         ? `${promptRule}\n\n${userContent}`
         : userContent;
-      console.log(`[VideoGenDialog] ${isPixverse ? 'PixVerse' : isWan ? 'Wan' : 'HappyHorse'}, refs:`, referenceImages.length, 'hasRule:', !!promptRule, 'hasNegPrompt:', !!negativePrompt, 'guidanceScale:', guidanceScale, 'shotType:', shotType, 'promptLen:', finalPrompt.length);
+      console.log(`[VideoGenDialog] ${isPixverse ? 'PixVerse' : 'HappyHorse'}, refs:`, referenceImages.length, 'hasRule:', !!promptRule, 'hasNegPrompt:', !!negativePrompt, 'guidanceScale:', guidanceScale, 'shotType:', shotType, 'promptLen:', finalPrompt.length);
 
-      // 4. 准备参考图 — 直接用 base64
+      // 4. 准备参考图 — 欢乐马：传入拆分后的六张独立参考图（base64）
       const imageInput: string[] = [];
-      if (isWan && gridImageUrl) {
-        // 万相：直接传入整张六宫格大图（不拆分）
+      for (const img of referenceImages) {
         try {
-          const dataUrl = gridImageUrl.startsWith('data:')
-            ? gridImageUrl
-            : await imageUrlToDataUrl(resolveImageDisplayUrl(gridImageUrl));
+          const dataUrl = img.rawUrl.startsWith('data:')
+            ? img.rawUrl
+            : await imageUrlToDataUrl(img.url);
           imageInput.push(dataUrl);
         } catch (e) {
-          console.warn('[VideoGenDialog] Wan: failed to convert grid image:', gridImageUrl, e);
-        }
-      } else {
-        // 欢乐马：传入拆分后的六张独立参考图
-        for (const img of referenceImages) {
-          try {
-            const dataUrl = img.rawUrl.startsWith('data:')
-              ? img.rawUrl
-              : await imageUrlToDataUrl(img.url);
-            imageInput.push(dataUrl);
-          } catch (e) {
-            console.warn('[VideoGenDialog] failed to convert to base64:', img.rawUrl, e);
-          }
+          console.warn('[VideoGenDialog] failed to convert to base64:', img.rawUrl, e);
         }
       }
 
       // 准备音色参考 audio data URL
       let voiceUrl: string | undefined;
-      if (referenceVoice && (isHappyhorse || isWan)) {
+      if (referenceVoice && isHappyhorse) {
         try {
           const rawUrl = referenceVoice.rawUrl;
           if (rawUrl.startsWith('data:')) {
@@ -804,9 +778,7 @@ function VideoGenDialogInner({
         shotType,
         model: isHappyhorse
           ? 'happyhorse/happyhorse-1.1-r2v'
-          : isPixverse
-            ? 'pixverse/c1'
-            : 'wan/wan2.7-r2v',
+          : 'pixverse/c1',
       });
 
       if (result.success) {
@@ -869,9 +841,7 @@ function VideoGenDialogInner({
           }
           startPolling(result.taskId, false, deducted, isHappyhorse
             ? 'happyhorse/happyhorse-1.1-r2v'
-            : isPixverse
-              ? 'pixverse/c1'
-              : 'wan/wan2.7-r2v');
+            : 'pixverse/c1');
         } else {
           setIsGenerating(false);
           setError(t('videoGen.unknownError', '未知错误'));
@@ -1161,7 +1131,7 @@ function VideoGenDialogInner({
                 )}
               </div>
 
-              {/* 音色参考上传（Wan2.7 支持配音） */}
+              {/* 音色参考上传（欢乐马1.1 支持配音） */}
               <div className="mt-4">
                 <label className="mb-1.5 block text-xs font-medium text-text-muted">
                   {t('videoGen.voiceRef', '音质参考（可选）')}
@@ -1460,11 +1430,11 @@ function VideoGenDialogInner({
           </div>
 
           {error && (() => {
-            const wanErr = translateWanError(error);
+            const videoErr = translateVideoError(error);
             return (
               <div className="mt-3 max-w-md rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-left">
-                <p className="text-sm font-semibold text-red-400">{wanErr.title}</p>
-                <p className="mt-1 text-xs leading-relaxed text-red-300/80 whitespace-pre-wrap">{wanErr.detail}</p>
+                <p className="text-sm font-semibold text-red-400">{videoErr.title}</p>
+                <p className="mt-1 text-xs leading-relaxed text-red-300/80 whitespace-pre-wrap">{videoErr.detail}</p>
               </div>
             );
           })()}

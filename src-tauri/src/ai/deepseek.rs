@@ -147,118 +147,42 @@ pub async fn optimize_prompt(prompt: &str, api_key: &str) -> Result<String, AIEr
     Ok(optimized)
 }
 
-const VIDEO_CLEAN_SYSTEM_PROMPT: &str = r#"你是一个视频提示词清洗器。你的任务是将分镜提示词转换为万相 Wan2.7 R2V 可用的分镜脚本。
-
-【核心原理 — 完全对齐阿里官方最佳实践】
-万相 Wan2.7 R2V 以宫格故事板为视觉输入，模型自动识别宫格逻辑、自动适配镜头时长、自动处理运镜。文字只需提供分镜叙事——每个镜头里发生什么、听到什么。官方示例中无时间锚定、无运镜指令、无帧引用，模型全部自动处理。
-
-【铁律 0 — 声音和台词绝对不可触碰（最高优先级）】
-声音描述和台词/对白逐字保留原文，一个字都不能改、不能删。
-
-【铁律 — 必须删除的内容】
-1. 时间锚定 [X-Ys] —— 全部删除（模型自动分配时长）
-2. 所有光影描述 —— 全部删除
-3. 所有角色外观描述 —— 全部删除
-4. 所有道具和物体外观细节 —— 全部删除
-5. 图N/宫格N 帧引用 —— 全部删除
-
-【必须保留的内容】
-1. 风格锚定头部（影调/风格/画幅/总时长）
-2. 分镜序列：编号 + 景别 + 动作描述 + 运镜 + 声音
-
-【输出格式】
-分镜脚本：
-1. 景别：动作描述。运镜。声音。
-2. 景别：动作描述。运镜。声音。
-
-（风格锚定头部由系统自动保留，清洗层不负责输出）
-
-【约束】
-- 禁止写时间锚定 [X-Ys]
-- 运镜保留原文，规范化为 Wan2.7 标准术语，只写一次不重复
-- 禁止写光影/场景/角色外观
-- 动作 ≤40字，自然叙事
-- 声音逐字复制
-- 全部用中文
-- 输出纯文本，不要JSON，不要解释"#;
-
-const VIDEO_CLEAN_HAPPYHORSE_PROMPT: &str = r#"你是一个视频提示词清洗器。将分镜提示词转换为极简运镜指令。
+const VIDEO_CLEAN_HAPPYHORSE_PROMPT: &str = r#"你是一个视频提示词清洗器。清洗分镜提示词，保留 Begin with Shot / Then Shot / Cut to Shot 分镜结构。
 
 【铁律】
+- 保留原有分镜结构（Begin with Shot N [X-Ys] / Then Shot N [X-Ys] / Cut to Shot N [X-Ys]），时间码 [X-Ys] 不变，禁止改写成 S1/S2、"第N个镜头" 等其它格式
 - 声音和台词逐字保留原文，一字不改
 - 禁止光影/场景/角色外观/道具外观
-- 禁止 [Image N] 或 图N（参考图由media数组提供）
+- 禁止 [Image N] / [Image1] / 图N / 图1 等一切参考图文本引用（参考图由 media 数组提供，无需也不应在提示词里写）
 - 禁止分辨率/画幅/模型名
+- 禁止在动作内塞秒级量化（如 1.5秒转身、0.5秒插袋、2秒后抬头）——时间只由 [X-Ys] 括号统一控制，欢乐马1.1 对秒级量化执行过于字面化
+- 【平滑运镜·禁止硬切】同一目的地/同一空间连续递进（外部全景→门头→大厅→核心体验→高潮→收尾）时镜头之间禁止硬切、跳切、幻灯片式切换，必须用连续平滑运镜自然衔接（推近/拉远/摇移/环绕/跟拍/升降/无人机一气呵成），让六格丝滑连成一镜到底的完整短片。Cut to Shot 仅用于空间根本性变化（换目的地/换时间段），同一空间递进内一律用 Then Shot 平滑过渡，禁止逐格用 static 定点硬切
 
-【输出格式】每个Shot一行：
-S1: {运镜}。{动作≤15字}。for N seconds。{声音}
-S2: {运镜}。{动作≤15字}。for N seconds。{声音}
+【输出格式】每个Shot一行，保持原有分镜结构。同一空间的连续镜头优先用 Then Shot 平滑衔接，禁止每格都 Cut to 硬切：
+Begin with Shot 1 [0-3s]: {运镜}。{动作≤15字}。{声音}
+Then Shot 2 [3-8s]: {运镜}。{动作≤15字}。{声音}
+Then Shot 3 [8-12s]: {运镜}。{动作≤15字}。{声音}
 
-【运镜仅限】static | slow push-in | slow pull-out | smooth pan L->R | smooth pan R->L | smooth tracking | slight handheld shake | orbit L | orbit R | tilt up | tilt down | crane up | crane down
+【旅游写实·真人质感】画面必须实景拍摄质感，动作/表情用自然真人语序英文，禁止塑料感：静止镜头也有呼吸起伏、重心微移、自然眨眼、发丝微动；户外场景光影时段由参考图锁定，自然材质纹理、大气透视、真实不完全完美。禁止用：CG look | plastic texture | 3D render | video game graphics | doll-like | wax figure | dead eyes | frozen expression | robotic movement | uncanny | over-smooth | oversaturated colors。
+
+【旅游术语标准译法 — 中文→英文时必须使用以下精确译法，禁止自由发挥】
+- 无人机拉升/航拍拉升 → drone pull-up
+- 无人机环绕/航拍环绕 → drone orbit
+- 无人机穿越/航拍穿越 → drone fly-through
+- POV步行/第一人称步行/探店 → POV walkthrough
+- 慢推招牌/酒店门头/店面招牌 → slow push-in signage
+- 微距特写/美食特写/材质特写 → macro close-up
+- 延时摄影/日出日落/云海/车流 → time-lapse
+
+【运镜仅限】优先连续平滑运镜（跨格衔接禁止用 static 硬切）：drone pull-up | drone orbit | drone fly-through | POV walkthrough | slow push-in signage | macro close-up | time-lapse | slow push-in | slow pull-out | smooth pan L->R | smooth pan R->L | smooth tracking | orbit L | orbit R | tilt up | tilt down | crane up | crane down | slight handheld shake | static（仅用于起始/收尾定格，不用于跨格衔接）
 
 【约束】动作≤15字。全部英文。纯文本输出。末尾加一句：No text overlays, no watermarks, no subtitles, no dialogue boxes, no captions."#;
-
-/// Map our skill's camera terminology to Wan2.7 official terminology
-fn hard_replace_camera(prompt: &str) -> String {
-    let re_map: Vec<(&str, &str)> = vec![
-        // 摇镜 → Wan官方术语（Wan不认识"摇镜"这个词）
-        (r"平稳摇镜\(左→右\)", "镜头右移"),
-        (r"平稳摇镜\(右→左\)", "镜头左移"),
-        (r"平稳摇镜从上至下", "俯仰下摇"),
-        (r"平稳摇镜从下至上", "俯仰上摇"),
-        (r"匀速摇镜", "镜头平移"),
-        (r"慢速摇镜", "镜头平移"),
-        (r"快速摇镜", "镜头平移"),
-        (r"水平摇镜", "镜头平移"),
-        // 旋转角度数值 → 定性描述（Wan不理解数值角度）
-        (r"转体90度", "侧身转向"),
-        (r"转身90度", "缓缓转身"),
-        (r"转身180度", "缓缓转身"),
-        (r"旋转90度", "缓缓转体"),
-        (r"旋转180度", "缓缓转体"),
-        // 非标准相机术语 → Wan2.7 标准术语
-        (r"航拍大远景", "大远景"),
-        (r"航拍中景", "中景"),
-        (r"航拍全景", "全景"),
-        (r"航拍近景", "近景"),
-        (r"航拍特写", "特写"),
-        (r"航拍", "镜头垂直下降"),
-        (r"镜头缓慢推近", "缓慢推近"),
-        (r"镜头缓慢拉远", "缓慢拉远"),
-        (r"镜头平稳环绕", "环绕"),
-        (r"平稳环绕左", "环绕左"),
-        (r"平稳环绕右", "环绕右"),
-        (r"平稳环绕", "环绕"),
-        (r"镜头固定机位", "固定机位"),
-        (r"镜头平稳跟拍", "平稳跟拍"),
-        (r"镜头轻微手持晃动", "轻微手持晃动"),
-        (r"缓慢推近。缓慢推近", "缓慢推近"),
-        (r"缓慢拉远。缓慢拉远", "缓慢拉远"),
-        (r"固定机位。固定机位", "固定机位"),
-    ];
-
-    let mut result = prompt.to_string();
-    for (pattern, replacement) in &re_map {
-        result = regex::Regex::new(pattern).unwrap()
-            .replace_all(&result, *replacement)
-            .to_string();
-    }
-
-    if result != prompt {
-        info!(
-            "[DeepSeek清洗] terminology mapped for Wan2.7 → {} chars (was {})",
-            result.len(), prompt.len()
-        );
-    }
-
-    result
-}
 
 /// Split prompt into creative context header (before first shot) + shot bodies.
 /// Returns (header, shots_text). Header is preserved verbatim; only shots_text is cleaned.
 fn split_header_and_shots(prompt: &str) -> (String, String) {
-    // Match the first "第N个镜头" or "第N个Shot" marker
-    let marker_re = regex::Regex::new(r"(第\d+个(?:镜头|Shot|shot))").unwrap();
+    // Match the first "Begin with Shot" marker（欢乐马1.1 官方分镜格式）
+    let marker_re = regex::Regex::new(r"(?i)Begin with Shot").unwrap();
     if let Some(m) = marker_re.find(prompt) {
         let split_at = m.start();
         let header = prompt[..split_at].trim().to_string();
@@ -277,13 +201,7 @@ pub async fn clean_video_prompt(
     target_model: Option<&str>,
     reference_images: Option<&[String]>,
 ) -> Result<String, AIError> {
-    // Pick system prompt based on model
-    let is_happyhorse = target_model.map(|m| m.contains("happyhorse")).unwrap_or(false);
-    let system_prompt = if is_happyhorse {
-        VIDEO_CLEAN_HAPPYHORSE_PROMPT
-    } else {
-        VIDEO_CLEAN_SYSTEM_PROMPT
-    };
+    let system_prompt = VIDEO_CLEAN_HAPPYHORSE_PROMPT;
 
     // Split header (creative context) from shot bodies BEFORE cleaning.
     // The header establishes lighting, style, narrative intent — it must be preserved.
@@ -292,12 +210,12 @@ pub async fn clean_video_prompt(
 
     info!(
         "[提示词清洗] target={}, split result — header: {} chars, shots: {} chars",
-        target_model.unwrap_or("wan"), header.len(),
+        target_model.unwrap_or("happyhorse"), header.len(),
         shots_text.len()
     );
 
-    // Pre-process: local terminology mapping on shots only
-    let replaced = hard_replace_camera(&shots_text);
+    // 欢乐马格式：shots_text 直接作为清洗输入，无需额外术语映射
+    let replaced = shots_text;
 
     let client = Client::builder()
         .timeout(Duration::from_secs(30))

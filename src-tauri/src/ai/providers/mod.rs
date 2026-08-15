@@ -9,7 +9,6 @@ pub mod kie;
 pub mod pixverse;
 pub mod ppio;
 pub mod volcengine;
-pub mod wan;
 
 pub use baidu::BaiduProvider;
 pub use grsai::GrsaiProvider;
@@ -18,7 +17,6 @@ pub use kie::KieProvider;
 pub use pixverse::PixVerseProvider;
 pub use ppio::PPIOProvider;
 pub use volcengine::VolcengineProvider;
-pub use wan::WanProvider;
 
 pub fn build_default_providers() -> Vec<Arc<dyn AIProvider>> {
     vec![
@@ -27,7 +25,6 @@ pub fn build_default_providers() -> Vec<Arc<dyn AIProvider>> {
         Arc::new(GrsaiProvider::new()),
         Arc::new(VolcengineProvider::new()),
         Arc::new(HappyHorseProvider::new()),
-        Arc::new(WanProvider::new()),
         Arc::new(PixVerseProvider::new()),
         Arc::new(KieProvider::new()),
     ]

@@ -1,25 +1,32 @@
 {
-  "version": "1",
+  "version": "30",
   "integration": {
     "model": "none",
     "max_tokens": 0,
     "system_prompt": ""
   },
-  "negative_prompt": "chromatic aberration, motion blur excess, morphing, distortion, warping, flicker, unnatural physics, floating objects, anti-gravity, building shape drift, landmark distortion, bad weather, overcast sky, haze, construction site, trash on ground, crowded background clutter, ugly modern buildings, power lines",
-  "prompt_rule": "【核心指令·旅游视频专家】根据分镜图生成一段完整的、带运镜的旅游短视频。你不是在拍幻灯片，而是用摄像机运动串联空间——引导观众'步入'目的地，从外到内、从全景到细节、从环境到体验。\n\n【物理规律·强制】所有运动必须符合真实世界物理规律。\n\n【故事板宫格·最高优先级】宫格1→2→3→4→5→6 是一个连续旅游体验，不是6张独立照片。场景/光影/氛围跨宫格一致，空间递进从前一格自然延续到后一格。\n\n【旅游运镜·核心】优先使用以下运镜：drone pull-up（无人机拉升·大景） | drone orbit（无人机环绕·地标） | POV walkthrough（第一人称步行·探店） | slow push-in signage（慢推招牌·酒店门头） | macro close-up（微距特写·美食） | time-lapse（延时·日出云海）。基础运镜：static | slow push-in | slow pull-out | smooth pan L->R | smooth pan R->L | smooth tracking | slight handheld shake | orbit L | orbit R | tilt up | tilt down | crane up | crane down。\n\n【空间叙事·强制】严格遵循'从外到内'递进逻辑：外部全景→入口门头→内部大厅→核心体验区→高潮亮点→收尾全景+信息。禁止跳跃式切换空间。\n\n【光影时刻·旅游专属】户外场景精确到黄金时刻（日出后/日落前1小时）或蓝调时刻（日落后20分钟）。室内场景写明灯光类型和色温。\n\n【导演语法】每个Shot一行：S1: {运镜}。{动作≤15字}。for N seconds。{声音}\n\n【禁止】禁止插入额外镜头、禁止跳过宫格、禁止独立分镜切换、禁止在prompt中写光影/场景/外观描述（参考图已锁定画面）、禁止@图N或Image N语法、禁止分辨率/画幅/模型名。全部通过DeepSeek清洗后输出英文。No text overlays, no watermarks, no subtitles.",
+  "negative_prompt": "chromatic aberration, motion blur excess, morphing, distortion, warping, flicker, unnatural physics, floating objects, anti-gravity, building shape drift, landmark distortion, bad weather, overcast sky, haze, construction site, trash on ground, crowded background clutter, ugly modern buildings, power lines, CG look, plastic texture, 3D render, video game graphics, oversaturated colors, HDR halo, invented objects, hallucinated props, AI watermark, AI subtitle, empty frame, static image, abrupt transition",
+  "prompt_rule": "【铁律·旅游版】图1=视频首帧，视频从图1开始空间递进（外→内·全景→细节），经过图2-图5自然过渡，在图6结束。按左→右、上→下顺序逐格处理全部6张宫格图。每张宫格=一个关键帧。画面内容100%来自宫格参考图，文字仅提供运镜+动作+环境音。禁止添加参考图不存在的任何地标/建筑/物品/人物。地标外形/自然地貌/光影时段由参考图锁定。运镜优先无人机/POV步行/延时摄影。【平滑运镜·禁止硬切】同一目的地的六格是同一空间的连续递进（外→内·全景→细节），镜头之间禁止硬切/跳切/幻灯片式切换，必须用连续平滑运镜（无人机拉升→POV步行→慢推→微距→延时）一气呵成丝滑衔接，如同一镜到底的空间漫游短片；禁止逐格用固定机位定点硬切。旅游写实美学：禁止CG感/塑料感/3D渲染。自然材质纹理、大气透视、真实不完全完美。",
+  "guidance_scale": 8,
+  "shot_type": "multi",
   "constraints": {
-    "global_rule": "故事板宫格=连续旅游体验时间线。空间递进从外到内、从全景到细节，不跳跃、不重置。提示词只写运镜+动作+声音，画面由参考图锁定。",
-    "shot_continuity": "六格→一个连续旅游视频。空间递进均匀串联，每格停留足够时间展示亮点。光影/天气/氛围跨格一致。",
+    "global_rule": "STORYBOARD = GROUND TRUTH. Visual content 100% anchored by 6 storyboard frames. Text provides camera + movement + environmental audio only. All camera movement within frame boundaries. Travel photorealism required — no CG/plastic/3D render aesthetics.",
+    "object_persistence": "Landmarks and spatial elements exist every frame. Building shapes, natural landforms, and spatial layout locked by storyboard. No morphing or count change.",
+    "landmark_lock": "Landmark appearance anchored by storyboard. Camera movement does not alter building/landmark geometry or position.",
+    "spatial_progression": "Spatial narrative: outside→inside, wide→detail. Each shot advances the spatial story. No random jumping between unrelated locations.",
+    "motion_catalog": "fixed | slow push-in | slow pull-out | smooth pan L->R | smooth pan R->L | smooth tracking | slight handheld shake | orbit L | orbit R | drone pull-up | drone orbit | drone fly-through | POV walkthrough | macro close-up | time-lapse | crane up | crane down",
+    "shot_continuity": "Storyboard L->R, T->B = spatial progression. Same-destination frames must connect via continuous smooth camera moves (drone pull-up / POV walkthrough / slow push-in / macro) for a seamless one-take feel. Hard cut ONLY when the destination / time fundamentally changes; never hard-cut between frames of the same destination.",
     "hard_constraints": [
-      "宫格1-6是连续空间体验，顺序不变",
-      "从外到内递进：全景→入口→内部→亮点→高潮→收尾",
-      "不添加/不删减/不修改画面内容",
-      "用摄像机运动串联，不跳切",
-      "提示词只写运镜+动作+声音，不写光影/场景/外观",
-      "光影时段精确（黄金时刻/蓝调时刻/夜景）",
-      "每Shot格式：S1: {运镜}。{动作≤15字}。for N seconds。{声音}",
-      "所有运动必须符合真实物理规律",
-      "地标建筑外形严格锁死参考图，禁止AI自行修改建筑外观"
+      "Storyboard = ground truth. Visual content from storyboard only.",
+      "Each shot aligns with corresponding storyboard frame.",
+      "Frame-to-frame transitions must be smooth.",
+      "No hard cuts between same-destination frames — connect them with continuous smooth camera moves (one-take feel).",
+      "All camera movement within storyboard frame boundaries.",
+      "Landmarks/spatial elements exist every frame — no morphing.",
+      "No image stretching. No landmark distortion.",
+      "Process all 6 storyboard frames in spatial sequence.",
+      "Golden hour / blue hour lighting consistency across all frames.",
+      "No AI dialogue, voiceover, or narration."
     ]
   }
 }

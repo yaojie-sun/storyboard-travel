@@ -12,62 +12,32 @@ use crate::ai::{
     AIProvider, GenerateRequest, ProviderTaskHandle, ProviderTaskPollResult, ProviderTaskSubmission,
 };
 
-// ── DashScope (Alibaba Bailian direct) ──
-const DASHSCOPE_BASE_URL: &str = "https://dashscope.aliyuncs.com";
-const CREATE_VIDEO_PATH: &str = "/api/v1/services/aigc/video-generation/video-synthesis";
-const DASHSCOPE_TASK_QUERY_PATH: &str = "/api/v1/tasks";
-
-// ── Baidu VOD (transparent passthrough to Alibaba Bailian) ──
+// ── Baidu VOD（透传阿里百炼 Bailian）──
+// 欢乐马 1.1 只走百度 VOD 通道（vod.bj.baidubce.com/v3/aigc/bailian），
+// 不通过阿里云 DashScope 直连。
 const BAIDU_VOD_BASE_URL: &str = "https://vod.bj.baidubce.com/v3/aigc/bailian";
+const CREATE_VIDEO_PATH: &str = "/api/v1/services/aigc/video-generation/video-synthesis";
 const BAIDU_VOD_TASK_QUERY_URL: &str = "https://vod.bj.baidubce.com/v3/tasks";
 
 const POLL_INTERVAL_MS: u64 = 15000;
 const MAX_REFERENCE_IMAGES: usize = 9;
 
-/// Backend to use for HappyHorse API calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Backend {
-    /// Direct DashScope (Alibaba Bailian) access
-    DashScope,
-    /// Baidu VOD transparent passthrough
-    BaiduVod,
-}
-
-// ── DashScope response types ──
+// ── 阿里百炼 Bailian 响应类型（百度 VOD 透传返回的阿里格式）──
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-struct DashScopeCreateResponse {
-    output: Option<DashScopeCreateOutput>,
+struct BailianCreateResponse {
+    output: Option<BailianCreateOutput>,
     code: Option<String>,
     message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct DashScopeCreateOutput {
+struct BailianCreateOutput {
     task_id: String,
-    #[serde(rename = "task_status")]
-    task_status: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct DashScopeTaskResponse {
-    output: Option<DashScopeTaskOutput>,
-    code: Option<String>,
-    message: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DashScopeTaskOutput {
-    task_id: String,
-    #[serde(rename = "task_status")]
-    task_status: String,
-    video_url: Option<String>,
-    code: Option<String>,
-    message: Option<String>,
-}
-
-// ── Baidu VOD response types ──
+// ── Baidu VOD 响应类型 ──
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -86,23 +56,13 @@ struct BaiduVodTaskResponse {
 pub struct HappyHorseProvider {
     client: Client,
     api_key: Arc<RwLock<Option<String>>>,
-    backend: Backend,
-    /// Model name to send in API requests (e.g. "happyhorse-1.0-r2v" or "happyhorse-1.1-r2v")
+    /// Model name to send in API requests (e.g. "happyhorse-1.1-r2v")
     api_model: String,
 }
 
 impl HappyHorseProvider {
     pub fn new() -> Self {
-        Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(3600))
-                .connect_timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
-            api_key: Arc::new(RwLock::new(None)),
-            backend: Backend::DashScope,
-            api_model: "happyhorse-1.1-r2v".to_string(),
-        }
+        Self::new_baidu_vod("happyhorse-1.1-r2v")
     }
 
     /// Create a provider that routes through Baidu VOD (Bearer token auth).
@@ -114,7 +74,6 @@ impl HappyHorseProvider {
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             api_key: Arc::new(RwLock::new(None)),
-            backend: Backend::BaiduVod,
             api_model: Self::sanitize_model(model),
         }
     }
@@ -256,16 +215,8 @@ impl HappyHorseProvider {
             }
         });
 
-        let (endpoint, log_tag) = match self.backend {
-            Backend::DashScope => (
-                format!("{}{}", DASHSCOPE_BASE_URL, CREATE_VIDEO_PATH),
-                "HappyHorse-DashScope",
-            ),
-            Backend::BaiduVod => (
-                format!("{}{}", BAIDU_VOD_BASE_URL, CREATE_VIDEO_PATH),
-                "HappyHorse-BaiduVOD",
-            ),
-        };
+        let endpoint = format!("{}{}", BAIDU_VOD_BASE_URL, CREATE_VIDEO_PATH);
+        let log_tag = "HappyHorse-BaiduVOD";
 
         info!(
             "[{} createTask] model={}, duration={}, resolution={}, ratio={}, refs={}, promptLen={}",
@@ -277,18 +228,14 @@ impl HappyHorseProvider {
             log_tag, request.prompt
         );
 
-        let mut req = self
+        let response = self
             .client
             .post(&endpoint)
             .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json");
-
-        // DashScope requires async header; Baidu VOD doesn't need it
-        if self.backend == Backend::DashScope {
-            req = req.header("X-DashScope-Async", "enable");
-        }
-
-        let response = req.json(&body).send().await?;
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
 
         let status = response.status();
         let raw_response = response.text().await.unwrap_or_default();
@@ -300,68 +247,45 @@ impl HappyHorseProvider {
             )));
         }
 
-        match self.backend {
-            Backend::DashScope => {
-                let resp: DashScopeCreateResponse =
-                    serde_json::from_str(&raw_response).map_err(|err| {
-                        AIError::Provider(format!(
-                            "{} createTask invalid JSON: {}; raw={}",
-                            log_tag, err, raw_response
-                        ))
-                    })?;
-                if let Some(code) = resp.code {
-                    let msg = resp.message.unwrap_or_else(|| "unknown error".to_string());
+        // 欢乐马经百度 VOD 是阿里百炼 Bailian 的透明透传。
+        // 创建响应为阿里格式：{"output":{"task_id":"...","task_status":"PENDING"}}
+        // 先尝试阿里格式，失败则回退到百度 VOD 格式。
+        let raw = &raw_response;
+
+        // 优先尝试阿里百炼 Bailian 格式
+        if let Ok(resp) = serde_json::from_str::<BailianCreateResponse>(raw) {
+            if let Some(code) = resp.code {
+                let msg = resp.message.unwrap_or_else(|| "unknown error".to_string());
+                return Err(AIError::Provider(format!(
+                    "{} createTask API error [{}]: {}",
+                    log_tag, code, msg
+                )));
+            }
+            if let Some(task_id) = resp.output.and_then(|o| if o.task_id.is_empty() { None } else { Some(o.task_id) }) {
+                return Ok(task_id);
+            }
+        }
+
+        // 回退到百度 VOD 格式：{"taskId":"...","code":"0"}
+        if let Ok(resp) = serde_json::from_str::<BaiduVodTaskResponse>(raw) {
+            if let Some(code) = &resp.code {
+                let msg = resp.message.as_deref().unwrap_or("unknown");
+                if code != "0" && code != "Success" {
                     return Err(AIError::Provider(format!(
                         "{} createTask API error [{}]: {}",
                         log_tag, code, msg
                     )));
                 }
-                resp.output
-                    .map(|o| o.task_id)
-                    .ok_or_else(|| AIError::Provider(format!("{} createTask missing task_id", log_tag)))
             }
-            Backend::BaiduVod => {
-                // HappyHorse via Baidu VOD is a transparent passthrough of Alibaba Bailian.
-                // The create response uses Alibaba format: {"output":{"task_id":"...","task_status":"PENDING"}}
-                // Try Alibaba format first, fall back to Baidu VOD format.
-                let raw = &raw_response;
-
-                // Try Alibaba/DashScope format first
-                if let Ok(resp) = serde_json::from_str::<DashScopeCreateResponse>(raw) {
-                    if let Some(code) = resp.code {
-                        let msg = resp.message.unwrap_or_else(|| "unknown error".to_string());
-                        return Err(AIError::Provider(format!(
-                            "{} createTask API error [{}]: {}",
-                            log_tag, code, msg
-                        )));
-                    }
-                    if let Some(task_id) = resp.output.and_then(|o| if o.task_id.is_empty() { None } else { Some(o.task_id) }) {
-                        return Ok(task_id);
-                    }
-                }
-
-                // Fall back to Baidu VOD format: {"taskId":"...","code":"0"}
-                if let Ok(resp) = serde_json::from_str::<BaiduVodTaskResponse>(raw) {
-                    if let Some(code) = &resp.code {
-                        let msg = resp.message.as_deref().unwrap_or("unknown");
-                        if code != "0" && code != "Success" {
-                            return Err(AIError::Provider(format!(
-                                "{} createTask API error [{}]: {}",
-                                log_tag, code, msg
-                            )));
-                        }
-                    }
-                    if let Some(task_id) = resp.task_id {
-                        return Ok(task_id);
-                    }
-                }
-
-                return Err(AIError::Provider(format!(
-                    "{} createTask: unable to extract task_id from response: {}",
-                    log_tag, raw_response
-                )));
+            if let Some(task_id) = resp.task_id {
+                return Ok(task_id);
             }
         }
+
+        Err(AIError::Provider(format!(
+            "{} createTask: unable to extract task_id from response: {}",
+            log_tag, raw_response
+        )))
     }
 
     async fn poll_task_once(
@@ -369,16 +293,8 @@ impl HappyHorseProvider {
         api_key: &str,
         task_id: &str,
     ) -> Result<ProviderTaskPollResult, AIError> {
-        let (endpoint, log_tag) = match self.backend {
-            Backend::DashScope => (
-                format!("{}{}/{}", DASHSCOPE_BASE_URL, DASHSCOPE_TASK_QUERY_PATH, task_id),
-                "HappyHorse-DashScope",
-            ),
-            Backend::BaiduVod => (
-                format!("{}/{}", BAIDU_VOD_TASK_QUERY_URL, task_id),
-                "HappyHorse-BaiduVOD",
-            ),
-        };
+        let endpoint = format!("{}/{}", BAIDU_VOD_TASK_QUERY_URL, task_id);
+        let log_tag = "HappyHorse-BaiduVOD";
 
         let response = self
             .client
@@ -397,110 +313,69 @@ impl HappyHorseProvider {
             )));
         }
 
-        match self.backend {
-            Backend::DashScope => {
-                let resp: DashScopeTaskResponse =
-                    serde_json::from_str(&raw_response).map_err(|err| {
-                        AIError::Provider(format!(
-                            "{} task query invalid JSON: {}; raw={}",
-                            log_tag, err, raw_response
-                        ))
-                    })?;
-                if let Some(code) = resp.code {
-                    let msg = resp.message.unwrap_or_else(|| "unknown error".to_string());
-                    return Err(AIError::Provider(format!(
-                        "{} task query API error [{}]: {}",
-                        log_tag, code, msg
-                    )));
-                }
-                let output = resp.output.ok_or_else(|| {
-                    AIError::Provider(format!("{} task query missing output", log_tag))
-                })?;
-                match output.task_status.as_str() {
-                    "SUCCEEDED" => {
-                        let video_url = output.video_url.ok_or_else(|| {
-                            AIError::Provider(format!("{} SUCCEEDED but missing video_url", log_tag))
-                        })?;
-                        info!("[{}] task {} succeeded: {}", log_tag, task_id, video_url);
-                        Ok(ProviderTaskPollResult::Succeeded(video_url))
-                    }
-                    "FAILED" => {
-                        let fail_msg = output.message.unwrap_or_else(|| "task failed".to_string());
-                        Ok(ProviderTaskPollResult::Failed(fail_msg))
-                    }
-                    "PENDING" | "RUNNING" => Ok(ProviderTaskPollResult::Running),
-                    other => Err(AIError::Provider(format!(
-                        "{} unexpected task status: {}",
-                        log_tag, other
-                    ))),
-                }
+        info!("[{}] poll raw response: {}", log_tag, raw_response);
+        let resp: BaiduVodTaskResponse =
+            serde_json::from_str(&raw_response).map_err(|err| {
+                AIError::Provider(format!(
+                    "{} task query invalid JSON: {}; raw={}",
+                    log_tag, err, raw_response
+                ))
+            })?;
+        if let Some(code) = &resp.code {
+            let msg = resp.message.as_deref().unwrap_or("unknown");
+            if code != "0" && code != "Success" {
+                return Err(AIError::Provider(format!(
+                    "{} task query API error [{}]: {}",
+                    log_tag, code, msg
+                )));
             }
-            Backend::BaiduVod => {
-                info!("[{}] poll raw response: {}", log_tag, raw_response);
-                let resp: BaiduVodTaskResponse =
-                    serde_json::from_str(&raw_response).map_err(|err| {
-                        AIError::Provider(format!(
-                            "{} task query invalid JSON: {}; raw={}",
-                            log_tag, err, raw_response
-                        ))
-                    })?;
-                if let Some(code) = &resp.code {
-                    let msg = resp.message.as_deref().unwrap_or("unknown");
-                    if code != "0" && code != "Success" {
-                        return Err(AIError::Provider(format!(
-                            "{} task query API error [{}]: {}",
-                            log_tag, code, msg
-                        )));
-                    }
-                }
-                // Check video_gen_info embedded status — it may be SUCCEEDED even when
-                // the top-level status is still RUNNING (post-processing / upload in progress).
-                let inner_status = resp.video_gen_info
-                    .as_ref()
-                    .and_then(|vi| vi.get("status"))
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_uppercase();
-                // Always try to extract video URL first — mediaBasicInfos may be populated
-                // before the top-level status flips to SUCCESS.
-                if let Some(url) = Self::extract_baidu_vod_video_url(&resp) {
-                    info!("[{}] task {} succeeded (media ready): {}", log_tag, task_id, url);
-                    return Ok(ProviderTaskPollResult::Succeeded(url));
-                }
-                // If inner generation explicitly failed, report failure.
-                if inner_status == "FAILED" || inner_status == "ERROR" {
-                    let msg = resp.video_gen_info
-                        .as_ref()
-                        .and_then(|vi| vi.get("message").or_else(|| vi.get("error")))
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("生成失败");
-                    info!("[{}] task {} FAILED (inner): {}", log_tag, task_id, msg);
-                    return Ok(ProviderTaskPollResult::Failed(msg.to_string()));
-                }
-                let task_status = resp.status.as_deref().unwrap_or("").to_uppercase();
-                match task_status.as_str() {
-                    "SUCCEEDED" | "COMPLETED" | "SUCCESS" => {
-                        // Already tried extract_baidu_vod_video_url above; if we get here,
-                        // the status says success but no URL was found.
-                        info!("[{}] task {} status={} but no media URL yet, keep polling",
-                            log_tag, task_id, task_status);
-                        Ok(ProviderTaskPollResult::Running)
-                    }
-                    "FAILED" | "ERROR" => {
-                        let msg = resp.message.unwrap_or_else(|| "生成失败".to_string());
-                        info!("[{}] task {} FAILED: {}", log_tag, task_id, msg);
-                        Ok(ProviderTaskPollResult::Failed(msg))
-                    }
-                    "READY" | "PENDING" | "RUNNING" | "PROCESSING" | _ => {
-                        let detail = if inner_status == "SUCCEEDED" {
-                            " (AI done, waiting for media upload)"
-                        } else {
-                            ""
-                        };
-                        info!("[{}] task {} status={}{}", log_tag, task_id, task_status, detail);
-                        Ok(ProviderTaskPollResult::Running)
-                    }
-                }
+        }
+        // Check video_gen_info embedded status — it may be SUCCEEDED even when
+        // the top-level status is still RUNNING (post-processing / upload in progress).
+        let inner_status = resp.video_gen_info
+            .as_ref()
+            .and_then(|vi| vi.get("status"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_uppercase();
+        // Always try to extract video URL first — mediaBasicInfos may be populated
+        // before the top-level status flips to SUCCESS.
+        if let Some(url) = Self::extract_baidu_vod_video_url(&resp) {
+            info!("[{}] task {} succeeded (media ready): {}", log_tag, task_id, url);
+            return Ok(ProviderTaskPollResult::Succeeded(url));
+        }
+        // If inner generation explicitly failed, report failure.
+        if inner_status == "FAILED" || inner_status == "ERROR" {
+            let msg = resp.video_gen_info
+                .as_ref()
+                .and_then(|vi| vi.get("message").or_else(|| vi.get("error")))
+                .and_then(|m| m.as_str())
+                .unwrap_or("生成失败");
+            info!("[{}] task {} FAILED (inner): {}", log_tag, task_id, msg);
+            return Ok(ProviderTaskPollResult::Failed(msg.to_string()));
+        }
+        let task_status = resp.status.as_deref().unwrap_or("").to_uppercase();
+        match task_status.as_str() {
+            "SUCCEEDED" | "COMPLETED" | "SUCCESS" => {
+                // Already tried extract_baidu_vod_video_url above; if we get here,
+                // the status says success but no URL was found.
+                info!("[{}] task {} status={} but no media URL yet, keep polling",
+                    log_tag, task_id, task_status);
+                Ok(ProviderTaskPollResult::Running)
+            }
+            "FAILED" | "ERROR" => {
+                let msg = resp.message.unwrap_or_else(|| "生成失败".to_string());
+                info!("[{}] task {} FAILED: {}", log_tag, task_id, msg);
+                Ok(ProviderTaskPollResult::Failed(msg))
+            }
+            "READY" | "PENDING" | "RUNNING" | "PROCESSING" | _ => {
+                let detail = if inner_status == "SUCCEEDED" {
+                    " (AI done, waiting for media upload)"
+                } else {
+                    ""
+                };
+                info!("[{}] task {} status={}{}", log_tag, task_id, task_status, detail);
+                Ok(ProviderTaskPollResult::Running)
             }
         }
     }
@@ -519,18 +394,11 @@ impl AIProvider for HappyHorseProvider {
     }
 
     fn supports_model(&self, model: &str) -> bool {
-        let bare = Self::sanitize_model(model);
-        matches!(
-            bare.as_str(),
-            "happyhorse-1.0-r2v" | "happyhorse-1.1-r2v"
-        )
+        Self::sanitize_model(model) == "happyhorse-1.1-r2v"
     }
 
     fn list_models(&self) -> Vec<String> {
-        vec![
-            "happyhorse/happyhorse-1.0-r2v".to_string(),
-            "happyhorse/happyhorse-1.1-r2v".to_string(),
-        ]
+        vec!["happyhorse/happyhorse-1.1-r2v".to_string()]
     }
 
     async fn set_api_key(&self, api_key: String) -> Result<(), AIError> {
@@ -557,15 +425,11 @@ impl AIProvider for HappyHorseProvider {
         let refs = request.reference_images.as_deref().unwrap_or(&[]);
         let task_id = self.create_task(&api_key, &request, refs).await?;
 
-        // Store backend type + api_key in metadata for cross-session resume
-        let backend_tag = match self.backend {
-            Backend::DashScope => "dashscope",
-            Backend::BaiduVod => "baidu_vod",
-        };
+        // 通道固定为百度 VOD，api_key 存入 metadata 用于跨会话续传
         Ok(ProviderTaskSubmission::Queued(ProviderTaskHandle {
             task_id,
             metadata: Some(serde_json::json!({
-                "backend": backend_tag,
+                "backend": "baidu_vod",
                 "api_key": api_key,
                 "api_model": self.api_model,
             })),

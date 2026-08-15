@@ -194,7 +194,7 @@ pub(crate) async fn chat_send_message(
           If single segment (≤15s), your response MUST start with 【视频提示词】, then output the prompt with appropriate number of shots (per SKILL.md: ≤5s=1 shot, 6-10s=1-3 shots, 11-15s=2-4 shots). Then STOP with L2 grid question.\n\
         [5] If user said \"A\" or \"A-生成\": output 【分镜提示词】+ grid frames per step 8. Frames start from numbered items (1、2、…6、) — NO style anchor/camera/description headers.\n\
           IMMEDIATELY after the 6 frames, output 【分镜映射】 JSON mapping each video shot to its grid frames: {\"shots\":[{\"shot\":1,\"time\":\"0-Xs\",\"frames\":[1,2,3],\"camera\":\"...\",\"sound\":\"...\"},{\"shot\":2,\"time\":\"X-Ys\",\"frames\":[4,5,6],\"camera\":\"...\",\"sound\":\"...\"}]}\n\
-          shots[].shot = shot number. shots[].time = from video prompt \"第N个镜头[X-Ys]\" exactly. shots[].frames = grid frame numbers (1-6) this shot covers. shots[].camera/sound/bgm = from video prompt.\n\
+          shots[].shot = shot number. shots[].time = from video prompt \"Begin with Shot N [X-Ys]\" / \"Then Shot N [X-Ys]\" / \"Cut to Shot N [X-Ys]\" time bracket exactly. shots[].frames = grid frame numbers (1-6) this shot covers. shots[].camera/sound/bgm = from video prompt.\n\
           ALL 6 frames [1..6] MUST be covered across all shots. This 【分镜映射】 JSON is MANDATORY for EVERY segment. Both segment 1 AND segment 2 must have it.\n\
           THEN, if multi-segment AND not final segment, output L3: 【继续确认】\\n第N段已完成。是否继续生成第N+1段[标题]？\\n继续-生成下一段 暂停-先处理当前内容\n\
         [6] If user said \"继续\" or \"继续-生成下一段\": generate NEXT segment's video prompt (Step 3 onward). Output 【视频提示词】+ next segment shots. When later user says \"A\" to generate grid for THIS segment, also output 【分镜映射】 JSON — same as rule [5].\n\

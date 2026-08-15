@@ -33,16 +33,14 @@ export interface VideoGenRules {
   negative_prompt?: string;
   /** 注入到提示词前面的规则文本（所有模型通用） */
   prompt_rule?: string;
-  /** 服务端 Wan R2V 专用规则（字段名 r2v_prompt_rule） */
-  r2v_prompt_rule?: string;
-  /** CFG scale，控制生成与提示词的匹配度（Wan 模型用） */
+  /** CFG scale，控制生成与提示词的匹配度 */
   guidance_scale?: number;
   /** 镜头模式：single 单镜头 / multi 多镜头 */
   shot_type?: string;
 }
 
 // 旅游版兜底规则 — 仅网络故障时使用。完整规则见服务端 video_gen_rules_travel.json
-const DEFAULT_PROMPT_RULE = '【铁律·旅游版】图1=视频首帧，视频从图1开始空间递进（外→内·全景→细节），经过图2-图5自然过渡，在图6结束。按左→右、上→下顺序逐格处理全部6张宫格图。每张宫格=一个关键帧。画面内容100%来自宫格参考图，文字仅提供运镜+动作+环境音。禁止添加参考图不存在的任何地标/建筑/物品/人物。地标外形/自然地貌/光影时段由参考图锁定。运镜优先无人机/POV步行/延时摄影。旅游写实美学：禁止CG感/塑料感/3D渲染。自然材质纹理、大气透视、真实不完全完美。';
+const DEFAULT_PROMPT_RULE = '【铁律·旅游版】图1=视频首帧，视频从图1开始空间递进（外→内·全景→细节），经过图2-图5自然过渡，在图6结束。按左→右、上→下顺序逐格处理全部6张宫格图。每张宫格=一个关键帧。画面内容100%来自宫格参考图，文字仅提供运镜+动作+环境音。禁止添加参考图不存在的任何地标/建筑/物品/人物。地标外形/自然地貌/光影时段由参考图锁定。运镜优先无人机/POV步行/延时摄影。【平滑运镜·禁止硬切】同一目的地的六格是同一空间的连续递进（外→内·全景→细节），镜头之间禁止硬切/跳切/幻灯片式切换，必须用连续平滑运镜（无人机拉升→POV步行→慢推→微距→延时）一气呵成丝滑衔接，如同一镜到底的空间漫游短片；禁止逐格用固定机位定点硬切。旅游写实美学：禁止CG感/塑料感/3D渲染。自然材质纹理、大气透视、真实不完全完美。';
 
 const DEFAULT_RULES: VideoGenRules = {
   version: '30',
@@ -61,11 +59,12 @@ const DEFAULT_RULES: VideoGenRules = {
     landmark_lock: 'Landmark appearance anchored by storyboard. Camera movement does not alter building/landmark geometry or position.',
     spatial_progression: 'Spatial narrative: outside→inside, wide→detail. Each shot advances the spatial story. No random jumping between unrelated locations.',
     motion_catalog: 'fixed | slow push-in | slow pull-out | smooth pan L->R | smooth pan R->L | smooth tracking | slight handheld shake | orbit L | orbit R | drone pull-up | drone orbit | drone fly-through | POV walkthrough | macro close-up | time-lapse | crane up | crane down',
-    shot_continuity: 'Storyboard L->R, T->B = spatial progression. Prioritize camera transitions. Hard cut only when scene fundamentally shifts.',
+    shot_continuity: 'Storyboard L->R, T->B = spatial progression. Same-destination frames must connect via continuous smooth camera moves (drone pull-up / POV walkthrough / slow push-in / macro) for a seamless one-take feel. Hard cut ONLY when the destination / time fundamentally changes; never hard-cut between frames of the same destination.',
     hard_constraints: [
       'Storyboard = ground truth. Visual content from storyboard only.',
       'Each shot aligns with corresponding storyboard frame.',
       'Frame-to-frame transitions must be smooth.',
+      'No hard cuts between same-destination frames — connect them with continuous smooth camera moves (one-take feel).',
       'All camera movement within storyboard frame boundaries.',
       'Landmarks/spatial elements exist every frame — no morphing.',
       'No image stretching. No landmark distortion.',
@@ -87,10 +86,6 @@ export async function fetchVideoGenRules(model?: string): Promise<VideoGenRules>
     try {
       const raw: string = await invoke('fetch_video_gen_rules', { model: model || null });
       const parsed = JSON.parse(raw) as VideoGenRules;
-      // 服务端 Wan R2V 用 r2v_prompt_rule 字段名，映射到通用 prompt_rule
-      if (!parsed.prompt_rule && parsed.r2v_prompt_rule) {
-        parsed.prompt_rule = parsed.r2v_prompt_rule;
-      }
       if (parsed?.version && parsed.constraints) {
         cachedRules = parsed;
         return cachedRules;

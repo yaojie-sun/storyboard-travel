@@ -149,8 +149,8 @@ function parseGridFrames(gridContent: string): PromptBlockFrame[] {
 
 /** Detect whether text looks like a video prompt (has time-anchored shots). */
 function looksLikeVideoPrompt(text: string): boolean {
-  // Match patterns like: 第1个镜头[0-3s], 第N个镜头[X-Ys], 第N镜头[X-Ys]
-  return /第\s*\d+\s*个?\s*镜头\s*\[\s*\d+\s*-\s*\d+\s*s\s*\]/.test(text);
+  // Match happyhorse 1.1 shot markers like: Begin with Shot 1 [0-3s], Then Shot 2 [3-8s], Cut to Shot 3 [8-12s]
+  return /(?:Begin with|Then|Cut to)\s+Shot\s+\d+\s*\[\s*\d+\s*-\s*\d+\s*s\s*\]/i.test(text);
 }
 
 /** Detect whether text looks like a grid prompt (numbered shot descriptions without time anchors). */
