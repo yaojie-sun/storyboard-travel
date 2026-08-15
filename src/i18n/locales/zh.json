@@ -632,7 +632,7 @@
     "previewPlaceholder": "生成后将在此处预览视频",
     "generating": "正在生成视频...",
     "creditCost": "本次消耗: {{cost}} 积分",
-    "generate": "生成视频",
+    "generate": "生成视频（2K）",
     "download": "下载",
     "promptRequired": "请输入提示词",
     "notImplemented": "视频生成接口将在下一阶段接入",

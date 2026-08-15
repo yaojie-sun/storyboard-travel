@@ -12,7 +12,7 @@ import { bananaSubmitVideoJob, bananaPollVideoJob, bananaCheckCredits, bananaRep
 import { enhanceVideo } from '@/commands/enhance';
 import { cleanVideoPrompt } from '@/commands/chat';
 import { RechargeDialog } from '@/components/RechargeDialog';
-import { UiModal, UiChipButton, UiButton } from '@/components/ui';
+import { UiModal, UiChipButton } from '@/components/ui';
 import { StoryboardPromptPicker } from './StoryboardPromptPicker';
 import { useVideoGenStore } from './videoGenStore';
 import { inferRefTypes, REF_TYPE_LABELS } from './refTypes';
@@ -340,15 +340,8 @@ function VideoGenDialogInner({
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
-  const [isUpscaling, setIsUpscaling] = useState(false);
-  const [upscaleTarget, setUpscaleTarget] = useState<'2K' | '4K' | null>(null);
-  const [showUpscaleConfirm, setShowUpscaleConfirm] = useState(false);
   const [isLocalEnhancing, setIsLocalEnhancing] = useState(false);
   const [localEnhanceProgress, setLocalEnhanceProgress] = useState(0); // 0-100
-  const [showLocalEnhanceConfirm, setShowLocalEnhanceConfirm] = useState(false);
-  const enhanceSuppressVideoConfirmRef = useRef(
-    localStorage.getItem('enhance:suppressVideoConfirm') === '1',
-  );
   const [error, setError] = useState<string | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const submitParamsRef = useRef<{ aspectRatio: string; duration: number; videoModel: string; refUrls: string[]; negativePrompt?: string } | null>(null);
@@ -409,12 +402,15 @@ function VideoGenDialogInner({
             } catch (downloadErr) {
               console.warn('[VideoGenDialog] auto-download failed:', downloadErr);
             }
+            // 生成后自动本地超分到 2K
+            const finalVideoPath = await autoEnhanceTo2K(localVideoPath);
+            setVideoUrl(finalVideoPath);
             const config = {
               prompt: prompt.trim() || '',
               aspectRatio,
               duration,
               videoModel,
-              videoUrl: localVideoPath,
+              videoUrl: finalVideoPath,
               referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
               referenceVoice: referenceVoice ?? undefined,
               gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
@@ -427,7 +423,7 @@ function VideoGenDialogInner({
               // 更新画布节点数据，让视频在节点上可见
               try {
                 useCanvasStore.getState().updateNodeData(nodeIdRef.current, {
-                  generatedVideoUrl: localVideoPath,
+                  generatedVideoUrl: finalVideoPath,
                 });
               } catch { /* non-critical */ }
             }
@@ -806,12 +802,15 @@ function VideoGenDialogInner({
           } catch (downloadErr) {
             console.warn('[VideoGenDialog] sync video download failed:', downloadErr);
           }
+          // 生成后自动本地超分到 2K
+          const finalVideoPath = await autoEnhanceTo2K(syncVideoPath);
+          setVideoUrl(finalVideoPath);
           const config = {
             prompt: prompt.trim() || '',
             aspectRatio,
             duration,
             videoModel,
-            videoUrl: syncVideoPath,
+            videoUrl: finalVideoPath,
             referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
             referenceVoice: referenceVoice ?? undefined,
             gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
@@ -821,7 +820,7 @@ function VideoGenDialogInner({
             addToHistory(nodeIdRef.current, config, result.taskId || undefined);
             try {
               useCanvasStore.getState().updateNodeData(nodeIdRef.current, {
-                generatedVideoUrl: syncVideoPath,
+                generatedVideoUrl: finalVideoPath,
               });
             } catch { /* non-critical */ }
           }
@@ -873,11 +872,10 @@ function VideoGenDialogInner({
     };
   }, []);
 
-  const handleLocalEnhance = useCallback(async () => {
-    if (!videoUrl) return;
+  // 生成完成后自动本地超分到 2K（失败则回退到原视频，不阻塞用户）
+  const autoEnhanceTo2K = useCallback(async (localVideoPath: string): Promise<string> => {
     setIsLocalEnhancing(true);
     setLocalEnhanceProgress(0);
-    setError(null);
     // 模拟进度条：0→90% 约 3 分钟，完成后跳到 100%
     const progressTimer = setInterval(() => {
       setLocalEnhanceProgress(prev => {
@@ -887,41 +885,17 @@ function VideoGenDialogInner({
       });
     }, 2500);
     try {
-      const result = await enhanceVideo(videoUrl, 2);
+      const result = await enhanceVideo(localVideoPath, 2);
       setLocalEnhanceProgress(100);
-      setVideoUrl(result);
-      // 立即持久化，不走防抖，避免关弹窗丢数据
-      const existingCfg = useVideoGenStore.getState().configs[nodeIdRef.current!];
-      saveConfig(nodeIdRef.current!, {
-        prompt,
-        aspectRatio,
-        resolution,
-        duration,
-        videoModel,
-        videoUrl: result,
-        referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
-        referenceVoice: referenceVoice ?? existingCfg?.referenceVoice,
-        gridFrames: gridFrames.length > 0 ? gridFrames : existingCfg?.gridFrames,
-      });
-      if (nodeIdRef.current) {
-        addToHistory(nodeIdRef.current, {
-          prompt: '【本地4K】' + (prompt?.trim() || ''),
-          aspectRatio,
-          duration,
-          videoModel,
-          videoUrl: result,
-          referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
-          referenceVoice: referenceVoice ?? undefined,
-          gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
-        });
-      }
+      return result;
     } catch (e: any) {
-      setError('[LOCAL] ' + (e?.message || String(e)));
+      console.warn('[VideoGenDialog] auto 2K enhance failed, fallback to original:', e);
+      return localVideoPath;
     } finally {
       clearInterval(progressTimer);
       setIsLocalEnhancing(false);
     }
-  }, [videoUrl, prompt, aspectRatio, duration, videoModel, referenceImages, referenceVoice, gridFrames, addToHistory]);
+  }, [enhanceVideo]);
 
   return (
     <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -1181,7 +1155,7 @@ function VideoGenDialogInner({
         {/* Right panel: preview */}
         <div className="flex flex-1 flex-col items-center justify-center p-6">
           {isLocalEnhancing && videoUrl ? (
-            /* 本地4K超分 — 视频上叠加进度蒙版 */
+            /* 本地超分到2K — 视频上叠加进度蒙版 */
             <div className="relative">
               <video
                 src={displayVideoUrl ?? undefined}
@@ -1192,7 +1166,7 @@ function VideoGenDialogInner({
               />
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center rounded-xl bg-bg-dark/65">
                 <div className="w-56 space-y-3">
-                  <p className="text-center text-sm font-medium text-white">正在本地生成4K视频...</p>
+                  <p className="text-center text-sm font-medium text-white">正在本地超分到2K...</p>
                   <div className="h-2.5 w-full overflow-hidden rounded-full bg-white/15">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-700 ease-out"
@@ -1207,17 +1181,15 @@ function VideoGenDialogInner({
                 </div>
               </div>
             </div>
-          ) : !isUpscaling && videoUrl ? (
-            <>
-              <video
-                src={displayVideoUrl ?? undefined}
-                controls
-                className="max-h-[600px] max-w-full rounded-xl"
-                autoPlay
-                loop
-              />
-            </>
-          ) : isGenerating || isUpscaling ? (
+          ) : videoUrl ? (
+            <video
+              src={displayVideoUrl ?? undefined}
+              controls
+              className="max-h-[600px] max-w-full rounded-xl"
+              autoPlay
+              loop
+            />
+          ) : isGenerating ? (
             <div className="flex flex-col items-center gap-6">
               <div className="relative">
                 <div className="absolute inset-0 animate-ping rounded-full border-2 border-purple-400/30" />
@@ -1226,14 +1198,12 @@ function VideoGenDialogInner({
               </div>
               <div className="flex flex-col items-center gap-2">
                 <p className="text-sm font-medium text-text-dark">
-                  {isUpscaling
-                    ? `正在生成${upscaleTarget}视频 (-${upscaleTarget === '2K' ? '20' : '35'}积分)...`
-                    : isResuming
-                      ? t('videoGen.resuming', '正在恢复之前的视频生成任务...')
-                      : t('videoGen.generating', '正在生成视频...')}
+                  {isResuming
+                    ? t('videoGen.resuming', '正在恢复之前的视频生成任务...')
+                    : t('videoGen.generating', '正在生成视频...')}
                 </p>
                 <span className="inline-flex items-center gap-1 text-xs text-text-muted">
-                  {isUpscaling ? '预计需要 1–3 分钟' : isResuming ? '小鸭正在处理中，请耐心等待...' : '预计需要 30–60 秒'}
+                  {isResuming ? '小鸭正在处理中，请耐心等待...' : '预计需要 30–60 秒'}
                   <span className="inline-flex items-center">
                     <span className="mx-0.5 h-1 w-1 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '0ms' }} />
                     <span className="mx-0.5 h-1 w-1 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '150ms' }} />
@@ -1380,53 +1350,9 @@ function VideoGenDialogInner({
                 <Sparkles className="h-3.5 w-3.5" />
                 {isResuming
                   ? t('videoGen.resuming', '正在恢复...')
-                  : t('videoGen.generate', '生成视频')}
+                  : t('videoGen.generate', '生成视频（2K）')}
               </button>
             </div>
-          </div>
-
-          {/* 超分按钮 — 云端 + 本地 */}
-          <div className="mt-2 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                if (!videoUrl) { setError('请先生成视频，再生成高分辨率版本'); return; }
-                setUpscaleTarget('2K'); setShowUpscaleConfirm(true);
-              }}
-              disabled={isGenerating || isUpscaling || isLocalEnhancing}
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-purple-400/30 bg-purple-500/10 px-3 text-xs font-medium text-purple-300 transition-colors hover:bg-purple-500/20 disabled:opacity-40"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              云端 2K (-20积分)
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (!videoUrl) { setError('请先生成视频，再生成高分辨率版本'); return; }
-                setUpscaleTarget('4K'); setShowUpscaleConfirm(true);
-              }}
-              disabled={isGenerating || isUpscaling || isLocalEnhancing}
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 text-xs font-medium text-amber-300 transition-colors hover:bg-amber-500/20 disabled:opacity-40"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              云端 4K (-35积分)
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (!videoUrl) { setError('请先生成视频'); return; }
-                if (enhanceSuppressVideoConfirmRef.current) {
-                  void handleLocalEnhance();
-                } else {
-                  setShowLocalEnhanceConfirm(true);
-                }
-              }}
-              disabled={isGenerating || isUpscaling || isLocalEnhancing}
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:opacity-40"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              {isLocalEnhancing ? '本地生成4K中...' : '本地 4K (免费)'}
-            </button>
           </div>
 
           {error && (() => {
@@ -1617,111 +1543,6 @@ function VideoGenDialogInner({
           </div>
         </div>
       )}
-
-      {/* Upscale confirmation modal */}
-      <UiModal
-        isOpen={showUpscaleConfirm}
-        title={`生成${upscaleTarget}视频`}
-        onClose={() => setShowUpscaleConfirm(false)}
-        widthClassName="w-[400px]"
-        footer={
-          <div className="flex gap-2 w-full">
-            <UiButton variant="muted" size="sm" onClick={() => setShowUpscaleConfirm(false)} className="flex-1">
-              {t('common.cancel', '取消')}
-            </UiButton>
-            <UiButton variant="primary" size="sm" onClick={async () => {
-              setShowUpscaleConfirm(false);
-              if (!upscaleTarget || !videoUrl) return;
-              setIsUpscaling(true);
-              setError(null);
-              try {
-                const { baiduUpscaleVideo } = await import('@/commands/ai');
-                const result = await baiduUpscaleVideo(videoUrl, upscaleTarget);
-                setVideoUrl(result);
-                // Add to history with 2K/4K label
-                if (nodeIdRef.current) {
-                  const label = upscaleTarget === '2K' ? '【2K视频】' : '【4K视频】';
-                  addToHistory(nodeIdRef.current, {
-                    prompt: label + (prompt?.trim() || ''),
-                    aspectRatio,
-                    duration,
-                    videoModel,
-                    videoUrl: result,
-                    referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
-                    referenceVoice: referenceVoice ?? undefined,
-                    gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
-                  });
-                }
-              } catch (e: any) {
-                setError(e?.message || String(e));
-              } finally {
-                setIsUpscaling(false);
-              }
-            }} className="flex-1">
-              {t('common.confirm', '确认')}
-            </UiButton>
-          </div>
-        }
-      >
-        <div className="text-center py-4">
-          <p className="text-sm text-text-dark">
-            将当前视频超分为{upscaleTarget}分辨率，消耗{upscaleTarget === '2K' ? '20' : '35'}积分，处理需要 1-3 分钟。
-          </p>
-        </div>
-      </UiModal>
-
-      {/* 本地超分硬件要求确认弹窗 */}
-      <UiModal
-        isOpen={showLocalEnhanceConfirm}
-        title="本地视频超分"
-        onClose={() => setShowLocalEnhanceConfirm(false)}
-        widthClassName="w-[420px]"
-        footer={
-          <div className="flex gap-2 w-full">
-            <UiButton variant="muted" size="sm" onClick={() => setShowLocalEnhanceConfirm(false)} className="flex-1">
-              取消
-            </UiButton>
-            <UiButton variant="primary" size="sm" onClick={() => {
-              setShowLocalEnhanceConfirm(false);
-              void handleLocalEnhance();
-            }} className="flex-1 !bg-emerald-600 hover:!bg-emerald-500">
-              继续
-            </UiButton>
-          </div>
-        }
-      >
-        <div className="space-y-3 py-2 text-sm text-text-muted">
-          <p className="font-medium text-text-dark">此功能使用本地 GPU 进行 AI 视频超分增强</p>
-          <div className="rounded-lg border border-[rgba(255,255,255,0.08)] bg-bg-dark p-3">
-            <p className="font-medium text-text-dark mb-2">最低硬件要求：</p>
-            <ul className="list-disc space-y-1 pl-4 text-xs">
-              <li>支持 Vulkan 1.1+ 的显卡</li>
-              <li>NVIDIA GTX 1060 / AMD RX 580 / Intel Arc 及以上</li>
-              <li>至少 2GB 显存（4GB 推荐）</li>
-            </ul>
-          </div>
-          <p className="text-xs leading-relaxed">
-            处理时间取决于视频时长和 GPU 性能，通常需要 2-5 分钟。
-            处理期间请勿关闭窗口。
-          </p>
-          <label className="flex items-center gap-2 text-xs cursor-pointer">
-            <input
-              type="checkbox"
-              className="h-3.5 w-3.5 rounded accent-emerald-500"
-              defaultChecked={enhanceSuppressVideoConfirmRef.current}
-              onChange={(e) => {
-                enhanceSuppressVideoConfirmRef.current = e.currentTarget.checked;
-                if (e.currentTarget.checked) {
-                  localStorage.setItem('enhance:suppressVideoConfirm', '1');
-                } else {
-                  localStorage.removeItem('enhance:suppressVideoConfirm');
-                }
-              }}
-            />
-            <span>以后不再提示</span>
-          </label>
-        </div>
-      </UiModal>
     </div>
   );
 }

@@ -634,7 +634,7 @@
     "previewPlaceholder": "Video will be previewed here after generation",
     "generating": "Generating video...",
     "creditCost": "Cost: {{cost}} credits",
-    "generate": "Generate Video",
+    "generate": "Generate Video (2K)",
     "download": "Download",
     "promptRequired": "Please enter a prompt",
     "notImplemented": "Video generation API will be connected in the next phase",
