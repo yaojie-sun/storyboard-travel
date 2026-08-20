@@ -23,6 +23,7 @@ fn resolve_video_gen_rules_url(model: Option<String>) -> String {
     let file = match model.as_str() {
         "happyhorse_r2v" | "happyhorse/happyhorse-1.1-r2v" => "video_gen_rules_travel.json",
         "pixverse_c1" | "pixverse/c1" => "video_gen_rules_pixverse_c1.json",
+        "minimax" | "minimax/minimax-h3" => "video_gen_rules_minimax_h3.json",
         _ => "video_gen_rules_travel.json",
     };
     let url = format!("{}/{}", RULES_BASE, file);

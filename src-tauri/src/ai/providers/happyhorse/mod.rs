@@ -471,7 +471,7 @@ impl AIProvider for HappyHorseProvider {
 
         loop {
             match self.poll_task_once(&api_key, &task_id).await? {
-                ProviderTaskPollResult::Running => {
+                ProviderTaskPollResult::Queued | ProviderTaskPollResult::Running => {
                     sleep(Duration::from_millis(POLL_INTERVAL_MS)).await
                 }
                 ProviderTaskPollResult::Succeeded(url) => return Ok(url),

@@ -10,7 +10,6 @@ import { useAssetStore } from '@/stores/assetStore';
 import { resolveImageDisplayUrl, imageUrlToDataUrl } from '@/features/canvas/application/imageData';
 import { bananaSubmitVideoJob, bananaPollVideoJob, bananaCheckCredits, bananaReportUsage, bananaRefundCredits } from '@/commands/ai';
 import { enhanceVideo } from '@/commands/enhance';
-import { cleanVideoPrompt } from '@/commands/chat';
 import { RechargeDialog } from '@/components/RechargeDialog';
 import { UiModal, UiChipButton } from '@/components/ui';
 import { StoryboardPromptPicker } from './StoryboardPromptPicker';
@@ -288,7 +287,7 @@ function VideoGenDialogInner({
   const [aspectRatio, setAspectRatio] = useState('9:16');
   const [resolution, setResolution] = useState<VideoResolution>('720P');
   const [duration, setDuration] = useState<VideoDuration>(4);
-  const [videoModel] = useState<string>('happyhorse/happyhorse-1.1-r2v');
+  const [videoModel] = useState<string>('minimax/minimax-h3');
   const [prompt, setPrompt] = useState('');
   const [gridFrames, setGridFrames] = useState<string[]>(initialGridFrames);
 
@@ -340,6 +339,7 @@ function VideoGenDialogInner({
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
+  const [pollStatus, setPollStatus] = useState<'queued' | 'running' | null>(null);
   const [isLocalEnhancing, setIsLocalEnhancing] = useState(false);
   const [localEnhanceProgress, setLocalEnhanceProgress] = useState(0); // 0-100
   const [error, setError] = useState<string | null>(null);
@@ -388,6 +388,11 @@ function VideoGenDialogInner({
         try {
           const pollResult = await bananaPollVideoJob(taskId, deducted, modelName);
           if (controller.signal.aborted) return;
+          if (pollResult.status === 'queued') {
+            setPollStatus('queued');
+          } else if (pollResult.status === 'running') {
+            setPollStatus('running');
+          }
           if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
             setVideoUrl(pollResult.videoUrl);
             // 自动下载视频到本地，优先使用本地路径
@@ -429,7 +434,7 @@ function VideoGenDialogInner({
             }
             setIsGenerating(false);
             setIsResuming(false);
-            bananaReportUsage({ api_type: 'pixverse_c1', is_success: true, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: '' }).catch(() => {});
+            bananaReportUsage({ api_type: 'minimax_h3', is_success: true, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: '' }).catch(() => {});
             return;
           }
           if (pollResult.status === 'failed' || pollResult.status === 'retry') {
@@ -464,7 +469,7 @@ function VideoGenDialogInner({
             setError(t('videoGen.pollTimeout', '视频生成超时，积分已返还，请稍后重试'));
             setIsGenerating(false);
             setIsResuming(false);
-            bananaReportUsage({ api_type: 'pixverse_c1', is_success: false, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: 'timeout' }).catch(() => {});
+            bananaReportUsage({ api_type: 'minimax_h3', is_success: false, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: 'timeout' }).catch(() => {});
             return;
           }
         } catch (e) {
@@ -475,7 +480,7 @@ function VideoGenDialogInner({
           setError(t('videoGen.networkError', '网络异常，积分已返还，请检查网络后重试'));
           setIsGenerating(false);
           setIsResuming(false);
-          bananaReportUsage({ api_type: 'pixverse_c1', is_success: false, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: 'network_error' }).catch(() => {});
+          bananaReportUsage({ api_type: 'minimax_h3', is_success: false, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: 'network_error' }).catch(() => {});
           return;
         }
       }
@@ -492,21 +497,25 @@ function VideoGenDialogInner({
     if (pid && !savedConfig?.videoUrl) {
       console.log('[VideoGenDialog] resuming pending task:', pid);
       // PixVerse/BP tasks expire across sessions — don't auto-resume
-      // Only PixVerse/BP (non-happyhorse) tsk- tasks expire across sessions.
-      // HappyHorse 1.1 via BaiduVOD also uses tsk- prefix — these MUST auto-resume.
-      const isHappyhorseTask = savedConfig?.videoModel?.includes('happyhorse');
-      if (pid.startsWith('tsk-') && !isHappyhorseTask) {
-        console.log('[VideoGenDialog] skipping PixVerse resume (task expires across sessions)');
+      // 只有非 resumable 模型的 tsk- 任务才会跨会话过期。
+      // HappyHorse 1.1 / MiniMax H3 via BaiduVOD 都用 tsk- 前缀 — 必须自动续接。
+      const isResumableTask = savedConfig?.videoModel?.includes('happyhorse')
+        || savedConfig?.videoModel?.includes('minimax');
+      if (pid.startsWith('tsk-') && !isResumableTask) {
+        console.log('[VideoGenDialog] skipping non-resumable task resume (expires across sessions)');
         setPendingTaskId(null);
         return;
       }
       const resumeModel = savedConfig?.videoModel
-        ? (savedConfig.videoModel.includes('happyhorse')
-            ? 'happyhorse/happyhorse-1.1-r2v'
-            : 'pixverse/c1')
+        ? (savedConfig.videoModel.includes('minimax')
+            ? 'minimax/minimax-h3'
+            : savedConfig.videoModel.includes('happyhorse')
+              ? 'happyhorse/happyhorse-1.1-r2v'
+              : 'pixverse/c1')
         : undefined;
       setIsResuming(true);
       setIsGenerating(true);
+      setPollStatus(null);
       startPolling(pid, true, savedConfig?.pendingCreditsDeducted ?? 0, resumeModel);
     }
     // 组件卸载时中止轮询，防止旧轮询循环在后台继续运行
@@ -518,8 +527,7 @@ function VideoGenDialogInner({
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isHappyhorse = videoModel.includes('happyhorse');
-  const isPixverse = videoModel.includes('pixverse');
+  const isMinimax = videoModel.includes('minimax');
 
   const handleClose = useCallback(() => {
     onClose();
@@ -685,27 +693,14 @@ function VideoGenDialogInner({
 
     setIsGenerating(true);
     setVideoUrl(null);
+    setPollStatus(null);
 
     try {
       // 1. 获取规则文件
       const rules = await fetchVideoGenRules(videoModel);
 
-      // 2. DeepSeek 清洗：去掉光影/场景/外观，只保留运镜+精简动作+声音
-      //    确保文字描述不超出宫格图已锚定的画面内容（第3锁）
+      // 2. H3 用自然语言理解，SKILL 已直接输出 H3 格式，不再走 happyhorse 的 Begin-with-Shot 清洗
       let userContent = trimmedPrompt;
-      if (isHappyhorse) {
-        try {
-          userContent = await cleanVideoPrompt({
-            storyboardPrompt: trimmedPrompt,
-            gridFrames,
-            targetModel: 'happyhorse',
-            referenceImages: referenceImages.map(img => img.rawUrl),
-          });
-          console.log('[VideoGenDialog] DeepSeek cleaned prompt:', userContent.length, 'chars (was:', trimmedPrompt.length, 'chars)');
-        } catch (e) {
-          console.warn('[VideoGenDialog] DeepSeek cleaning failed, using original prompt:', e);
-        }
-      }
 
       // 2.5 shotFrameMap 保留在节点缓存中（用于后续分析/调试），
       // 但不再注入图N引用到 prompt。
@@ -723,7 +718,7 @@ function VideoGenDialogInner({
       finalPrompt = promptRule
         ? `${promptRule}\n\n${userContent}`
         : userContent;
-      console.log(`[VideoGenDialog] ${isPixverse ? 'PixVerse' : 'HappyHorse'}, refs:`, referenceImages.length, 'hasRule:', !!promptRule, 'hasNegPrompt:', !!negativePrompt, 'guidanceScale:', guidanceScale, 'shotType:', shotType, 'promptLen:', finalPrompt.length);
+      console.log(`[VideoGenDialog] MiniMax H3, refs:`, referenceImages.length, 'hasRule:', !!promptRule, 'hasNegPrompt:', !!negativePrompt, 'guidanceScale:', guidanceScale, 'shotType:', shotType, 'promptLen:', finalPrompt.length);
 
       // 4. 准备参考图 — 欢乐马：传入拆分后的六张独立参考图（base64）
       const imageInput: string[] = [];
@@ -740,7 +735,7 @@ function VideoGenDialogInner({
 
       // 准备音色参考 audio data URL
       let voiceUrl: string | undefined;
-      if (referenceVoice && isHappyhorse) {
+      if (referenceVoice && isMinimax) {
         try {
           const rawUrl = referenceVoice.rawUrl;
           if (rawUrl.startsWith('data:')) {
@@ -772,9 +767,7 @@ function VideoGenDialogInner({
         negativePrompt: negativePrompt || undefined,
         guidanceScale,
         shotType,
-        model: isHappyhorse
-          ? 'happyhorse/happyhorse-1.1-r2v'
-          : 'pixverse/c1',
+        model: 'minimax/minimax-h3',
       });
 
       if (result.success) {
@@ -838,9 +831,7 @@ function VideoGenDialogInner({
               referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
             });
           }
-          startPolling(result.taskId, false, deducted, isHappyhorse
-            ? 'happyhorse/happyhorse-1.1-r2v'
-            : 'pixverse/c1');
+          startPolling(result.taskId, false, deducted, 'minimax/minimax-h3');
         } else {
           setIsGenerating(false);
           setError(t('videoGen.unknownError', '未知错误'));
@@ -1105,7 +1096,7 @@ function VideoGenDialogInner({
                 )}
               </div>
 
-              {/* 音色参考上传（欢乐马1.1 支持配音） */}
+              {/* 音色参考上传 */}
               <div className="mt-4">
                 <label className="mb-1.5 block text-xs font-medium text-text-muted">
                   {t('videoGen.voiceRef', '音质参考（可选）')}
@@ -1200,10 +1191,16 @@ function VideoGenDialogInner({
                 <p className="text-sm font-medium text-text-dark">
                   {isResuming
                     ? t('videoGen.resuming', '正在恢复之前的视频生成任务...')
-                    : t('videoGen.generating', '正在生成视频...')}
+                    : pollStatus === 'queued'
+                      ? t('videoGen.queued', '排队中，请稍候...')
+                      : t('videoGen.generating', '正在生成视频...')}
                 </p>
                 <span className="inline-flex items-center gap-1 text-xs text-text-muted">
-                  {isResuming ? '小鸭正在处理中，请耐心等待...' : '预计需要 30–60 秒'}
+                  {isResuming
+                    ? '小鸭正在处理中，请耐心等待...'
+                    : pollStatus === 'queued'
+                      ? t('videoGen.queuedHint', '当前任务较多，正在等待分配算力')
+                      : '预计需要 30–60 秒'}
                   <span className="inline-flex items-center">
                     <span className="mx-0.5 h-1 w-1 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '0ms' }} />
                     <span className="mx-0.5 h-1 w-1 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '150ms' }} />

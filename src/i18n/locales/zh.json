@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "分镜大师旅游版",
-    "subtitle": "ShortVideo"
+    "subtitle": "Travel"
   },
   "common": {
     "save": "保存",
@@ -553,6 +553,7 @@
     "send": "发送",
     "sending": "发送中...",
     "inspiration": "💡 爆款灵感",
+    "uploadImage": "上传图片",
     "inspirationConfirm": "AI 将根据您的项目产品，搜索近期热门短视频趋势，生成 3 个精准爆款创意方案。",
     "inspirationCost": "每次消耗 3 积分",
     "cancelStream": "停止生成",
@@ -656,6 +657,8 @@
     "goRecharge": "去充值",
     "confirmGenerate": "确认生成",
     "resuming": "正在恢复之前的视频生成任务...",
+    "queued": "排队中，请稍候...",
+    "queuedHint": "当前任务较多，正在等待分配算力",
     "pollTimeout": "视频生成超时，积分已返还，请稍后重试"
   },
   "consumption": {

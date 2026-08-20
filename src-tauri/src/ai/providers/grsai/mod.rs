@@ -283,7 +283,7 @@ impl GrsaiProvider {
     async fn poll_result_until_complete(&self, task_id: &str) -> Result<String, AIError> {
         loop {
             match self.poll_result_once(task_id).await? {
-                ProviderTaskPollResult::Running => sleep(Duration::from_millis(POLL_INTERVAL_MS)).await,
+                ProviderTaskPollResult::Queued | ProviderTaskPollResult::Running => sleep(Duration::from_millis(POLL_INTERVAL_MS)).await,
                 ProviderTaskPollResult::Succeeded(url) => return Ok(url),
                 ProviderTaskPollResult::Failed(message) => return Err(AIError::TaskFailed(message)),
             }

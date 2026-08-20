@@ -10,9 +10,7 @@ import { EditParamsDialog } from './EditParamsDialog';
 import { EpisodeList } from './EpisodeList';
 import { AssetManager } from './AssetManager';
 import { ReanalyzeDialog } from './ReanalyzeDialog';
-import { readProjectGlobalsMd } from '@/commands/projectState';
-import { listAssets } from '@/commands/asset';
-import { getEmphasisLabels, getVideoTypeLabel } from './presets';
+import { buildProjectChatContext } from '@/features/chat/projectContext';
 
 type DialogMode = 'rename' | 'params' | 'reanalyze' | null;
 
@@ -94,44 +92,7 @@ export function ProjectDashboard() {
   const enabledDimensions = project.emphasisDimensions.filter((d) => d.enabled);
 
   const buildAndSetContext = useCallback(async () => {
-    // 1. Try to read existing project_globals.md
-    let context = await readProjectGlobalsMd(projectId).catch(() => '');
-
-    // 2. Fallback: build minimal context from project params when no MD
-    if (!context.trim()) {
-      const paramsProject = useProjectStore.getState().currentProject;
-      if (paramsProject) {
-        const parts: string[] = [];
-        parts.push(`# ${paramsProject.name}\n`);
-        parts.push('## 项目全局参数\n');
-        if (paramsProject.videoType) parts.push(`- 视频类型: ${getVideoTypeLabel(paramsProject.videoType)}`);
-        if (paramsProject.aspectRatio) parts.push(`- 画幅比例: ${paramsProject.aspectRatio}`);
-        if (paramsProject.style) parts.push(`- 视觉风格: ${paramsProject.style}`);
-        if (paramsProject.tone) parts.push(`- 项目调性: ${paramsProject.tone}`);
-        if (paramsProject.directorRef) parts.push(`- 旅行视频风格: ${paramsProject.directorRef}`);
-        const emphasisLabels = getEmphasisLabels(paramsProject.emphasisDimensions.filter((d) => d.enabled).map((d) => d.key));
-        if (emphasisLabels.length > 0) {
-          parts.push(`- 提示词重点维度: ${emphasisLabels.join('、')}`);
-        }
-        context = parts.join('\n') + '\n';
-      }
-    }
-
-    // 3. Append asset @图N mapping
-    try {
-      const assets = await listAssets(projectId);
-      if (assets.length > 0) {
-        const categoryLabel = (cat: string) =>
-          cat === 'character' ? '角色' : cat === 'scene' ? '场景' : '服饰道具';
-        const assetLines = assets.map((a, i) =>
-          `@图${i + 1}: ${a.name} (${categoryLabel(a.category)})`,
-        );
-        context = `${context}\n## 可用参考图\n${assetLines.join('\n')}\n\n生成分镜提示词时，如需引用参考图请使用 @图N 格式。`;
-      }
-    } catch {
-      // Assets not critical for chat — ignore errors
-    }
-
+    const context = await buildProjectChatContext(projectId);
     setProjectContext(context);
   }, [projectId, setProjectContext]);
 

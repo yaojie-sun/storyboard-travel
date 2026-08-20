@@ -2,14 +2,18 @@ import { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '@/stores/chatStore';
 import { UiModal, UiButton } from '@/components/ui';
+import { AddAssetDialog } from '@/features/project/AddAssetDialog';
+import { buildProjectChatContext } from './projectContext';
 
 export function ChatInput() {
   const { t } = useTranslation();
   const [input, setInput] = useState('');
   const [showInspirationConfirm, setShowInspirationConfirm] = useState(false);
+  const [showAddAsset, setShowAddAsset] = useState(false);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const cancelStream = useChatStore((s) => s.cancelStream);
+  const currentProjectId = useChatStore((s) => s.currentProjectId);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
@@ -29,6 +33,18 @@ export function ChatInput() {
     setShowInspirationConfirm(false);
     sendMessage('💡爆款灵感：请根据我的项目产品，搜索当前短视频热门趋势，给我 3 个精准的爆款创意方案', 'inspiration');
   }, [sendMessage]);
+
+  const handleAssetAdded = useCallback(async () => {
+    setShowAddAsset(false);
+    const pid = useChatStore.getState().currentProjectId;
+    if (!pid) return;
+    try {
+      const context = await buildProjectChatContext(pid);
+      useChatStore.getState().setProjectContext(context);
+    } catch {
+      // context 刷新失败不影响已上传的素材
+    }
+  }, []);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -61,6 +77,19 @@ export function ChatInput() {
             <path d="M5.5 7h5M8 4.5v5" strokeLinecap="round"/>
           </svg>
           {t('chat.inspiration', '💡 爆款灵感')}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowAddAsset(true)}
+          disabled={isStreaming}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="2" y="3" width="12" height="10" rx="1.5" />
+            <circle cx="6" cy="6.5" r="1.2" />
+            <path d="M2 12l3.5-3 2.5 2 2-2L14 12" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          {t('chat.uploadImage', '上传图片')}
         </button>
       </div>
 
@@ -162,6 +191,14 @@ export function ChatInput() {
           </p>
         </div>
       </UiModal>
+
+      {showAddAsset && currentProjectId && (
+        <AddAssetDialog
+          projectId={currentProjectId}
+          isOpen={showAddAsset}
+          onClose={handleAssetAdded}
+        />
+      )}
     </div>
   );
 }

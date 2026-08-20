@@ -39,39 +39,38 @@ export interface VideoGenRules {
   shot_type?: string;
 }
 
-// 旅游版兜底规则 — 仅网络故障时使用。完整规则见服务端 video_gen_rules_travel.json
-const DEFAULT_PROMPT_RULE = '【铁律·旅游版】图1=视频首帧，视频从图1开始空间递进（外→内·全景→细节），经过图2-图5自然过渡，在图6结束。按左→右、上→下顺序逐格处理全部6张宫格图。每张宫格=一个关键帧。画面内容100%来自宫格参考图，文字仅提供运镜+动作+环境音。禁止添加参考图不存在的任何地标/建筑/物品/人物。地标外形/自然地貌/光影时段由参考图锁定。运镜优先无人机/POV步行/延时摄影。【平滑运镜·禁止硬切】同一目的地的六格是同一空间的连续递进（外→内·全景→细节），镜头之间禁止硬切/跳切/幻灯片式切换，必须用连续平滑运镜（无人机拉升→POV步行→慢推→微距→延时）一气呵成丝滑衔接，如同一镜到底的空间漫游短片；禁止逐格用固定机位定点硬切。旅游写实美学：禁止CG感/塑料感/3D渲染。自然材质纹理、大气透视、真实不完全完美。人物真人质感：静止也有呼吸起伏/重心微移/自然眨眼/发丝微动，表情由眼神与细微张力传递（克制真实不夸张），动作有加减速与重心转移；禁止蜡像感/娃娃感/塑料皮肤/死鱼眼/固定微笑/机器人匀速/瞬间起停/卡通夸张表情。';
+// 旅游版兜底规则 — 仅网络故障时使用。完整规则见服务端 video_gen_rules_minimax_h3.json
+const DEFAULT_PROMPT_RULE = '【核心指令】参考图是 6 宫格故事板，生成一段连续、带运镜的旅行短视频。宫格 1→2→3→4→5→6 是一条连续时间线，不是 6 张独立快照拼接的幻灯片。地标/地貌/光影跨宫格完全一致，动态过程从前一格自然延续到后一格，无跳跃、无重置、无时间倒流。\n\n【故事板=唯一视觉真相】画面内容 100% 来自参考图宫格，文本只写运镜+动作+声音，禁止添加参考图不存在的地标/建筑/物品/人物，禁止改写参考图已有内容。\n\n【自然语言运镜】用中文自然语言描述摄像机运动（缓慢推近/缓慢拉远/平稳摇镜/平稳跟拍/环绕/固定机位/手持微晃/升镜/降镜/无人机拉升/无人机环绕/无人机穿行/POV步行/微距特写/延时摄影等），速度均匀、不叠加。画面与目的地一致时用运镜丝滑串联、禁止硬切；仅场景发生实质变化时才允许切镜头。\n\n【多镜头时间锚定】如需精确控制镜头节奏，用 [Shot N] At MM:SS.mmm 标注每个镜头起点，时间戳严格递增、落在总时长内。单镜头内动作不超过 2-3 个，复杂动作链拆分到多个镜头。每个镜头时长不低于1.5秒，相邻镜头时间戳间隔≥1.5秒，禁止一闪而过的碎镜头。\n\n【三轨音频】① 对白与画内声融入视听描述（标注说话人）；② 环境音/物理声/非语言人声（风声/海浪/自然音/脚步声/环境氛围声等）单独成段；③ 配乐单独成段（无则忽略）。三轨不重叠。\n\n【物理规律·强制】所有运动符合真实物理：重力向下、物体自然下落、水流流动、旗帜/植被/衣物按风摆动，禁止反重力悬浮、物体凭空出现/消失、违反惯性瞬时变速。\n\n【色温】指定色温时严格遵循：暖光 3200K / 中性 4500K / 冷光 5600K。\n\n【光影时段锁定】同一目的地的光影时段（黄金时刻/蓝调时刻/白天/夜晚）跨宫格一致，不跳变、不倒流。\n\n【地标主体锁定·旅游专业】地标外形/自然地貌/光影时段严格锁定于参考图，不漂移、不变形、不简化、不被 AI 重新设计。目的地始终是画面主角——每一帧都能看到地标/地貌或通过光影/构图暗示其存在。\n\n【旅游写实质感】禁止CG感/塑料感/3D渲染。自然材质纹理、大气透视、真实不完全完美。人物真人质感：静止也有呼吸起伏/重心微移/自然眨眼/发丝微动，表情由眼神与细微张力传递（克制真实不夸张），动作有加减速与重心转移；禁止蜡像感/娃娃感/塑料皮肤/死鱼眼/固定微笑/机器人匀速/瞬间起停/卡通夸张表情。\n\n【禁止】禁止文字/水印/字幕/对话框/标签；禁止分辨率/画幅/模型名。No text overlays, no watermarks, no subtitles, no captions.';
 
 const DEFAULT_RULES: VideoGenRules = {
-  version: '30',
+  version: '2',
   integration: {
-    model: 'none',
+    model: 'minimax/minimax-h3',
     max_tokens: 0,
     system_prompt: '',
   },
-  guidance_scale: 8.0,
-  shot_type: 'multi',
   negative_prompt: 'chromatic aberration, motion blur excess, morphing, distortion, warping, flicker, unnatural physics, floating objects, anti-gravity, building shape drift, landmark distortion, bad weather, overcast sky, haze, construction site, trash on ground, crowded background clutter, ugly modern buildings, power lines, CG look, plastic texture, 3D render, video game graphics, oversaturated colors, HDR halo, invented objects, hallucinated props, AI watermark, AI subtitle, empty frame, static image, abrupt transition, doll-like, wax figure, plastic skin, dead eyes, lifeless eyes, frozen expression, fixed smile, uncanny valley, robotic movement, mechanical motion, exaggerated gesture, over-smooth skin, stiffness, waxiness',
   prompt_rule: DEFAULT_PROMPT_RULE,
   constraints: {
-    global_rule: 'STORYBOARD = GROUND TRUTH. Visual content 100% anchored by 6 storyboard frames. Text provides camera + movement + environmental audio only. All camera movement within frame boundaries. Travel photorealism required — no CG/plastic/3D render aesthetics.',
-    object_persistence: 'Landmarks and spatial elements exist every frame. Building shapes, natural landforms, and spatial layout locked by storyboard. No morphing or count change.',
-    landmark_lock: 'Landmark appearance anchored by storyboard. Camera movement does not alter building/landmark geometry or position.',
-    spatial_progression: 'Spatial narrative: outside→inside, wide→detail. Each shot advances the spatial story. No random jumping between unrelated locations.',
-    motion_catalog: 'slow push-in | slow pull-out | smooth pan L->R | smooth pan R->L | smooth tracking | slight handheld shake | orbit L | orbit R | drone pull-up | drone orbit | drone fly-through | POV walkthrough | macro close-up | time-lapse | crane up | crane down | fixed (only for opening/closing freeze, never for frame-to-frame transition)',
-    shot_continuity: 'Storyboard L->R, T->B = spatial progression. Same-destination frames must connect via continuous smooth camera moves (drone pull-up / POV walkthrough / slow push-in / macro) for a seamless one-take feel. Hard cut ONLY when the destination / time fundamentally changes; never hard-cut between frames of the same destination.',
+    global_rule: '故事板宫格=连续旅行短视频时间线。画面内容 100% 由参考图锁定，文本只写运镜+动作+声音。用中文自然语言描述摄像机运动，多镜头用 [Shot N] At MM:SS.mmm 时间戳锚定。旅游写实摄影，禁止 CG/塑料/3D 渲染质感。',
+    object_persistence: '地标/地貌每一帧都存在。外形/纹理/色彩/光影时段由宫格锁定，不消失、不变形、不增减。',
+    landmark_lock: '地标/地貌外观由参考图锁定。运镜不改变外形/纹理/光影时段。',
+    spatial_progression: '空间递进：外→内·全景→细节。每个镜头推进空间故事，不随机跳转无关地点。',
+    motion_catalog: '缓慢推近 | 缓慢拉远 | 平稳摇镜 | 平稳跟拍 | 环绕 | 固定机位 | 手持微晃 | 升镜 | 降镜 | 无人机拉升 | 无人机环绕 | 无人机穿行 | POV步行 | 微距特写 | 延时摄影',
+    shot_continuity: '六格→一个连续视频。摄像机运动均匀串联，每格停留足够时间（每个镜头时长≥1.5秒，禁止一闪而过的碎镜头）。地标/地貌/光影跨格一致。画面与目的地一致时用运镜连贯过渡、禁止硬切；仅场景发生实质变化时才可切镜头。',
     hard_constraints: [
-      'Storyboard = ground truth. Visual content from storyboard only.',
-      'Each shot aligns with corresponding storyboard frame.',
-      'Frame-to-frame transitions must be smooth.',
-      'No hard cuts between same-destination frames — connect them with continuous smooth camera moves (one-take feel).',
-      'All camera movement within storyboard frame boundaries.',
-      'Landmarks/spatial elements exist every frame — no morphing.',
-      'No image stretching. No landmark distortion.',
-      'Process all 6 storyboard frames in spatial sequence.',
-      'Golden hour / blue hour lighting consistency across all frames.',
-      'No AI dialogue, voiceover, or narration.',
-      'Human realism: breathing, weight shift, natural blinking, live eyes — never frozen, never doll-like, never plastic.',
+      '宫格1-6是连续时间线，顺序不变',
+      '不添加/不删减/不修改画面内容',
+      '用摄像机运动丝滑串联，画面/目的地一致时禁止硬切；仅场景发生实质变化时才可切镜头',
+      '提示词只写运镜+动作+声音，不写光影/场景/外观',
+      '多镜头用 [Shot N] At MM:SS.mmm 时间戳锚定，严格递增',
+      '每个镜头时长≥1.5秒，相邻镜头时间戳间隔≥1.5秒，禁止一闪而过的碎镜头',
+      '三轨音频分离：对白/画内声融入视听描述，环境音/物理声单独，配乐单独',
+      '色温严格按指定值',
+      '光影时段跨格锁定',
+      '所有运动必须符合真实物理规律（重力/惯性/碰撞/流体），禁止反重力悬浮和物体穿模',
+      '地标外形/自然地貌/光影时段严格锁死参考图，禁止AI自行重新设计或简化地标外观',
+      'Travel realism: subtle motion, real material texture, atmospheric perspective — never frozen, never doll-like, never plastic.',
     ],
   },
 };

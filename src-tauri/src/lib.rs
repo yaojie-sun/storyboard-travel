@@ -249,7 +249,6 @@ pub fn run() {
             chat::migrate_chat_storage,
             chat::check_skill_upgrade,
             chat::perform_skill_upgrade,
-            chat::integrate_video_prompt,
             chat::analyze_story,
 
             chat::load_videogen_store,
@@ -276,6 +275,8 @@ pub fn run() {
             asset::update_asset,
             asset::list_assets,
             asset::delete_asset,
+            asset::describe_asset,
+            asset::get_asset_descriptions,
             update::check_for_upgrade,
             update::fetch_grid_prompt_rules,
             update::fetch_video_gen_rules,

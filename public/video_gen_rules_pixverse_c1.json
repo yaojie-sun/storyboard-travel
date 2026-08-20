@@ -1,11 +1,11 @@
 {
-  "version": "11",
+  "version": "12",
   "integration": {
     "model": "pixverse/c1",
     "max_tokens": 2048,
     "system_prompt": ""
   },
-  "prompt_rule": "Strictly reproduce the storyboard grid frame by frame. The grid is the only visual truth.\n\nRULES:\n1. 1:1 frame match — every object, character, pose, position, prop count, lighting must exactly match each grid cell. Zero additions. Zero deletions. Zero AI imagination.\n2. Real physics — gravity pulls down, objects move by contact force, weight shifts follow biomechanics, inertia prevents instant stops.\n3. Photorealism — neutral white balance (5600K daylight). No warm film cast, no orange-teal color grading, no cinematic LUT. Natural micro-textures: skin pores, fabric weave, surface grain. Photographic sharpness with subtle sensor noise in shadows. NOT oversmoothed, NOT CGI render, NOT plastic skin.\n4. Cinematic camera — C1's core strength. Choose camera movements naturally based on the scene context and narrative flow. Smoothly transition between static and moving shots as the story demands. Full catalog: static | slow push-in | slow pull-out | pan | tilt | tracking | dolly | crane | orbit | dutch-roll | handheld | slow-motion | whip-pan | dolly-zoom | fpv-drone.\n\nOutput in Chinese. Sound from storyboard only. No visible grid lines, borders, or split screens.",
+  "prompt_rule": "Strictly reproduce the storyboard grid frame by frame. The grid is the only visual truth.\n\nRULES:\n1. 1:1 frame match — every object, character, pose, position, prop count, lighting must exactly match each grid cell. Zero additions. Zero deletions. Zero AI imagination.\n2. Real physics — gravity pulls down, objects move by contact force, weight shifts follow biomechanics, inertia prevents instant stops.\n3. Photorealism — neutral white balance (5600K daylight). No warm film cast, no orange-teal color grading, no cinematic LUT. Natural micro-textures: skin pores, fabric weave, surface grain. Photographic sharpness with subtle sensor noise in shadows. NOT oversmoothed, NOT CGI render, NOT plastic skin.\n4. Cinematic camera — C1's core strength. Choose camera movements naturally based on the scene context and narrative flow. Smoothly transition between static and moving shots as the story demands. Full catalog: static | slow push-in | slow pull-out | pan | tilt | tracking | dolly | crane | orbit | dutch-roll | handheld | slow-motion | whip-pan | dolly-zoom | fpv-drone.\n5. Minimum shot duration — each shot lasts at least 1.5 seconds. No flash cuts, no blink-and-miss shots, no strobing between frames.\n\nOutput in Chinese. Sound from storyboard only. No visible grid lines, borders, or split screens.",
   "constraints": {
     "global_rule": "故事板=唯一视觉真相。每一格100%还原，禁止添加/删减/脑补任何内容。",
     "keyframe_rule": "每格=视频关键帧，严格按从左到右从上到下顺序还原。禁止跳过/合并/替换任何一格。",
@@ -22,6 +22,7 @@
       "每格按从左到右从上到下顺序依次出现",
       "禁止跳过/合并/替换任何一格",
       "运镜根据剧情自然选择，保持视觉语言连贯",
+      "每个镜头时长≥1.5秒，禁止一闪而过的碎镜头",
       "禁止分割线/方框/分屏/边框",
       "全部用中文"
     ]

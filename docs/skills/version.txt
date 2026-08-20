@@ -1,8 +1,9 @@
 name: xiaoya-ai-cinema-travel
-version=1.2.0
+version=1.2.1
 description: 小鸭AI旅游短视频提示词 — 旅游行业AI短视频制作专家，支持智能分镜可视化
-release_date: 2026-08-15
+release_date: 2026-08-20
 changelog: |
+  v1.2.1 — 视频提示词改三轨式（视听描述/声音氛围/配乐），多镜头用 [Shot N] At MM:SS.mmm 时间戳锚定；新增参考图视觉描述优先原则（读图能力自动生成中文视觉描述）
   v1.2.0 — 镜头格式迁移至官方 Begin with Shot N [X-Ys]（Then Shot 平滑过渡 / Cut to Shot 仅场景切换），废弃 S1: 与「第N个镜头」格式；运镜优先无人机/POV步行/延时摄影，同目的地连续平滑运镜禁止硬切
   v1.1.0 — 旅游全链路调优：补充文化古迹六宫格+风格模板，添加强制写实规则/禁止CG感，补齐景区风光/打卡Vlog/美食探店/文化古迹4种示例，仪表盘参数操作化映射指南
   v1.0.1 — 移除 @图N 参考指代语法：用户自行上传参考图，SKILL不再输出 @图N 标注

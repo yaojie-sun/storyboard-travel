@@ -30,8 +30,6 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useEpisodeStore } from '@/stores/episodeStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useAssetStore } from '@/stores/assetStore';
-import { readProjectGlobalsMd } from '@/commands/projectState';
-import { listAssets } from '@/commands/asset';
 import { canvasAiGateway, canvasEventBus } from '@/features/canvas/application/canvasServices';
 import {
   CANVAS_NODE_TYPES,
@@ -61,10 +59,13 @@ import { NodeToolDialog } from './ui/NodeToolDialog';
 import { ImageViewerModal } from './ui/ImageViewerModal';
 import { MissingApiKeyHint } from '@/features/settings/MissingApiKeyHint';
 import { ChatPanel } from '@/features/chat';
-import { getEmphasisLabels, getVideoTypeLabel } from '@/features/project/presets';
+import { buildProjectChatContext } from '@/features/chat/projectContext';
 import { splitGridPromptIntoFrames } from '@/utils/gridPromptParser';
 
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
+
+/// 生成宫格图时，自动连线到宫格节点的最近参考图数量（按上传时间倒序取最近 N 张）
+const MAX_AUTO_REF_IMAGES = 6;
 
 interface PendingConnectStart {
   nodeId: string;
@@ -398,47 +399,10 @@ export function Canvas() {
   // Build project context for AI chat on mount (with fallback when no MD exists)
   useEffect(() => {
     if (!canvasProjectId) return;
-    const project = useProjectStore.getState().currentProject;
-    if (!project) return;
 
-    const buildAndSetContext = async () => {
-      // 1. Try to read existing project_globals.md
-      let context = await readProjectGlobalsMd(canvasProjectId).catch(() => '');
-
-      // 2. Fallback: build minimal context from project params when no MD
-      if (!context.trim()) {
-        const parts: string[] = [];
-        parts.push(`# ${project.name}\n`);
-        parts.push('## 项目全局参数\n');
-        if (project.videoType) parts.push(`- 视频类型: ${getVideoTypeLabel(project.videoType)}`);
-        if (project.aspectRatio) parts.push(`- 画幅比例: ${project.aspectRatio}`);
-        if (project.style) parts.push(`- 视觉风格: ${project.style}`);
-        if (project.tone) parts.push(`- 项目调性: ${project.tone}`);
-        if (project.directorRef) parts.push(`- 旅行视频风格: ${project.directorRef}`);
-        const emphasisLabels = getEmphasisLabels(project.emphasisDimensions.filter((d) => d.enabled).map((d) => d.key));
-        if (emphasisLabels.length > 0) {
-          parts.push(`- 提示词重点维度: ${emphasisLabels.join('、')}`);
-        }
-        context = parts.join('\n') + '\n';
-      }
-
-      // 3. Append asset @图N mapping
-      try {
-        const assets = await listAssets(canvasProjectId);
-        if (assets.length > 0) {
-          const catLabel = (cat: string) =>
-            cat === 'character' ? '角色' : cat === 'scene' ? '场景' : '服饰道具';
-          const lines = assets.map((a, i) =>
-            `@图${i + 1}: ${a.name} (${catLabel(a.category)})`,
-          );
-          context = `${context}\n## 可用参考图\n${lines.join('\n')}\n\n生成分镜提示词时，如需引用参考图请使用 @图N 格式。`;
-        }
-      } catch { /* assets not critical */ }
-
-      useChatStore.getState().setProjectContext(context);
-    };
-
-    void buildAndSetContext();
+    void buildProjectChatContext(canvasProjectId).then((context) =>
+      useChatStore.getState().setProjectContext(context),
+    );
   }, [canvasProjectId]);
 
   // Re-check episodes after load completes (handles race with loadEpisodes)
@@ -1440,20 +1404,22 @@ export function Canvas() {
         referenceIndex: null,
       }));
 
-      // Auto-match reference images from project assets
+      // Auto-link the N most recent reference images from project assets
       const matchedAssets: Array<{ name: string; filePath: string; index: number }> = [];
       const projectId = useProjectStore.getState().currentProject?.id;
       if (projectId) {
         const allAssets = useAssetStore.getState().getAssets(projectId);
-        for (const asset of allAssets) {
-          if (detail.prompt.includes(asset.name) && asset.filePath) {
-            matchedAssets.push({
+        matchedAssets.push(
+          ...allAssets
+            .filter((asset) => asset.filePath)
+            .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+            .slice(0, MAX_AUTO_REF_IMAGES)
+            .map((asset, index) => ({
               name: asset.name,
               filePath: asset.filePath,
-              index: matchedAssets.length,
-            });
-          }
-        }
+              index,
+            })),
+        );
       }
 
       // Create upload nodes for matched assets

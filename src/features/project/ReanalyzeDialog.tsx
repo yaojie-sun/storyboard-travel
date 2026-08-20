@@ -6,9 +6,8 @@ import { analyzeStory, type StoryAnalysisResult } from '@/commands/chat';
 import { generateProjectGlobalsMd } from '@/commands/projectState';
 import { useProjectStore } from '@/stores/projectStore';
 import { useChatStore } from '@/stores/chatStore';
-import { listAssets } from '@/commands/asset';
-import { readProjectGlobalsMd } from '@/commands/projectState';
 import { PresetPicker } from './PresetPicker';
+import { buildProjectChatContext } from '@/features/chat/projectContext';
 import {
   ASPECT_RATIO_OPTIONS,
   STYLE_PRESETS,
@@ -16,7 +15,6 @@ import {
   SHORTVIDEO_STYLE_PRESETS,
   EMPHASIS_DIMENSIONS,
   getEmphasisLabels,
-  getVideoTypeLabel,
 } from './presets';
 
 interface ReanalyzeDialogProps {
@@ -138,39 +136,7 @@ export function ReanalyzeDialog({ isOpen, onClose, projectId }: ReanalyzeDialogP
     }
 
     // Refresh chat context with new globals + assets
-    let context = await readProjectGlobalsMd(projectId).catch(() => '');
-
-    // Fallback: build minimal context from project params when no MD
-    if (!context.trim()) {
-      const current = useProjectStore.getState().currentProject;
-      if (current) {
-        const parts: string[] = [];
-        parts.push(`# ${current.name}\n`);
-        parts.push('## 项目全局参数\n');
-        if (current.videoType) parts.push(`- 视频类型: ${getVideoTypeLabel(current.videoType)}`);
-        if (current.aspectRatio) parts.push(`- 画幅比例: ${current.aspectRatio}`);
-        if (current.style) parts.push(`- 视觉风格: ${current.style}`);
-        if (current.tone) parts.push(`- 项目调性: ${current.tone}`);
-        if (current.directorRef) parts.push(`- 旅行视频风格: ${current.directorRef}`);
-        const emphasisLabels = getEmphasisLabels(current.emphasisDimensions.filter((d) => d.enabled).map((d) => d.key));
-        if (emphasisLabels.length > 0) {
-          parts.push(`- 提示词重点维度: ${emphasisLabels.join('、')}`);
-        }
-        context = parts.join('\n') + '\n';
-      }
-    }
-
-    try {
-      const assets = await listAssets(projectId);
-      if (assets.length > 0) {
-        const catLabel = (cat: string) =>
-          cat === 'character' ? '角色' : cat === 'scene' ? '场景' : '服饰道具';
-        const lines = assets.map((a, i) =>
-          `@图${i + 1}: ${a.name} (${catLabel(a.category)})`,
-        );
-        context = `${context}\n## 可用参考图\n${lines.join('\n')}\n\n生成分镜提示词时，如需引用参考图请使用 @图N 格式。`;
-      }
-    } catch { /* ok */ }
+    const context = await buildProjectChatContext(projectId);
     useChatStore.getState().setProjectContext(context);
 
     onClose();

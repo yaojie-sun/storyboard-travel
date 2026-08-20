@@ -3,7 +3,6 @@ use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::ai::deepseek;
 use crate::commands::banana_api;
 
 const SKILL_VERSION_URL: &str = "https://aixiaoxi.top/jy/uploads/install_guide/files/version_travel.txt";
@@ -169,7 +168,7 @@ pub(crate) async fn chat_send_message(
         5. 故事板=唯一视觉真相：画面内容全看参考图，文字只提供运镜和动作指令。\n\
         6. 遵守180度轴线规则，摄像机不越轴。\n\
         7. 禁止使用\"电影感\"\"大片质感\"\"高清摄影\"\"顶级CG\"\"史诗级\"等抽象模板词。\n\
-        8. 绝对禁止 @图N / Image N 语法指代参考图。参考图由宫格故事板锁定。\n\
+        8. 【项目全局上下文】「可用参考图」中的 @图N 是系统注入的参考图索引，其「视觉描述」可直接采信为参考图内容。但你在输出分镜/视频提示词时，绝对禁止出现 @图N / Image N 语法——参考图内容已由系统自动用于宫格生成。\n\
         9. 禁止在提示词中写分辨率（4K/1080P/720P）和画幅比例（16:9/9:16 等）。",
     );
 
@@ -177,7 +176,7 @@ pub(crate) async fn chat_send_message(
     system_prompt.push_str(
         "\n\n🔴 【分镜映射】铁律 — 最高优先级，先于所有规则：\n\
         每次生成宫格提示词后，必须紧接着输出【分镜映射】JSON块。\n\
-        {\"shots\":[{\"shot\":1,\"time\":\"0-Xs\",\"frames\":[1,2],\"camera\":\"...\",\"sound\":\"...\"},...]}\n\
+        {\"shots\":[{\"shot\":1,\"time\":\"00:00.000\",\"frames\":[1,2],\"camera\":\"...\",\"sound\":\"...\"},...]}\n\
         shots[].frames=该镜头覆盖的宫格帧编号(1-6)。6帧必须全覆盖[1..6]。\n\
         无论第1段还是第2段、第3段，每次生成宫格提示词都必须输出此JSON。不可省略。\n",
     );
@@ -193,8 +192,8 @@ pub(crate) async fn chat_send_message(
           If the video needs multiple segments (>15s), output L1 split confirmation first (per SKILL.md Step 2 item 7). Do NOT start with 【视频提示词】 until L1 is confirmed.\n\
           If single segment (≤15s), your response MUST start with 【视频提示词】, then output the prompt with appropriate number of shots (per SKILL.md: ≤5s=1 shot, 6-10s=1-3 shots, 11-15s=2-4 shots). Then STOP with L2 grid question.\n\
         [5] If user said \"A\" or \"A-生成\": output 【分镜提示词】+ grid frames per step 8. Frames start from numbered items (1、2、…6、) — NO style anchor/camera/description headers.\n\
-          IMMEDIATELY after the 6 frames, output 【分镜映射】 JSON mapping each video shot to its grid frames: {\"shots\":[{\"shot\":1,\"time\":\"0-Xs\",\"frames\":[1,2,3],\"camera\":\"...\",\"sound\":\"...\"},{\"shot\":2,\"time\":\"X-Ys\",\"frames\":[4,5,6],\"camera\":\"...\",\"sound\":\"...\"}]}\n\
-          shots[].shot = shot number. shots[].time = from video prompt \"Begin with Shot N [X-Ys]\" / \"Then Shot N [X-Ys]\" / \"Cut to Shot N [X-Ys]\" time bracket exactly. shots[].frames = grid frame numbers (1-6) this shot covers. shots[].camera/sound/bgm = from video prompt.\n\
+          IMMEDIATELY after the 6 frames, output 【分镜映射】 JSON mapping each video shot to its grid frames: {\"shots\":[{\"shot\":1,\"time\":\"00:00.000\",\"frames\":[1,2,3],\"camera\":\"...\",\"sound\":\"...\"},{\"shot\":2,\"time\":\"MM:SS.mmm\",\"frames\":[4,5,6],\"camera\":\"...\",\"sound\":\"...\"}]}\n\
+          shots[].shot = shot number. shots[].time = from video prompt \"[Shot N] At MM:SS.mmm\" start timestamp exactly (保留三位毫秒). shots[].frames = grid frame numbers (1-6) this shot covers. shots[].camera/sound/bgm = from video prompt.\n\
           ALL 6 frames [1..6] MUST be covered across all shots. This 【分镜映射】 JSON is MANDATORY for EVERY segment. Both segment 1 AND segment 2 must have it.\n\
           THEN, if multi-segment AND not final segment, output L3: 【继续确认】\\n第N段已完成。是否继续生成第N+1段[标题]？\\n继续-生成下一段 暂停-先处理当前内容\n\
         [6] If user said \"继续\" or \"继续-生成下一段\": generate NEXT segment's video prompt (Step 3 onward). Output 【视频提示词】+ next segment shots. When later user says \"A\" to generate grid for THIS segment, also output 【分镜映射】 JSON — same as rule [5].\n\
@@ -455,48 +454,6 @@ async fn web_search(query: &str) -> Result<String, String> {
         Err("搜索无结果".into())
     } else {
         Ok(results)
-    }
-}
-
-/// 清洗视频分镜提示词 — DeepSeek 去掉光影/场景/外观，只保留运镜+精简动作+声音
-/// 确保文字描述不超出宫格图已锚定的画面内容
-#[tauri::command]
-pub(crate) async fn integrate_video_prompt(
-    storyboard_prompt: String,
-    grid_frames: Vec<String>,
-    target_model: Option<String>,
-    reference_images: Option<Vec<String>>,
-) -> Result<String, String> {
-    let chat_id = Uuid::new_v4().to_string();
-    info!("[Integrate] 视频提示词清洗 chat_id={}, grid_frames={}", chat_id, grid_frames.len());
-
-    let device_token = {
-        let store = banana_api::get_device_token_store();
-        store.lock().await.clone().unwrap_or_default()
-    };
-    let api_key = match banana_api::get_user_api_key(&device_token).await {
-        Ok(key) => key,
-        Err(_) => {
-            banana_api::ensure_user_api_token(&device_token).await.unwrap_or_default()
-        }
-    };
-
-    match deepseek::clean_video_prompt(
-        &storyboard_prompt,
-        &grid_frames,
-        &api_key,
-        target_model.as_deref(),
-        reference_images.as_deref(),
-    ).await {
-        Ok(cleaned) => {
-            info!("[Integrate] 清洗完成 chat_id={} len={}", chat_id, cleaned.len());
-            Ok(cleaned)
-        }
-        Err(e) => {
-            warn!("[Integrate] 清洗失败，降级为原文: {}", e);
-            // 降级：清洗失败时返回原文，不阻塞流程
-            Ok(storyboard_prompt)
-        }
     }
 }
 
