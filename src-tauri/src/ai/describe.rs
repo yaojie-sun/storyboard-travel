@@ -3,16 +3,23 @@ use std::io::Cursor;
 use base64::Engine;
 use reqwest::Client;
 use tokio::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::ai::error::AIError;
 
-/// 千帆 OpenAI 兼容接口（ERNIE-VL 多模态读图）。
+/// DeepSeek 多模态视觉模型读图（deepseek-v4-flash-vision-exp）。
 /// 端点与鉴权采用 OpenAI 兼容模式：Bearer <API Key>。
-const QIANFAN_VL_URL: &str = "https://qianfan.baidubce.com/v2/chat/completions";
+/// 一次性完成「读图」——产出可直接供分镜提示词生成的图片信息；参考图只读一次（file_hash 缓存），
+/// 后续进入画布复用缓存文本，不再重复读图。
+const DEEPSEEK_VL_URL: &str = "https://api.deepseek.com/chat/completions";
 /// 读图模型标识。需与服务器 /api-configs/active 下发时一致；
 /// 复刻到服饰版/美妆版/科普版等衍生版本时无需改动（行业无关）。
-const QIANFAN_VL_MODEL: &str = "ernie-4.5-turbo-vl";
+const DEEPSEEK_VL_MODEL: &str = "deepseek-v4-flash-vision-exp";
+
+/// 读图前统一下采样：最长边压到 MAX_EDGE 内并重编码 JPEG。
+/// 大图（如 4MB）直接 base64 会导致请求体过大、处理慢甚至超时，压到 ~100-200KB 秒回。
+const MAX_EDGE: u32 = 1024;
+const JPEG_QUALITY: u8 = 85;
 
 /// 通用视觉描述引导词：结构化、客观、可复现，不绑定任何行业。
 const DESCRIBE_PROMPT: &str = r#"你是一名专业的图像描述助手。请仔细观察这张参考图，用简洁、客观、结构化的中文描述图片内容，供后续分镜提示词生成使用。
@@ -28,34 +35,86 @@ const DESCRIBE_PROMPT: &str = r#"你是一名专业的图像描述助手。请�
 
 要求：描述客观、可复现，不添加主观评价或故事性延伸，控制在 150 字以内。"#;
 
-/// 调用千帆 ERNIE-VL 读图，返回中文视觉描述。
+/// 调用 DeepSeek 视觉模型读图，返回中文视觉描述。
 ///
 /// 与 [`super::deepseek::optimize_prompt`] 同构：由调用方传入 api_key，
 /// 本模块不直接依赖 commands 层，便于复刻到其他行业版本。
-/// 千帆 VL 的 base64 通道仅支持 JPG/PNG/BMP；WebP/GIF 等需先转 PNG。
-/// 按文件头（magic bytes）识别真实格式，不信任扩展名。
+/// 读图前统一下采样（最长边 ≤ 1024、JPEG q85），再 base64 直传 DeepSeek 视觉接口。
+/// 支持任意输入格式（JPEG/PNG/WebP/GIF/BMP…），统一按真实内容解码后重编码。
 fn normalize_for_vl(image_bytes: &[u8]) -> Result<(Vec<u8>, &'static str), AIError> {
-    let fmt = image::guess_format(image_bytes).unwrap_or(image::ImageFormat::Png);
-    let (bytes, media_type) = match fmt {
-        image::ImageFormat::Jpeg => (image_bytes.to_vec(), "image/jpeg"),
-        image::ImageFormat::Png => (image_bytes.to_vec(), "image/png"),
-        image::ImageFormat::Bmp => (image_bytes.to_vec(), "image/bmp"),
-        // WebP / GIF / 其他：解码后重编码为 PNG，保证千帆可读
-        _ => {
-            let img = image::load_from_memory(image_bytes)
-                .map_err(|e| AIError::Provider(format!("读图图片解码失败: {}", e)))?;
-            let mut buf = Vec::new();
-            img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
-                .map_err(|e| AIError::Provider(format!("读图图片转PNG失败: {}", e)))?;
-            (buf, "image/png")
-        }
+    let img = image::load_from_memory(image_bytes)
+        .map_err(|e| AIError::Provider(format!("读图图片解码失败: {}", e)))?;
+
+    let (w, h) = (img.width(), img.height());
+    let long_edge = w.max(h);
+    let (nw, nh) = if long_edge > MAX_EDGE {
+        let scale = MAX_EDGE as f64 / long_edge as f64;
+        (
+            ((w as f64) * scale).round().max(1.0) as u32,
+            ((h as f64) * scale).round().max(1.0) as u32,
+        )
+    } else {
+        (w, h)
     };
-    Ok((bytes, media_type))
+
+    let resized = img.resize_exact(nw, nh, image::imageops::FilterType::Lanczos3);
+    let rgb = resized.to_rgb8();
+    let mut buf = Cursor::new(Vec::new());
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, JPEG_QUALITY);
+    enc.encode_image(&rgb)
+        .map_err(|e| AIError::Provider(format!("读图图片编码失败: {}", e)))?;
+
+    Ok((buf.into_inner(), "image/jpeg"))
+}
+
+/// 上传压缩结果：原样保留 或 已压缩为 JPEG。
+pub enum UploadImage {
+    Original(Vec<u8>),
+    CompressedJpeg(Vec<u8>),
+}
+
+/// 上传落盘前的压缩：大图（最长边 > 2048 或体积 > 5MB）下采样到最长边 2048 + 重编码 JPEG q88，
+/// 避免原图过大拖慢宫格/画布加载；小图原样透传（不动格式与画质）。
+/// 解码失败返回 Err，由调用方决定是否原样保存兜底（不阻塞上传）。
+pub fn compress_for_upload(image_bytes: &[u8]) -> Result<UploadImage, AIError> {
+    const UPLOAD_MAX_EDGE: u32 = 2048;
+    const UPLOAD_MAX_BYTES: usize = 5 * 1024 * 1024;
+    const UPLOAD_JPEG_QUALITY: u8 = 88;
+
+    let img = image::load_from_memory(image_bytes)
+        .map_err(|e| AIError::Provider(format!("上传图片解码失败: {}", e)))?;
+    let (w, h) = (img.width(), img.height());
+
+    // 小图（体积 ≤5MB 且最长边 ≤2048）原样保留，不重编码、不损失画质。
+    if image_bytes.len() <= UPLOAD_MAX_BYTES && w.max(h) <= UPLOAD_MAX_EDGE {
+        return Ok(UploadImage::Original(image_bytes.to_vec()));
+    }
+
+    let long_edge = w.max(h);
+    let (nw, nh) = if long_edge > UPLOAD_MAX_EDGE {
+        let scale = UPLOAD_MAX_EDGE as f64 / long_edge as f64;
+        (
+            ((w as f64) * scale).round().max(1.0) as u32,
+            ((h as f64) * scale).round().max(1.0) as u32,
+        )
+    } else {
+        (w, h)
+    };
+
+    let rgb = img
+        .resize_exact(nw, nh, image::imageops::FilterType::Lanczos3)
+        .to_rgb8();
+    let mut buf = Cursor::new(Vec::new());
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, UPLOAD_JPEG_QUALITY);
+    enc.encode_image(&rgb)
+        .map_err(|e| AIError::Provider(format!("上传图片压缩失败: {}", e)))?;
+
+    Ok(UploadImage::CompressedJpeg(buf.into_inner()))
 }
 
 pub async fn describe_image(image_bytes: &[u8], api_key: &str) -> Result<String, AIError> {
     if api_key.is_empty() {
-        return Err(AIError::Provider("千帆VL读图API密钥未配置".to_string()));
+        return Err(AIError::Provider("DeepSeek视觉读图API密钥未配置".to_string()));
     }
 
     let (image_bytes, media_type) = normalize_for_vl(image_bytes)?;
@@ -64,7 +123,7 @@ pub async fn describe_image(image_bytes: &[u8], api_key: &str) -> Result<String,
     let image_data_url = format!("data:{};base64,{}", media_type, b64);
 
     let body = serde_json::json!({
-        "model": QIANFAN_VL_MODEL,
+        "model": DEEPSEEK_VL_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -74,7 +133,7 @@ pub async fn describe_image(image_bytes: &[u8], api_key: &str) -> Result<String,
                 ]
             }
         ],
-        "max_tokens": 512,
+        "max_tokens": 2048,
         "temperature": 0.3
     });
 
@@ -83,41 +142,71 @@ pub async fn describe_image(image_bytes: &[u8], api_key: &str) -> Result<String,
         .connect_timeout(Duration::from_secs(10))
         .build()?;
 
-    info!("[读图] 千帆VL请求, image {} bytes", image_bytes.len());
+    // 视觉模型偶发返回空描述（推理被 max_tokens 截断 / 服务端抖动），重试一次再报错，
+    // 确保读图可靠写入缓存，避免「读图失败 → 缓存为空 → 每次进画布重读」的卡顿。
+    let mut last_err: Option<AIError> = None;
+    for attempt in 0..2 {
+        info!(
+            "[读图] DeepSeek视觉请求 (第 {} 次), image {} bytes",
+            attempt + 1,
+            image_bytes.len()
+        );
 
-    let response = client
-        .post(QIANFAN_VL_URL)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await?;
+        let response = match client
+            .post(DEEPSEEK_VL_URL)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = Some(AIError::Provider(format!("DeepSeek视觉请求失败: {}", e)));
+                continue;
+            }
+        };
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return Err(AIError::Provider(format!(
-            "千帆VL API error {}: {}",
-            status, error_text
-        )));
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            last_err = Some(AIError::Provider(format!(
+                "DeepSeek视觉 API error {}: {}",
+                status, error_text
+            )));
+            continue;
+        }
+
+        let result: serde_json::Value = match response.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                last_err = Some(AIError::Provider(format!(
+                    "DeepSeek视觉 response parse error: {}",
+                    e
+                )));
+                continue;
+            }
+        };
+
+        let description = result
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        if description.is_empty() {
+            let raw = serde_json::to_string(&result).unwrap_or_default();
+            warn!(
+                "[读图] DeepSeek视觉返回空描述, 原始响应(前600字): {}",
+                raw.chars().take(600).collect::<String>()
+            );
+            last_err = Some(AIError::Provider("DeepSeek视觉返回空描述".to_string()));
+            continue;
+        }
+
+        info!("[读图] DeepSeek视觉完成, description {} chars", description.len());
+        return Ok(description);
     }
 
-    let result: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AIError::Provider(format!("千帆VL response parse error: {}", e)))?;
-
-    let description = result
-        .pointer("/choices/0/message/content")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-
-    if description.is_empty() {
-        return Err(AIError::Provider("千帆VL返回空描述".to_string()));
-    }
-
-    info!("[读图] 千帆VL完成, description {} chars", description.len());
-
-    Ok(description)
+    Err(last_err.unwrap_or_else(|| AIError::Provider("DeepSeek视觉读图失败".to_string())))
 }

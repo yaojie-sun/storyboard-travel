@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-use tracing::warn;
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,12 +95,31 @@ pub fn add_asset(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("png");
-    let dest_file_name = format!("{}-{}.{}", id, &file_name, ext);
+
+    // 大图（最长边 > 2048 或体积 > 5MB）先压缩再落盘，避免原图过大拖慢宫格/画布加载；
+    // 小图原样保留，压缩/解码失败则原样保存兜底，不阻塞上传。
+    let src_bytes = std::fs::read(&source_path)
+        .map_err(|e| format!("Failed to read asset file: {}", e))?;
+    let (out_bytes, out_ext) = match crate::ai::describe::compress_for_upload(&src_bytes) {
+        Ok(crate::ai::describe::UploadImage::Original(b)) => (b, ext.to_string()),
+        Ok(crate::ai::describe::UploadImage::CompressedJpeg(b)) => {
+            info!(
+                "asset {} 原图 {} bytes 已压缩为 {} bytes (jpg)",
+                id,
+                src_bytes.len(),
+                b.len()
+            );
+            (b, "jpg".to_string())
+        }
+        Err(_) => (src_bytes, ext.to_string()),
+    };
+
+    let dest_file_name = format!("{}-{}.{}", id, &file_name, out_ext);
     let dest_path = assets_dir.join(&dest_file_name);
     let dest_path_str = dest_path.to_string_lossy().to_string();
 
-    std::fs::copy(&source_path, &dest_path)
-        .map_err(|e| format!("Failed to copy asset file: {}", e))?;
+    std::fs::write(&dest_path, &out_bytes)
+        .map_err(|e| format!("Failed to write asset file: {}", e))?;
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -137,14 +156,8 @@ pub fn add_asset(
     )
     .map_err(|e| format!("Failed to insert asset: {}", e))?;
 
-    // 异步读图：不阻塞上传返回，后台补读视觉描述供 skill 生成更准提示词
-    let app_for_desc = app.clone();
-    let asset_id_for_desc = record.id.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = describe_asset_inner(&app_for_desc, &asset_id_for_desc).await {
-            warn!("asset {} 读图失败: {}", asset_id_for_desc, e);
-        }
-    });
+    // 读图改为「生成分镜时」触发（见 chatStore.sendMessage 调 buildProjectChatContext(readIfMissing:true)），
+    // 上传时不再后台自动读图，避免「传错图/白读」。
 
     Ok(record)
 }
@@ -310,11 +323,11 @@ static IN_FLIGHT_DESCRIBES: std::sync::LazyLock<
     TokioMutex<HashMap<String, Arc<TokioOnceCell<String>>>>,
 > = std::sync::LazyLock::new(|| TokioMutex::new(HashMap::new()));
 
-/// 读图核心逻辑：先查缓存（file_hash 命中秒回），未命中调千帆 VL 并写缓存。
+/// 读图核心逻辑：先查缓存（file_hash 命中秒回），未命中调 DeepSeek 视觉模型并写缓存。
 /// 幂等，可被 add_asset 异步任务和前端 describe_asset 重复调用，不会重复产生读图费用。
 async fn describe_asset_inner(app: &AppHandle, asset_id: &str) -> Result<Option<String>, String> {
-    let api_key = crate::commands::banana_api::get_qianfan_vl_key()
-        .ok_or_else(|| "千帆VL读图API密钥未配置".to_string())?;
+    let api_key = crate::commands::banana_api::get_deepseek_chat_key()
+        .ok_or_else(|| "DeepSeek视觉读图API密钥未配置".to_string())?;
 
     // 阶段一（同步）：读文件 + 查缓存。conn 必须在 await 前 drop（rusqlite Connection 非 Send）。
     let (file_hash, bytes, cached_desc) = {
@@ -380,7 +393,7 @@ async fn describe_asset_inner(app: &AppHandle, asset_id: &str) -> Result<Option<
             ON CONFLICT(asset_id) DO UPDATE SET
               file_hash = ?2, description = ?3, model = ?4, updated_at = ?5
             "#,
-            params![asset_id, file_hash, description, "ernie-4.5-turbo-vl", now],
+            params![asset_id, file_hash, description, "deepseek-v4-flash-vision-exp", now],
         )
         .map_err(|e| format!("Failed to save asset description: {}", e))?;
     }

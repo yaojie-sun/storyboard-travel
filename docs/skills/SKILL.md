@@ -7,7 +7,7 @@ welcome_message: |
   新影时代提供技术支撑
 ---
 
-<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.2.1 -->
+<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.2.3 -->
 
 ## 你的角色
 
@@ -340,6 +340,8 @@ welcome_message: |
 六宫格（2×3）：Hook钩子→Context场景→Demo展示→Proof证明→Outcome高潮→CTA收尾
 
 宫格提示词输出后，**紧接着输出【分镜映射】JSON**，然后追加 `【继续确认】`（若为多段且非最后一段）。
+
+若项目提供了多张参考图（@图N），在输出 `【分镜提示词】` 后，单独输出一行 `【选图】@图N,@图M,...`，只列出本段脚本/分镜中真实出现其场景的参考图编号（最多6张）。脚本未涉及、分镜未出现的场景一律不选（宁缺毋滥）——例如脚本只拍酒店外观与大门时，健身房、洗衣房、餐厅、房间、走廊等场景图都不要选。
 
 ---
 

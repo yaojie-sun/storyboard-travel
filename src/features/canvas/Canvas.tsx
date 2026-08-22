@@ -1373,6 +1373,7 @@ export function Canvas() {
         frames?: Array<{ description: string }>;
         conversationId?: string;
         shotFrameMap?: ShotFrameMap;
+        selectedRefImages?: number[];
       }>).detail;
       const wrapper = wrapperRef.current;
       if (!wrapper || !reactFlowInstance) {
@@ -1404,22 +1405,34 @@ export function Canvas() {
         referenceIndex: null,
       }));
 
-      // Auto-link the N most recent reference images from project assets
+      // Auto-link reference images: AI 选图优先（【选图】@图N），无选图时回退到最近上传 N 张
       const matchedAssets: Array<{ name: string; filePath: string; index: number }> = [];
       const projectId = useProjectStore.getState().currentProject?.id;
       if (projectId) {
-        const allAssets = useAssetStore.getState().getAssets(projectId);
-        matchedAssets.push(
-          ...allAssets
-            .filter((asset) => asset.filePath)
-            .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-            .slice(0, MAX_AUTO_REF_IMAGES)
-            .map((asset, index) => ({
+        const allAssets = useAssetStore
+          .getState()
+          .getAssets(projectId)
+          .filter((asset) => asset.filePath)
+          .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+
+        const selected = detail.selectedRefImages;
+        if (selected && selected.length > 0) {
+          // AI 选中的 @图N 编号（1-based），映射到按上传时间倒序的资产列表
+          for (const n of selected.slice(0, MAX_AUTO_REF_IMAGES)) {
+            const asset = allAssets[n - 1];
+            if (asset) {
+              matchedAssets.push({ name: asset.name, filePath: asset.filePath, index: n - 1 });
+            }
+          }
+        } else {
+          matchedAssets.push(
+            ...allAssets.slice(0, MAX_AUTO_REF_IMAGES).map((asset, index) => ({
               name: asset.name,
               filePath: asset.filePath,
               index,
             })),
-        );
+          );
+        }
       }
 
       // Create upload nodes for matched assets

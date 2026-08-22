@@ -8,7 +8,10 @@ import { useProjectStore } from '@/stores/projectStore';
  * Canvas / ProjectDashboard / ReanalyzeDialog / ChatInput 上传后统一复用，
  * 保证参考图读图描述在任意入口上传后都能即时进 skill 上下文。
  */
-export async function buildProjectChatContext(projectId: string): Promise<string> {
+export async function buildProjectChatContext(
+  projectId: string,
+  opts?: { readIfMissing?: boolean },
+): Promise<string> {
   // 1. 优先读项目全局 MD
   let context = await readProjectGlobalsMd(projectId).catch(() => '');
 
@@ -36,9 +39,9 @@ export async function buildProjectChatContext(projectId: string): Promise<string
 
   // 3. 追加可用参考图（含视觉描述）
   try {
-    const assetLines = await buildAssetReferenceLines(projectId);
+    const assetLines = await buildAssetReferenceLines(projectId, opts);
     if (assetLines.length > 0) {
-      context = `${context}\n## 可用参考图\n${assetLines.join('\n')}\n\n生成分镜提示词时，如需引用参考图请使用 @图N 格式。`;
+      context = `${context}\n## 可用参考图\n${assetLines.join('\n')}\n\n生成分镜/宫格提示词时，如需引用参考图请使用 @图N 格式。请在回复中单独输出一行【选图】@图N,@图M,...，只列出本段脚本/分镜中真实出现其场景的参考图编号（最多6张），脚本未涉及、分镜未出现的场景一律不选（宁缺毋滥）。`;
     }
   } catch {
     // assets not critical for chat — ignore errors

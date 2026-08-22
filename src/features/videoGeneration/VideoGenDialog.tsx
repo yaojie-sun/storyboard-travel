@@ -1157,7 +1157,7 @@ function VideoGenDialogInner({
               />
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center rounded-xl bg-bg-dark/65">
                 <div className="w-56 space-y-3">
-                  <p className="text-center text-sm font-medium text-white">正在本地超分到2K...</p>
+                  <p className="text-center text-sm font-medium text-white">正在生成2K视频...</p>
                   <div className="h-2.5 w-full overflow-hidden rounded-full bg-white/15">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-700 ease-out"

@@ -8,6 +8,7 @@ import {
   type ChatResponse,
 } from '@/commands/chat';
 import { useEpisodeStore } from '@/stores/episodeStore';
+import { buildProjectChatContext } from '@/features/chat/projectContext';
 import { splitGridPromptIntoFrames } from '@/utils/gridPromptParser';
 
 export interface PromptBlockFrame {
@@ -34,6 +35,8 @@ export interface PromptBlock {
   frames?: PromptBlockFrame[];
   /** 分镜→宫格帧映射（从 AI 输出的【分镜映射】JSON 解析），仅 grid 类型可能有值 */
   shotFrameMap?: Record<string, unknown>;
+  /** AI 从脚本挑出的参考图编号（1-based @图N），仅 grid 类型可能有值；用于宫格节点自动连线 */
+  selectedRefImages?: number[];
 }
 
 export interface ChatMessage {
@@ -178,10 +181,23 @@ function parseShotFrameMap(text: string): ShotFrameMap | undefined {
   return undefined;
 }
 
+/** 解析 AI 输出的【选图】@图N,@图M 行，返回 1-based 编号数组（去重、上限 6）。 */
+function parseSelectedRefImages(text: string): number[] | undefined {
+  const match = text.match(/【选图】\s*([^\n【]*)/);
+  if (!match) return undefined;
+  const nums = (match[1].match(/@图(\d+)/g) ?? []).map((s) => parseInt(s.slice(2), 10));
+  const unique = [...new Set(nums)].filter((n) => Number.isInteger(n) && n >= 1).slice(0, 6);
+  return unique.length > 0 ? unique : undefined;
+}
+
 function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuationPrompt?: string; shotFrameMap?: ShotFrameMap } {
   const blocks: PromptBlock[] = [];
   let continuationPrompt: string | undefined;
   let shotFrameMap: ShotFrameMap | undefined;
+
+  // ⚠️ 解析并剥离【选图】标记（独立于其他标记顺序）
+  const selectedRefImages = parseSelectedRefImages(content);
+  content = content.replace(/【选图】[^\n【]*\n?/g, '').trim();
 
   // ⚠️ Parse 【分镜映射】 BEFORE stripping 【继续确认】 — order-independent
   // If AI outputs 继续确认 before 分镜映射, parsing it first would strip the JSON.
@@ -254,6 +270,7 @@ function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuati
       content: gridContent,
       frames: frames.length >= 2 ? frames : undefined,
       shotFrameMap: shotFrameMap as unknown as Record<string, unknown>,
+      selectedRefImages,
     });
   }
 
@@ -267,6 +284,7 @@ function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuati
       content: content.trim(),
       frames: frames.length >= 2 ? frames : undefined,
       shotFrameMap: shotFrameMap as unknown as Record<string, unknown>,
+      selectedRefImages,
     });
   }
 
@@ -632,9 +650,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     schedulePersistConversations(nextWithPlaceholder);
 
     try {
+      // 生成时读图：触发分镜生成前，补读缺失参考图描述（缓存复用，只读一次）
+      let context = projectContext;
+      try {
+        const fresh = await buildProjectChatContext(get().currentProjectId, {
+          readIfMissing: true,
+        });
+        if (fresh) context = fresh;
+      } catch {
+        // 读图失败不阻塞生成
+      }
+
       const response: ChatResponse = await chatSendMessage(
         buildMessages(updatedConversation),
-        projectContext || undefined,
+        context || undefined,
         billingTag,
       );
 

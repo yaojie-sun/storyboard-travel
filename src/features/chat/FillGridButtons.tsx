@@ -5,15 +5,16 @@ interface FillGridButtonsProps {
   frames?: Array<{ description: string }>;
   conversationId?: string;
   shotFrameMap?: Record<string, unknown>;
+  selectedRefImages?: number[];
 }
 
-export function FillGridButtons({ prompt, frames, conversationId, shotFrameMap }: FillGridButtonsProps) {
+export function FillGridButtons({ prompt, frames, conversationId, shotFrameMap, selectedRefImages }: FillGridButtonsProps) {
   const { t } = useTranslation();
 
   const handleFill = () => {
     window.dispatchEvent(
       new CustomEvent('chat-fill-grid', {
-        detail: { prompt, rows: 2, cols: 3, frames, conversationId, shotFrameMap },
+        detail: { prompt, rows: 2, cols: 3, frames, conversationId, shotFrameMap, selectedRefImages },
       }),
     );
   };
