@@ -100,6 +100,7 @@ export function EditablePromptBlock({
                   conversationId={conversationId}
                   shotFrameMap={block.shotFrameMap}
                   selectedRefImages={block.selectedRefImages}
+                  storySynopsis={block.storySynopsis}
                 />
               )}
 

@@ -37,6 +37,8 @@ export interface PromptBlock {
   shotFrameMap?: Record<string, unknown>;
   /** AI 从脚本挑出的参考图编号（1-based @图N），仅 grid 类型可能有值；用于宫格节点自动连线 */
   selectedRefImages?: number[];
+  /** AI 输出的【故事梗概】（2-3句纯净叙事），随宫格生成注入【全局故事背景】规则块，前端不展示 */
+  storySynopsis?: string;
 }
 
 export interface ChatMessage {
@@ -190,6 +192,13 @@ function parseSelectedRefImages(text: string): number[] | undefined {
   return unique.length > 0 ? unique : undefined;
 }
 
+/** 解析 AI 输出的【故事梗概】行，返回 2-3 句纯净叙事（单行）。 */
+function parseStorySynopsis(text: string): string | undefined {
+  const match = text.match(/(?:【故事梗概】|\*\*故事梗概\*\*)\s*([^\n【]*)/);
+  if (!match || !match[1]?.trim()) return undefined;
+  return match[1].trim();
+}
+
 function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuationPrompt?: string; shotFrameMap?: ShotFrameMap } {
   const blocks: PromptBlock[] = [];
   let continuationPrompt: string | undefined;
@@ -198,6 +207,10 @@ function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuati
   // ⚠️ 解析并剥离【选图】标记（独立于其他标记顺序）
   const selectedRefImages = parseSelectedRefImages(content);
   content = content.replace(/【选图】[^\n【]*\n?/g, '').trim();
+
+  // ⚠️ 解析并剥离【故事梗概】行（前端隐藏，仅供宫格节点注入故事背景）
+  const storySynopsis = parseStorySynopsis(content);
+  content = content.replace(/(?:【故事梗概】|\*\*故事梗概\*\*)[^\n【]*\n?/g, '').trim();
 
   // ⚠️ Parse 【分镜映射】 BEFORE stripping 【继续确认】 — order-independent
   // If AI outputs 继续确认 before 分镜映射, parsing it first would strip the JSON.
@@ -271,6 +284,7 @@ function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuati
       frames: frames.length >= 2 ? frames : undefined,
       shotFrameMap: shotFrameMap as unknown as Record<string, unknown>,
       selectedRefImages,
+      storySynopsis,
     });
   }
 
@@ -285,6 +299,7 @@ function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuati
       frames: frames.length >= 2 ? frames : undefined,
       shotFrameMap: shotFrameMap as unknown as Record<string, unknown>,
       selectedRefImages,
+      storySynopsis,
     });
   }
 

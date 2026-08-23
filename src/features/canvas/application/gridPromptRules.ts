@@ -45,6 +45,8 @@ export interface GridPromptContext {
   frames: FramePromptContext[];
   hasAnyRefImage: boolean;
   disableTextInImage: boolean;
+  /** 故事梗概（2-3句纯净叙事）：注入【全局故事背景】规则块，帮助图片模型理解剧情连续性；仅在 chat-fill-grid 时存在 */
+  storyContext?: string;
 }
 
 
@@ -499,6 +501,17 @@ export function buildGridPrompt(
   // 0. Persona (professional role — orients the model toward pro photography)
   if (gp.persona) {
     parts.push(gp.persona);
+    parts.push('');
+  }
+
+  // 0.5. Story context (【全局故事背景】— narrative background for continuity understanding, NOT to be drawn)
+  if (context.storyContext && context.storyContext.trim()) {
+    parts.push(
+      '【全局故事背景】以下是 6 段画面描述据以提炼的原始故事背景，用于帮助你理解剧情逻辑与画面连续性（角色身份、场景环境、情绪走向、动作因果）。' +
+        '6 段画面描述正是从这段背景中抽出的关键帧。注意：背景仅供理解，绝对禁止把背景中的任何剧情文字、句子或台词绘制到任意一格画面中，禁止出现任何文字/字幕/水印。' +
+        '本条属于硬约束（HARD CONSTRAINT）：任何提示词改写都必须原样保留本条，不得删除、压缩或改写。\n' +
+        context.storyContext.trim()
+    );
     parts.push('');
   }
 

@@ -2,6 +2,7 @@
 
 > 复刻文档：本次改动为**行业无关**的公共读图逻辑，所有行业版本（服饰/美妆/科普/大健康/萌宠等）完全一致，可直接照抄。
 > 改动基准版本：旅游版 v1.2.0。改动日期：2026-08-22。
+> 版本号说明：本文出现的 `v1.2.2` / `v1.2.3` 是 **SKILL 版本号**（`docs/skills/version.txt`），`v1.2.0` / `v1.3.0` 是**程序版本号**（package.json / Cargo.toml / tauri.conf.json）。两套号相互独立、不同步，复刻时别混。
 
 ## 一、动机（为什么改）
 
@@ -62,6 +63,12 @@ params![asset_id, file_hash, description, "deepseek-v4-flash-vision-exp", now],
 ```
 
 （同时把 `describe_asset_inner` 上方注释里的「调千帆 VL」改成「调 DeepSeek 视觉模型」，纯注释。）
+
+**C. `describe_image` 可靠性兜底（覆盖 `describe.rs` 时连这些一起带走，行业无关）**
+
+- `DESCRIBE_PROMPT` 引导词常量：让模型按「主体 / 配色 / 构图 / 风格 / 光线 / 关键元素 / 背景」7 维输出结构化中文描述，≤150 字。读图描述是**通用能力，不做行业化**，所有版本照抄同一份引导词。
+- 请求参数 `max_tokens=2048`、`temperature=0.3`，30s 超时 / 10s 连接超时。
+- **空描述重试一次**：视觉模型偶发返回空 `content`（推理被 max_tokens 截断 / 服务端抖动）时自动重试一次再报错，避免「读图失败 → 缓存为空 → 每次进画布重读」的卡顿复发。日志锚点：`[读图] DeepSeek视觉请求 (第 N 次)` / `DeepSeek视觉完成` / `DeepSeek视觉返回空描述`。
 
 ## 三、缓存机制（不变，无需动）
 
@@ -394,3 +401,124 @@ ssh -i "$HOME/jiaoyan.pem" root@47.108.237.10 "python3 -m json.tool /jy/uploads/
 3. **布局铁律 + 最终布局确认仍是硬编码**（防转置 `{cols}列×{rows}行` 锁），不从 JSON 读——这是通用强约束，留在代码内。
 4. **分辨率/多拼逻辑没动**：`baidu`/`kie` provider 的 `quality`/`composite_reference_images`（多图拼一张）保持原样，本次只调提示词。
 5. **上传前先备份 + 警惕 SSH 警告混入文件**：scp 的 `** WARNING: connection is not using a post-quantum key exchange...` 会打到 stderr；之前用重定向下载时警告行混进了本地 JSON 文件头，导致 `JSON.parse` 失败。上传用正常 scp（警告走 stderr 不影响目标文件），下载到本地做对比时 `2>/dev/null` 或事后删头。
+
+---
+
+## 十四、宫格生成注入故事背景（【故事梗概】→【全局故事背景】规则块，短视频版 SKILL v3.0.2）
+
+> 复刻文档：本次改动为**行业无关**的公共逻辑（7 个前端文件 + 1 个 SKILL），所有行业版本照抄即可。
+> 改动基准：**短视频版**实现（SKILL v3.0.2，2026-08-23）。程序版本号 / SKILL 版本号两套相互独立，复刻时各自递增，别混。
+
+### 动机（为什么改）
+
+宫格生成的数据链路是：skill 在 chat 生成 6 段画面文字 → 画布宫格节点只把这 6 段文字传给 image2（gpt-image-2）→ image2 凭参考图 + 6 段文字生成一张六宫格图。问题：image2 对「故事」理解不足，6 段文字抽得再准，也缺剧情逻辑/情绪走向的全局背景，跨格连续性（同一角色同一场景、动作因果）容易崩。
+
+方案对比（为什么选 A 不选 B）：
+- **方案 B（复用分镜提示词直接透传）**：分镜提示词是 H3 原生格式，含 `[Shot N] At MM:SS.mmm` 时间戳、三轨音频、运镜、时长——全是 image2（静态图模型）不理解的视频机械，喂过去是噪声甚至误导（可能把时间戳/BGM 当文字画出来）。前端正则清洗 = 把 SKILL 格式硬编码进前端，SKILL 一热更新换格式就失配；后端另调 LLM 压缩 = 每次宫格生成多一次 API 往返。
+- **方案 A（SKILL 输出【故事梗概】行，选定）**：清洗交给**生成时的 skill LLM**——它本来就把用户故事翻译成了分镜/宫格两层，对「什么是故事主线、什么是视频机械」理解最深。顺手输出一行 2-3 句纯净叙事，前端像处理【选图】一样解析+剥离，节点注入规则块。**不增加宫格生成时任何 API 调用**，前端只解析一行固定格式，不被 SKILL 格式绑架。
+
+### 数据链路（10 环）
+
+```
+SKILL 输出【故事梗概】行（chat 回复里）
+→ parseStorySynopsis 解析（chatStore）
+→ 从展示内容剥离（用户 chat 里看不到）
+→ 存入 grid 块的 storySynopsis
+→ EditablePromptBlock → FillGridButtons → chat-fill-grid 事件 detail
+→ Canvas.handleChatFillGrid → 存入 StoryboardGenNode.data.storySynopsis
+→ buildPrompt 注入 context.storyContext
+→ buildGridPrompt 在 persona 之后注入【全局故事背景】规则块
+→ 随最终 prompt 送后端 image2
+```
+
+### 改动文件（7 前端 + 1 SKILL，后端零改动）
+
+**1. `docs/skills/SKILL.md`** — 在【选图】规则后新增【故事梗概】输出铁律（措辞行业无关）：
+
+> **🔴 【故事梗概】行（宫格提示词之后必须输出，不可省略）**：在输出 `【分镜提示词】` 后，紧接着单独输出一行 `【故事梗概】`，用 2-3 句纯净叙事概括本段故事的完整弧线——主要角色及其身份、场景环境、关键事件脉络、情绪走向（开场→转折→结局）。**只写故事本身**：禁止出现时间戳、镜头编号、运镜、音频/配乐/对白、时长、画幅等视频专属要素，也禁止出现"景别/朝向/动作密度"等图片生成术语。这一行是给图片模型理解剧情与画面连续性的背景信息（前端自动隐藏，用户不可见），不是要它绘制的内容。示例：`【故事梗概】一位咖啡师在清晨的烘焙坊为今天的咖啡豆试饮做准备，从挑豆、研磨、冲泡到客人品尝后露出满足的笑容，情绪从专注转向期待再转向满足。` 输出【故事梗概】后，再按上述规则输出【选图】与【分镜映射】。
+
+同时：`SECURITY_MARKER` 版本号递增 + `version.txt` `version=` 递增 + changelog 加一行 + 重新 zip（SKILL.md + version.txt 平铺）+ scp 上传热更（`version_xxx.txt` → `/jy/uploads/install_guide/files/`、zip → 同目录）。
+
+**2. `src/stores/chatStore.ts`**（4 处）：
+```ts
+// A. PromptBlock 接口新增
+/** AI 输出的【故事梗概】（2-3句纯净叙事），随宫格生成注入【全局故事背景】规则块，前端不展示 */
+storySynopsis?: string;
+
+// B. 新增解析函数（和 parseSelectedRefImages 同构）
+/** 解析 AI 输出的【故事梗概】行，返回 2-3 句纯净叙事（单行）。 */
+function parseStorySynopsis(text: string): string | undefined {
+  const match = text.match(/(?:【故事梗概】|\*\*故事梗概\*\*)\s*([^\n【]*)/);
+  if (!match || !match[1]?.trim()) return undefined;
+  return match[1].trim();
+}
+
+// C. parsePromptBlocks 开头（【选图】剥离之后）——解析 + 剥离
+const storySynopsis = parseStorySynopsis(content);
+content = content.replace(/(?:【故事梗概】|\*\*故事梗概\*\*)[^\n【]*\n?/g, '').trim();
+
+// D. 挂到 grid block（【分镜提示词】主分支 + fallback 分支，两处都加）
+blocks.push({ ..., selectedRefImages, storySynopsis });
+```
+
+**3. `src/features/chat/FillGridButtons.tsx`** — prop 加 `storySynopsis?: string`，事件 detail 加 `storySynopsis`。
+
+**4. `src/features/chat/EditablePromptBlock.tsx`** — `<FillGridButtons ... storySynopsis={block.storySynopsis} />`。
+
+**5. `src/features/canvas/Canvas.tsx`** `handleChatFillGrid` — detail 类型加 `storySynopsis?: string`；`addNode` 建 StoryboardGenNode 时 `storySynopsis: detail.storySynopsis`。
+
+**6. `src/features/canvas/domain/canvasNodes.ts`** — `StoryboardGenNodeData` 加 `storySynopsis?: string`（含注释）。
+
+**7. `src/features/canvas/nodes/StoryboardGenNode.tsx`** `buildPrompt` — 拼 `GridPromptContext` 时加 `storyContext: nodeData.storySynopsis`。
+
+**8. `src/features/canvas/application/gridPromptRules.ts`**（核心注入，2 处）：
+```ts
+// A. GridPromptContext 接口新增
+/** 故事梗概（2-3句纯净叙事）：注入【全局故事背景】规则块，帮助图片模型理解剧情连续性；仅在 chat-fill-grid 时存在 */
+storyContext?: string;
+
+// B. buildGridPrompt 在 persona 之后、global_header 之前注入
+if (context.storyContext && context.storyContext.trim()) {
+  parts.push(
+    '【全局故事背景】以下是 6 段画面描述据以提炼的原始故事背景，用于帮助你理解剧情逻辑与画面连续性（角色身份、场景环境、情绪走向、动作因果）。' +
+      '6 段画面描述正是从这段背景中抽出的关键帧。注意：背景仅供理解，绝对禁止把背景中的任何剧情文字、句子或台词绘制到任意一格画面中，禁止出现任何文字/字幕/水印。' +
+      '本条属于硬约束（HARD CONSTRAINT）：任何提示词改写都必须原样保留本条，不得删除、压缩或改写。\n' +
+      context.storyContext.trim()
+  );
+  parts.push('');
+}
+```
+
+### 复刻到其他版本（照抄步骤）
+
+1. **SKILL 热更**：目标版本 `SKILL.md` 加【故事梗概】规则（措辞直接照抄，行业无关）→ `SECURITY_MARKER` + `version.txt` 版本号递增 → changelog 加一行 → 重新 zip → scp 上传（`version_xxx.txt` + `xiaoya-ai-cinema-xxx.zip` 到 `/jy/uploads/install_guide/files/`）。
+2. **前端 7 处照抄**（chatStore / FillGridButtons / EditablePromptBlock / Canvas / canvasNodes / StoryboardGenNode / gridPromptRules），全行业无关，代码原样复制。
+3. **后端零改动**，`cargo check` 通过即可。
+4. **`grid_prompt_rules_xxx.json` 无需改**：故事规则块硬编码在 `buildGridPrompt` 代码里，不进 JSON。
+
+### 关键坑（务必注意）
+
+1. **【故事梗概】行必须剥离**：不剥离会混进 grid `content` 污染宫格提示词。正则按**单行**抓取，SKILL 规则里必须要求模型**单行**输出（2-3 句压在一行）。
+2. **规则块必须明示「禁止绘制」**：image2 是纯图像模型，若把剧情文字当画面内容会画出来。块首句就声明「背景仅供理解，绝对禁止把背景中的任何剧情文字/句子/台词绘制到任意一格，禁止出现任何文字」。
+3. **HARD CONSTRAINT 自标识不能省**：`deepseekPromptOptimization` 开启时，优化器 LLM 会重写整个 prompt，默认会把非约束块当噪声删掉；块内自标「本条属于硬约束(HARD CONSTRAINT)，改写必须原样保留」才不会被丢。该开关默认关闭，此句是加固。
+4. **storySynopsis 全程可选，向后兼容**：旧消息/旧节点/手动建节点无此字段 → `storyContext` undefined → 不注入块，行为与旧版完全一致，不会报错。
+5. **SKILL 与前端必须同步上**：只改前端不改 SKILL，模型不输出【故事梗概】→ 前端解析为空 → 功能不生效；只改 SKILL 不改前端 → 用户 chat 里会看到【故事梗概】行（污染展示）。
+6. **发布约束**：changelog / notes 不出现模型名称（H3/海螺/欢乐马/wan 等）。
+7. **可见性边界**：最终组合 prompt（含【全局故事背景】块）正常流程不渲染到任何 UI，直达 image2；唯一例外是生成失败时的排障弹窗（`generationDebugContext.prompt` 出现在 `buildGenerationErrorReport`），属故障诊断场景，不算用户可见。
+
+### 验证清单
+
+1. `npx tsc --noEmit` 通过（无新增类型错误）；`cargo check` 通过（后端零改动）。
+2. SKILL 热更生效：curl 服务器 `version_xxx.txt` 版本号最新；zip 内含 SKILL.md + version.txt。
+3. 端到端：chat 里 AI 回复含【故事梗概】行 → chat 展示**看不到**该行（已剥离）→ 点「生成宫格图」→ 画布节点生成 → 调试上下文/后端请求里 prompt 含【全局故事背景】块，且不含时间戳/运镜/音频等视频噪声。
+4. 兼容：打开旧项目，旧节点点生成，prompt 无故事块、不报错。
+
+### 实测验证（短视频版，2026-08-23）
+
+已跑通全链路（chat 触发宫格 → 生成 → 检查实际请求日志）：
+
+- chat 消息 grid 块 `storySynopsis` 已挂载、block content **不含**【故事梗概】（剥离成功，用户界面不可见）。
+- 画布节点 `storyboardGenNode.data.storySynopsis` 就位（projects.db 实证）。
+- 百度 provider 请求日志 `[Prompt 全文]`（image2 实际收到的 prompt 前 1000 字）**完整包含**【全局故事背景】块 + 故事文本，且位置正确（persona 之后、画面描述之前）。
+- **关键发现：用户开着 `deepseekPromptOptimization`（提示词优化）时，故事块在 claude-sonnet 优化后原样保留**——块内自标「本条属于硬约束(HARD CONSTRAINT)…必须原样保留」的自标识生效，无需关闭优化即可生效。该项应在 §关键坑 第 3 条后面向复刻者强调：**该自标识不是可选项，是优化开启时故事块存活的唯一保障。**
+- 排查提示：`prompt_head=` 日志看着为空是**块内容带换行导致的多行截断**假象，整文件搜【全局故事背景】即可确认真实内容。
