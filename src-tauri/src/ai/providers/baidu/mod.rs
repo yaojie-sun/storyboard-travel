@@ -337,7 +337,7 @@ impl AIProvider for BaiduProvider {
                 408 => "生成超时，积分已返还，请重新生成".to_string(),
                 500 => "服务异常，积分已返还，请稍后重试".to_string(),
                 503 => "服务暂不可用，积分已返还，请稍后重试".to_string(),
-                400 => format!("生成失败(HTTP 400): {}，积分已返还，请重新生成", raw_response),
+                400 => translate_baidu_image_error(&raw_response),
                 _ => format!("生成失败(HTTP {})，积分已返还，请重新生成", status.as_u16()),
             };
             return Err(AIError::Provider(user_msg));
@@ -365,6 +365,21 @@ impl AIProvider for BaiduProvider {
         // Return as data URL so the frontend can display directly
         Ok(format!("data:image/png;base64,{}", b64))
     }
+}
+
+/// 把百度图片生成的 400 错误响应翻译成用户可读的中文提示，避免把英文 JSON 直接甩给用户。
+fn translate_baidu_image_error(raw_response: &str) -> String {
+    let lower = raw_response.to_lowercase();
+
+    if lower.contains("moderation_blocked")
+        || lower.contains("safety_violations")
+        || lower.contains("rejected by the safety")
+        || lower.contains("content_filter")
+    {
+        return "提示词或参考图可能包含违规或敏感内容，请修改后重试，积分已返还，请重新生成".to_string();
+    }
+
+    "生成失败，请检查提示词或参考图后重试，积分已返还，请重新生成".to_string()
 }
 
 // ── VOD Super-Resolution ──────────────────────────────────────

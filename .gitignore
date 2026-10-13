@@ -68,6 +68,11 @@ macos-app/
 jiaoyan/
 jy/
 reference/
+# External binaries for enhance — realesrgan tracked; ffmpeg stays local-only
+src-tauri/resources/ffmpeg/
+!src-tauri/resources/realesrgan/**/*.exe
+!src-tauri/resources/realesrgan/**/*.dll
+
 # Icons exclusion was blocking macOS build - icons are required by Tauri
 # icons/ (removed - src-tauri/icons are build-essential)
 

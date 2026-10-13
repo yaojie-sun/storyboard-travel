@@ -925,7 +925,7 @@ export async function bananaSubmitVideoJob(params: VideoGenParams): Promise<Vide
 }
 
 export interface VideoPollResult {
-  status: 'running' | 'succeeded' | 'failed' | 'retry';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'retry';
   videoUrl?: string;
   error?: string;
   creditsRefunded?: boolean;

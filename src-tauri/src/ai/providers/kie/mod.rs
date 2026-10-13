@@ -514,7 +514,7 @@ impl KieProvider {
     async fn poll_task_until_complete(&self, api_key: &str, task_id: &str) -> Result<String, AIError> {
         loop {
             match self.poll_task_once(api_key, task_id).await? {
-                ProviderTaskPollResult::Running => sleep(Duration::from_millis(POLL_INTERVAL_MS)).await,
+                ProviderTaskPollResult::Queued | ProviderTaskPollResult::Running => sleep(Duration::from_millis(POLL_INTERVAL_MS)).await,
                 ProviderTaskPollResult::Succeeded(url) => return Ok(url),
                 ProviderTaskPollResult::Failed(message) => return Err(AIError::TaskFailed(message)),
             }

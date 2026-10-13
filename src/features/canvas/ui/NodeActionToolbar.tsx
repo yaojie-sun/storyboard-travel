@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NodeToolbar as ReactFlowNodeToolbar } from '@xyflow/react';
-import { Copy, Crop, Download, Film, FolderOpen, PenLine, RefreshCw, Scissors, Trash2, Unlink2 } from 'lucide-react';
+import { Copy, Crop, Download, Film, FolderOpen, PenLine, RefreshCw, Scissors, Sparkles, Trash2, Unlink2 } from 'lucide-react';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 
@@ -18,12 +18,13 @@ import {
 import { canvasEventBus } from '@/features/canvas/application/canvasServices';
 import { getNodeToolPlugins } from '@/features/canvas/tools';
 import type { ToolIconKey } from '@/features/canvas/tools';
-import { UiChipButton, UiPanel } from '@/components/ui';
+import { UiChipButton, UiModal, UiPanel } from '@/components/ui';
 import {
   copyImageSourceToClipboard,
   saveImageSourceToDirectory,
   saveImageSourceToPath,
 } from '@/commands/image';
+import { enhanceImage } from '@/commands/enhance';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { UI_POPOVER_TRANSITION_MS } from '@/components/ui/motion';
@@ -82,6 +83,11 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
   const [isCopySuccess, setIsCopySuccess] = useState(false);
   const [isCopyTextSuccess, setIsCopyTextSuccess] = useState(false);
   const [isCopyErrorSuccess, setIsCopyErrorSuccess] = useState(false);
+  const [isEnhancing, setIsEnhancing] = useState(false);
+  const [showEnhanceConfirm, setShowEnhanceConfirm] = useState(false);
+  const enhanceSuppressConfirmRef = useRef(
+    localStorage.getItem('enhance:suppressConfirm') === '1',
+  );
   const downloadMenuRef = useRef<HTMLDivElement | null>(null);
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTextFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -312,6 +318,50 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
     [closeDownloadMenu, imageSource, node.id]
   );
 
+  const updateNodeData = useCanvasStore((state) => state.updateNodeData);
+
+  const handleEnhance = useCallback(async () => {
+    if (!imageSource) return;
+
+    setIsEnhancing(true);
+    // 复用 ImageNode 已有的渐变进度条
+    updateNodeData(node.id, {
+      isGenerating: true,
+      generationStartedAt: Date.now(),
+      generationDurationMs: 30000,
+    } as any);
+
+    try {
+      const enhancedPath = await enhanceImage(imageSource, 4);
+
+      // 清除进度条，更新为增强后图片
+      updateNodeData(node.id, {
+        isGenerating: false,
+        generationStartedAt: null,
+        imageUrl: enhancedPath,
+        previewImageUrl: null,
+      } as any);
+
+      // 生成新预览缩略图
+      const { prepareNodeImage } = await import('@/features/canvas/application/imageData');
+      const prepared = await prepareNodeImage(enhancedPath);
+      updateNodeData(node.id, {
+        imageUrl: prepared.imageUrl,
+        previewImageUrl: prepared.previewImageUrl,
+        aspectRatio: prepared.aspectRatio,
+      } as any);
+    } catch (e: any) {
+      console.error('[Enhance] 增强失败:', e);
+      // 失败时清除进度条，恢复原图
+      updateNodeData(node.id, {
+        isGenerating: false,
+        generationStartedAt: null,
+      } as any);
+    } finally {
+      setIsEnhancing(false);
+    }
+  }, [imageSource, node.id, updateNodeData]);
+
   return (
     <ReactFlowNodeToolbar
       nodeId={node.id}
@@ -438,6 +488,30 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
             {t('nodeToolbar.ungroup')}
           </UiChipButton>
         )}
+        {/* 图片增强 — 仅单图节点（上传/导出/编辑） */}
+        {canHandleImage && !isImageEdit && (
+          <UiChipButton
+            key="image-enhance"
+            className={`h-8 ${TOOLBAR_BUTTON_RADIUS_CLASS} px-2.5 text-xs ${
+              isEnhancing
+                ? '!border-emerald-400/60 !bg-emerald-500/20 !text-emerald-200'
+                : `${TOOLBAR_NEUTRAL_BUTTON_CLASS} hover:!border-emerald-400/60 hover:!bg-emerald-500/20 hover:!text-emerald-200`
+            }`}
+            onClick={(event) => {
+              event.stopPropagation();
+              closeDownloadMenu();
+              if (enhanceSuppressConfirmRef.current) {
+                void handleEnhance();
+              } else {
+                setShowEnhanceConfirm(true);
+              }
+            }}
+            disabled={isEnhancing}
+          >
+            <Sparkles className={`h-3.5 w-3.5 ${isEnhancing ? 'animate-pulse' : ''}`} />
+            {isEnhancing ? '增强中...' : '增强'}
+          </UiChipButton>
+        )}
         {hasImageData(node) && (
           <UiChipButton
             key="video-gen"
@@ -519,6 +593,83 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
           )}
         </div>
       )}
+
+      {/* 硬件要求确认弹窗 */}
+      <UiModal
+        isOpen={showEnhanceConfirm}
+        title="本地图片增强"
+        onClose={() => setShowEnhanceConfirm(false)}
+        widthClassName="w-[480px]"
+        footer={
+          <div className="flex w-full items-center justify-between gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 accent-emerald-500"
+                onChange={(e) => {
+                  enhanceSuppressConfirmRef.current = e.currentTarget.checked;
+                  if (e.currentTarget.checked) {
+                    localStorage.setItem('enhance:suppressConfirm', '1');
+                  } else {
+                    localStorage.removeItem('enhance:suppressConfirm');
+                  }
+                }}
+              />
+              以后不再提示
+            </label>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="h-8 rounded-lg border border-[rgba(255,255,255,0.12)] bg-bg-dark px-3 text-xs text-text-muted transition-colors hover:bg-bg-dark/70"
+                onClick={() => setShowEnhanceConfirm(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="h-8 rounded-lg bg-emerald-500/80 px-4 text-xs font-medium text-white transition-colors hover:bg-emerald-500"
+                onClick={() => {
+                  setShowEnhanceConfirm(false);
+                  void handleEnhance();
+                }}
+              >
+                继续增强
+              </button>
+            </div>
+          </div>
+        }
+      >
+        <div className="space-y-4 text-sm leading-relaxed">
+          <div>
+            <p className="font-medium text-text-dark">此功能使用本地 GPU 进行 AI 图片超分增强</p>
+            <p className="mt-2 text-text-muted">
+              处理时间取决于您的显卡性能和图片尺寸，通常在 <strong className="text-text-dark">10–60 秒</strong>。
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-[rgba(255,255,255,0.08)] bg-bg-dark/50 p-3">
+            <p className="mb-2 text-xs font-medium text-text-dark">最低配置要求</p>
+            <ul className="space-y-1.5 text-xs text-text-muted">
+              <li className="flex items-start gap-2">
+                <span className="mt-0.5 shrink-0 text-emerald-400">&#9679;</span>
+                <span>独立显卡，支持 <strong className="text-text-dark">Vulkan 1.1+</strong></span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-0.5 shrink-0 text-emerald-400">&#9679;</span>
+                <span>显存 <strong className="text-text-dark">2 GB</strong> 以上</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-0.5 shrink-0 text-emerald-400">&#9679;</span>
+                <span>兼容 NVIDIA / AMD / Intel Arc 显卡</span>
+              </li>
+            </ul>
+            <p className="mt-2 text-[11px] text-text-muted/70">
+              处理器集成显卡（Intel UHD / AMD APU）也可运行，但速度较慢。
+              增强过程中请勿关闭应用。
+            </p>
+          </div>
+        </div>
+      </UiModal>
     </ReactFlowNodeToolbar>
   );
 });

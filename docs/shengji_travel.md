@@ -188,6 +188,26 @@ ssh root@47.108.237.10 "cp /jy/uploads/app/分镜大师旅游版_1.0.1_x64-setup
 scp version_travel.json root@47.108.237.10:/jy/uploads/app/
 ```
 
+#### 步骤 6.5：更新用户下载页（易漏，务必做）
+
+下载页 `industry.html` 部署在服务器 `/jy/uploads/install_guide/industry.html`（IP/域名均可访问），每个行业版本各一张卡片，含版本号 + Windows/macOS 下载链接。发布新版本后**必须同步更新旅游版卡片**，否则用户从网页下载还是旧版本号、拿到旧安装包。
+
+```bash
+# 1. 下载服务器当前页
+scp -i "$HOME/jiaoyan.pem" root@47.108.237.10:/jy/uploads/install_guide/industry.html ./industry-server.html
+# 2. 本地改旅游版 3 处（只动 Storyboard-Travel 行，别碰其他行业版本）：
+#    版本号   vX.Y.Z → v{新版本}
+#    Windows  Storyboard-Travel_X.Y.Z_x64-setup.exe → Storyboard-Travel_{新版本}_x64-setup.exe
+#    macOS    Storyboard-Travel_X.Y.Z_universal.dmg → Storyboard-Travel_{新版本}_universal.dmg
+# 3. 备份 + 回传
+ssh -i "$HOME/jiaoyan.pem" root@47.108.237.10 "cp -f /jy/uploads/install_guide/industry.html /jy/uploads/install_guide/industry.html.bak.$(date +%Y%m%d)"
+scp -i "$HOME/jiaoyan.pem" ./industry-server.html root@47.108.237.10:/jy/uploads/install_guide/industry.html
+# 4. 验证
+curl -sI http://47.108.237.10/jy/uploads/install_guide/industry.html
+```
+
+> 坑：下载页 `industry.html` 与 `version_travel.json` 是**两套独立更新**——客户端程序内升级走 `version_travel.json`（§二），用户从网页下载走 `industry.html`。只更新 JSON 不更新网页，网页用户仍拿到旧安装包。
+
 #### 步骤 7：验证
 
 1. 旧版本客户端启动 → 弹升级对话框 → 下载安装验证完整链路

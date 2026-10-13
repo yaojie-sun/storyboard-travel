@@ -158,6 +158,8 @@ export interface StoryboardGenNodeData {
   generatedVideoUrl?: string | null;
   /** 分镜→宫格帧映射。AI 生成宫格时输出【分镜映射】，前端解析后存入。视频生成时读取注入 */
   shotFrameMap?: ShotFrameMap;
+  /** 故事梗概（2-3句纯净叙事）：chat-fill-grid 时随宫格节点注入【全局故事背景】规则块，前端不展示 */
+  storySynopsis?: string;
   [key: string]: unknown;
 }
 

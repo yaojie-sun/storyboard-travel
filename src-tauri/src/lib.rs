@@ -9,6 +9,7 @@ use commands::ai as ai_commands;
 use commands::asset;
 use commands::banana_api;
 use commands::chat;
+use commands::enhance;
 use commands::image;
 use commands::project_state;
 use commands::seedance_integration;
@@ -208,6 +209,8 @@ pub fn run() {
             image::save_image_source_to_app_debug_dir,
             #[cfg(not(target_os = "android"))]
             image::copy_image_source_to_clipboard,
+            enhance::enhance_image,
+            enhance::enhance_video,
             ai_commands::set_api_key,
             ai_commands::clear_all_api_keys,
             ai_commands::submit_generate_image_job,
@@ -246,7 +249,6 @@ pub fn run() {
             chat::migrate_chat_storage,
             chat::check_skill_upgrade,
             chat::perform_skill_upgrade,
-            chat::integrate_video_prompt,
             chat::analyze_story,
 
             chat::load_videogen_store,
@@ -273,6 +275,8 @@ pub fn run() {
             asset::update_asset,
             asset::list_assets,
             asset::delete_asset,
+            asset::describe_asset,
+            asset::get_asset_descriptions,
             update::check_for_upgrade,
             update::fetch_grid_prompt_rules,
             update::fetch_video_gen_rules,

@@ -660,6 +660,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
       frames: frameContexts,
       hasAnyRefImage,
       disableTextInImage: storyboardGenDisableTextInImage,
+      storyContext: nodeData.storySynopsis,
     };
 
     return buildGridPrompt(rules, context);

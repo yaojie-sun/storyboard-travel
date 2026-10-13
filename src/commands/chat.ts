@@ -74,21 +74,6 @@ export interface StoryAnalysisResult {
   raw_json: string;
 }
 
-/** DeepSeek清洗 — 去掉光影/场景/外观，只保留运镜+精简动作+声音 */
-export async function cleanVideoPrompt(params: {
-  storyboardPrompt: string;
-  gridFrames: string[];
-  targetModel?: string;
-  referenceImages?: string[];
-}): Promise<string> {
-  return await invoke<string>('integrate_video_prompt', {
-    storyboardPrompt: params.storyboardPrompt,
-    gridFrames: params.gridFrames,
-    targetModel: params.targetModel ?? null,
-    referenceImages: params.referenceImages ?? null,
-  });
-}
-
 export async function analyzeStory(params: {
   storyOutline: string;
   aspectRatio: string;

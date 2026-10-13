@@ -30,8 +30,6 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useEpisodeStore } from '@/stores/episodeStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useAssetStore } from '@/stores/assetStore';
-import { readProjectGlobalsMd } from '@/commands/projectState';
-import { listAssets } from '@/commands/asset';
 import { canvasAiGateway, canvasEventBus } from '@/features/canvas/application/canvasServices';
 import {
   CANVAS_NODE_TYPES,
@@ -61,9 +59,13 @@ import { NodeToolDialog } from './ui/NodeToolDialog';
 import { ImageViewerModal } from './ui/ImageViewerModal';
 import { MissingApiKeyHint } from '@/features/settings/MissingApiKeyHint';
 import { ChatPanel } from '@/features/chat';
-import { getEmphasisLabels, getVideoTypeLabel } from '@/features/project/presets';
+import { buildProjectChatContext } from '@/features/chat/projectContext';
+import { splitGridPromptIntoFrames } from '@/utils/gridPromptParser';
 
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
+
+/// 生成宫格图时，自动连线到宫格节点的最近参考图数量（按上传时间倒序取最近 N 张）
+const MAX_AUTO_REF_IMAGES = 6;
 
 interface PendingConnectStart {
   nodeId: string;
@@ -193,106 +195,6 @@ function resolveAllowedNodeTypes(handleType: HandleType): CanvasNodeType[] {
 
 function canNodeTypeBeManualConnectionSource(type: CanvasNodeType): boolean {
   return type === CANVAS_NODE_TYPES.upload || type === CANVAS_NODE_TYPES.exportImage;
-}
-
-/**
- * Parse a grid prompt text into individual frame descriptions.
- * Handles numbered lines (1. / 1)、/ (1) etc.) and blank-line-separated paragraphs.
- */
-function parseGridPrompt(prompt: string, maxFrames: number): string[] {
-  let trimmed = prompt.trim();
-  if (!trimmed) {
-    return Array.from({ length: maxFrames }, () => '');
-  }
-
-  // Aggressively strip any summary/footer after the last "无文字"
-  const lastWuWenzi = trimmed.lastIndexOf('无文字');
-  if (lastWuWenzi > 0) {
-    const cutPoint = trimmed.indexOf('\n', lastWuWenzi);
-    if (cutPoint > 0) {
-      trimmed = trimmed.slice(0, cutPoint).trim();
-    } else {
-      trimmed = trimmed.slice(0, lastWuWenzi + 3).trim();
-    }
-  }
-
-  // Patterns for frame item prefixes
-  const digitRe = /^\d+[\.、\)]\s*/;
-  const fullwidthRe = /^（\d+）\s*/;
-  const chineseRe = /^(?:第?\s*[格宫]\s*|宫格\s*)[一二三四五六七八九十\d]+\s*[：:]\s*/;
-  const sceneRe = /^场景\s*[一二三四五六七八九十\d]+\s*[：:]\s*/;
-  const allPrefixRe = /^(?:\d+[\.、\)]\s*|（\d+）\s*|(?:第?\s*[格宫]\s*|宫格\s*)[一二三四五六七八九十\d]+\s*[：:]\s*|场景\s*[一二三四五六七八九十\d]+\s*[：:]\s*)/;
-
-  // Post-frame markers — lines that indicate frame content has ended
-  const postFrameRe = /^(?:[-—]{3,}|\*\*说明|跨格一致性|一致性检查|动作连贯|（\d+[格帧]|【注|注[：:]|总结[：:]|\d+格[^，。]*[保持严格一致统一]|\d+[帧格]画面)/;
-  const copyInstructionRe = /复制\s*以上|打开.*分镜大师|粘贴生成|如需进一步|请告诉我/;
-
-  // Strategy 1: identify frame items by known prefixes, discard preamble
-  const lines = trimmed.split('\n').map((l) => l.trim()).filter(Boolean);
-  const items: string[] = [];
-  let inFrames = false;
-
-  for (const line of lines) {
-    // Detect end of frame content: post-frame markers or copy instructions
-    if (inFrames && items.length > 0 && (postFrameRe.test(line) || copyInstructionRe.test(line))) break;
-    const isDigit = digitRe.test(line);
-    const isFullwidth = fullwidthRe.test(line);
-    const isChinese = chineseRe.test(line);
-    const isScene = sceneRe.test(line);
-    if (isDigit || isFullwidth || isChinese || isScene) {
-      // If previous frame ends without a sentence terminator or "无文字",
-      // the AI likely wrapped text mid-sentence — treat as continuation.
-      if (inFrames && items.length > 0) {
-        const prev = items[items.length - 1];
-        const endsComplete = /[。！？.!]$/.test(prev) || prev.endsWith('无文字');
-        if (!endsComplete) {
-          items[items.length - 1] = prev + ' ' + line;
-          continue;
-        }
-      }
-      inFrames = true;
-      const cleaned = line.replace(allPrefixRe, '').trim();
-      items.push(cleaned);
-    } else if (inFrames && items.length > 0) {
-      // Skip summary/footer lines
-      if (/[\(（]?\d+[格帧][^。，]*(?:保持|一致|严格|统一|不变)/.test(line)) continue;
-      // Continuation of previous multi-line frame description
-      items[items.length - 1] += ' ' + line;
-    }
-    // Before first frame item: skip preamble
-  }
-
-  if (items.length >= 2) {
-    // Clean: truncate each frame at "无文字" — summary text bleeds in as continuation
-    for (let i = 0; i < items.length; i++) {
-      const idx = items[i].indexOf('无文字');
-      if (idx > 0) items[i] = items[i].slice(0, idx + 3).trim();
-    }
-    const result = Array.from({ length: maxFrames }, () => '');
-    for (let i = 0; i < Math.min(items.length, maxFrames); i++) {
-      result[i] = items[i];
-    }
-    return result;
-  }
-
-  // Strategy 2: fallback — split by double newlines
-  const paraSplit = trimmed.split(/\n\s*\n/).filter((s) => s.trim());
-  if (paraSplit.length >= 2) {
-    const clean = paraSplit.map((s) => s.trim()).filter(Boolean);
-    return clean.slice(0, maxFrames).concat(Array.from({ length: Math.max(0, maxFrames - clean.length) }, () => ''));
-  }
-
-  // Strategy 3: fallback — split by single newlines
-  const lineSplit = trimmed.split('\n').filter((s) => s.trim());
-  if (lineSplit.length >= 2) {
-    const clean = lineSplit.map((s) => s.trim()).filter(Boolean);
-    return clean.slice(0, maxFrames).concat(Array.from({ length: Math.max(0, maxFrames - clean.length) }, () => ''));
-  }
-
-  // Single block: put it all in the first frame
-  const result = Array.from({ length: maxFrames }, () => '');
-  result[0] = trimmed;
-  return result;
 }
 
 function canNodeBeManualConnectionSource(nodeId: string | null | undefined, nodes: CanvasNode[]): boolean {
@@ -497,47 +399,10 @@ export function Canvas() {
   // Build project context for AI chat on mount (with fallback when no MD exists)
   useEffect(() => {
     if (!canvasProjectId) return;
-    const project = useProjectStore.getState().currentProject;
-    if (!project) return;
 
-    const buildAndSetContext = async () => {
-      // 1. Try to read existing project_globals.md
-      let context = await readProjectGlobalsMd(canvasProjectId).catch(() => '');
-
-      // 2. Fallback: build minimal context from project params when no MD
-      if (!context.trim()) {
-        const parts: string[] = [];
-        parts.push(`# ${project.name}\n`);
-        parts.push('## 项目全局参数\n');
-        if (project.videoType) parts.push(`- 视频类型: ${getVideoTypeLabel(project.videoType)}`);
-        if (project.aspectRatio) parts.push(`- 画幅比例: ${project.aspectRatio}`);
-        if (project.style) parts.push(`- 视觉风格: ${project.style}`);
-        if (project.tone) parts.push(`- 项目调性: ${project.tone}`);
-        if (project.directorRef) parts.push(`- 旅行视频风格: ${project.directorRef}`);
-        const emphasisLabels = getEmphasisLabels(project.emphasisDimensions.filter((d) => d.enabled).map((d) => d.key));
-        if (emphasisLabels.length > 0) {
-          parts.push(`- 提示词重点维度: ${emphasisLabels.join('、')}`);
-        }
-        context = parts.join('\n') + '\n';
-      }
-
-      // 3. Append asset @图N mapping
-      try {
-        const assets = await listAssets(canvasProjectId);
-        if (assets.length > 0) {
-          const catLabel = (cat: string) =>
-            cat === 'character' ? '角色' : cat === 'scene' ? '场景' : '服饰道具';
-          const lines = assets.map((a, i) =>
-            `@图${i + 1}: ${a.name} (${catLabel(a.category)})`,
-          );
-          context = `${context}\n## 可用参考图\n${lines.join('\n')}\n\n生成分镜提示词时，如需引用参考图请使用 @图N 格式。`;
-        }
-      } catch { /* assets not critical */ }
-
-      useChatStore.getState().setProjectContext(context);
-    };
-
-    void buildAndSetContext();
+    void buildProjectChatContext(canvasProjectId).then((context) =>
+      useChatStore.getState().setProjectContext(context),
+    );
   }, [canvasProjectId]);
 
   // Re-check episodes after load completes (handles race with loadEpisodes)
@@ -1508,6 +1373,8 @@ export function Canvas() {
         frames?: Array<{ description: string }>;
         conversationId?: string;
         shotFrameMap?: ShotFrameMap;
+        selectedRefImages?: number[];
+        storySynopsis?: string;
       }>).detail;
       const wrapper = wrapperRef.current;
       if (!wrapper || !reactFlowInstance) {
@@ -1530,7 +1397,7 @@ export function Canvas() {
           descriptions.push('');
         }
       } else {
-        descriptions = parseGridPrompt(detail.prompt, totalFrames);
+        descriptions = splitGridPromptIntoFrames(detail.prompt, totalFrames);
       }
 
       const frames = descriptions.map((desc) => ({
@@ -1539,19 +1406,33 @@ export function Canvas() {
         referenceIndex: null,
       }));
 
-      // Auto-match reference images from project assets
+      // Auto-link reference images: AI 选图优先（【选图】@图N），无选图时回退到最近上传 N 张
       const matchedAssets: Array<{ name: string; filePath: string; index: number }> = [];
       const projectId = useProjectStore.getState().currentProject?.id;
       if (projectId) {
-        const allAssets = useAssetStore.getState().getAssets(projectId);
-        for (const asset of allAssets) {
-          if (detail.prompt.includes(asset.name) && asset.filePath) {
-            matchedAssets.push({
+        const allAssets = useAssetStore
+          .getState()
+          .getAssets(projectId)
+          .filter((asset) => asset.filePath)
+          .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+
+        const selected = detail.selectedRefImages;
+        if (selected && selected.length > 0) {
+          // AI 选中的 @图N 编号（1-based），映射到按上传时间倒序的资产列表
+          for (const n of selected.slice(0, MAX_AUTO_REF_IMAGES)) {
+            const asset = allAssets[n - 1];
+            if (asset) {
+              matchedAssets.push({ name: asset.name, filePath: asset.filePath, index: n - 1 });
+            }
+          }
+        } else {
+          matchedAssets.push(
+            ...allAssets.slice(0, MAX_AUTO_REF_IMAGES).map((asset, index) => ({
               name: asset.name,
               filePath: asset.filePath,
-              index: matchedAssets.length,
-            });
-          }
+              index,
+            })),
+          );
         }
       }
 
@@ -1587,6 +1468,7 @@ export function Canvas() {
         frames,
         sourceConversationId: detail.conversationId,
         shotFrameMap: detail.shotFrameMap,
+        storySynopsis: detail.storySynopsis,
       });
 
       // Connect upload nodes to StoryboardGenNode

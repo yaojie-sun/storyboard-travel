@@ -8,6 +8,8 @@ import {
   type ChatResponse,
 } from '@/commands/chat';
 import { useEpisodeStore } from '@/stores/episodeStore';
+import { buildProjectChatContext } from '@/features/chat/projectContext';
+import { splitGridPromptIntoFrames } from '@/utils/gridPromptParser';
 
 export interface PromptBlockFrame {
   description: string;
@@ -33,6 +35,10 @@ export interface PromptBlock {
   frames?: PromptBlockFrame[];
   /** 分镜→宫格帧映射（从 AI 输出的【分镜映射】JSON 解析），仅 grid 类型可能有值 */
   shotFrameMap?: Record<string, unknown>;
+  /** AI 从脚本挑出的参考图编号（1-based @图N），仅 grid 类型可能有值；用于宫格节点自动连线 */
+  selectedRefImages?: number[];
+  /** AI 输出的【故事梗概】（2-3句纯净叙事），随宫格生成注入【全局故事背景】规则块，前端不展示 */
+  storySynopsis?: string;
 }
 
 export interface ChatMessage {
@@ -134,78 +140,22 @@ function mergeConversations(lists: Conversation[]): Conversation[] {
 }
 
 /**
- * Frame start patterns — matches lines starting with numbered/lettered list items.
- * Supports: 1. / A、/ 一、/ **1. Title：** / 场景1： / （1） / (A) etc.
+ * Parse grid prompts by extracting numbered frame items.
+ *
+ * 统一解析：识别所有编号格式（数字+顿号/点/括号/中文数字/第N格/宫格N/场景N），
+ * 丢弃前言概括句，处理编号超量。详见 @/utils/gridPromptParser。
  */
 function parseGridFrames(gridContent: string): PromptBlockFrame[] {
-  // Split by blank lines — each paragraph is one frame description
-  const paragraphs = gridContent.split(/\n\s*\n/);
-  const frames: PromptBlockFrame[] = [];
-
-  const postFrameRe = /^(?:[-—]{3,}|\*\*说明|跨格一致性|一致性检查|动作连贯)/;
-
-  for (const para of paragraphs) {
-    const text = para.trim();
-    if (!text) continue;
-    if (postFrameRe.test(text)) break;
-    if (/^(?:复制以上|打开.*分镜大师|粘贴生成|如需进一步|请告诉我)/.test(text)) break;
-
-    // Strip any frame prefix: N. / N、/ 第N格： / 场景N： / etc.
-    let desc = text
-      .replace(/^\s*(?:\*\*)?\s*(?:\d+|[A-Z]|[一二三四五六七八九十]+)\s*[\.、\)）]\s*(?:\*\*)?/, '')
-      .replace(/^\s*(?:场景|第)\s*(?:\d+|[一二三四五六七八九十]+)\s*格?\s*[：:]\s*/, '')
-      .trim();
-
-    if (desc) {
-      frames.push({ description: desc });
-    }
-  }
-
-  // Strip known instruction suffixes
-  const instructionPatterns = [
-    /[>\s]*复制以上.*$/,
-    /[>\s]*打开分镜大师.*粘贴生成.*$/,
-    /[>\s]*粘贴生成分镜图像.*$/,
-  ];
-  for (let i = 0; i < frames.length; i++) {
-    for (const pattern of instructionPatterns) {
-      frames[i] = { ...frames[i], description: frames[i].description.replace(pattern, '').trim() };
-    }
-  }
-
-  return frames;
-}
-
-/**
- * When grid content is a flat paragraph (no numbered items), try splitting by
- * sentinel patterns like **N.** embedded mid-text.
- */
-function splitFlatGridContent(content: string): PromptBlockFrame[] {
-  // Attempt to split on mid-text bold-numbered markers: **1.  **2.  etc.
-  const parts = content.split(/(?:\*\*)?(?:\d+|[A-Z])\s*[\.、\)）]\s*(?:\*\*)?\s*/g);
-  // First part before any marker is preamble — discard
-  const frames: PromptBlockFrame[] = [];
-  for (let i = 1; i < parts.length; i++) {
-    const desc = parts[i].trim();
-    if (desc) {
-      frames.push({ description: desc });
-    }
-  }
-  // If we didn't get multiple frames, try other strategies
-  if (frames.length < 2) {
-    // Split by double newlines
-    const paras = content.split(/\n\s*\n/).filter((s) => s.trim());
-    if (paras.length >= 2) {
-      return paras.map((p) => ({ description: p.trim() }));
-    }
-  }
-  return frames;
+  return splitGridPromptIntoFrames(gridContent, 6)
+    .map((description) => description.trim())
+    .filter(Boolean)
+    .map((description) => ({ description }));
 }
 
 /** Detect whether text looks like a video prompt (has time-anchored shots). */
 function looksLikeVideoPrompt(text: string): boolean {
-  // Match patterns like: 第1个镜头[0-3s], 第N个镜头[X-Ys], 第N镜头[X-Ys]
-  return /第\s*\d+\s*个?\s*镜头\s*\[\s*\d+\s*-\s*\d+\s*s\s*\]/.test(text);
+  // Match happyhorse 1.1 shot markers like: Begin with Shot 1 [0-3s], Then Shot 2 [3-8s], Cut to Shot 3 [8-12s]
+  return /(?:Begin with|Then|Cut to)\s+Shot\s+\d+\s*\[\s*\d+\s*-\s*\d+\s*s\s*\]/i.test(text);
 }
 
 /** Detect whether text looks like a grid prompt (numbered shot descriptions without time anchors). */
@@ -233,10 +183,34 @@ function parseShotFrameMap(text: string): ShotFrameMap | undefined {
   return undefined;
 }
 
+/** 解析 AI 输出的【选图】@图N,@图M 行，返回 1-based 编号数组（去重、上限 6）。 */
+function parseSelectedRefImages(text: string): number[] | undefined {
+  const match = text.match(/【选图】\s*([^\n【]*)/);
+  if (!match) return undefined;
+  const nums = (match[1].match(/@图(\d+)/g) ?? []).map((s) => parseInt(s.slice(2), 10));
+  const unique = [...new Set(nums)].filter((n) => Number.isInteger(n) && n >= 1).slice(0, 6);
+  return unique.length > 0 ? unique : undefined;
+}
+
+/** 解析 AI 输出的【故事梗概】行，返回 2-3 句纯净叙事（单行）。 */
+function parseStorySynopsis(text: string): string | undefined {
+  const match = text.match(/(?:【故事梗概】|\*\*故事梗概\*\*)\s*([^\n【]*)/);
+  if (!match || !match[1]?.trim()) return undefined;
+  return match[1].trim();
+}
+
 function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuationPrompt?: string; shotFrameMap?: ShotFrameMap } {
   const blocks: PromptBlock[] = [];
   let continuationPrompt: string | undefined;
   let shotFrameMap: ShotFrameMap | undefined;
+
+  // ⚠️ 解析并剥离【选图】标记（独立于其他标记顺序）
+  const selectedRefImages = parseSelectedRefImages(content);
+  content = content.replace(/【选图】[^\n【]*\n?/g, '').trim();
+
+  // ⚠️ 解析并剥离【故事梗概】行（前端隐藏，仅供宫格节点注入故事背景）
+  const storySynopsis = parseStorySynopsis(content);
+  content = content.replace(/(?:【故事梗概】|\*\*故事梗概\*\*)[^\n【]*\n?/g, '').trim();
 
   // ⚠️ Parse 【分镜映射】 BEFORE stripping 【继续确认】 — order-independent
   // If AI outputs 继续确认 before 分镜映射, parsing it first would strip the JSON.
@@ -302,17 +276,15 @@ function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuati
 
   if (gridMatch?.[1]?.trim()) {
     const gridContent = gridMatch[1].trim();
-    let frames = parseGridFrames(gridContent);
-    // Fallback: flat paragraph with embedded markers
-    if (frames.length < 2) {
-      frames = splitFlatGridContent(gridContent);
-    }
+    const frames = parseGridFrames(gridContent);
     blocks.push({
       id: generateId(),
       type: 'grid',
       content: gridContent,
       frames: frames.length >= 2 ? frames : undefined,
       shotFrameMap: shotFrameMap as unknown as Record<string, unknown>,
+      selectedRefImages,
+      storySynopsis,
     });
   }
 
@@ -326,6 +298,8 @@ function parsePromptBlocks(content: string): { blocks: PromptBlock[]; continuati
       content: content.trim(),
       frames: frames.length >= 2 ? frames : undefined,
       shotFrameMap: shotFrameMap as unknown as Record<string, unknown>,
+      selectedRefImages,
+      storySynopsis,
     });
   }
 
@@ -691,9 +665,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     schedulePersistConversations(nextWithPlaceholder);
 
     try {
+      // 生成时读图：触发分镜生成前，补读缺失参考图描述（缓存复用，只读一次）
+      let context = projectContext;
+      try {
+        const fresh = await buildProjectChatContext(get().currentProjectId, {
+          readIfMissing: true,
+        });
+        if (fresh) context = fresh;
+      } catch {
+        // 读图失败不阻塞生成
+      }
+
       const response: ChatResponse = await chatSendMessage(
         buildMessages(updatedConversation),
-        projectContext || undefined,
+        context || undefined,
         billingTag,
       );
 

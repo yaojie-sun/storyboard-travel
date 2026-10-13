@@ -6,7 +6,7 @@
     "system_prompt": ""
   },
   "negative_prompt": "chromatic aberration, motion blur excess, morphing, distortion, warping, flicker, unnatural physics, floating objects, anti-gravity, product shape drift, product color shift",
-  "prompt_rule": "【核心指令】根据分镜图生成一段完整的、带运镜的连续短视频。不是逐帧切换的幻灯片，也不是6个独立片段拼接——而是根据每个宫格的画面内容，合理选择运镜方式，镜头之间自然衔接、流畅过渡，如同一部正常拍摄的短片。\n\n【物理规律·强制】所有运动必须符合真实世界物理规律：重力方向一致向下、物体自然下落而非悬浮、碰撞产生合理反弹、布料/头发/液体按物理规律运动、禁止反重力悬浮、禁止物体凭空出现或消失、禁止违反惯性的瞬时变速。\n\n【故事板宫格·最高优先级】宫格1→2→3→4→5→6 是一个连续短视频，不是6张独立快照。人物/场景/道具/光影跨宫格完全一致，动作从前一格自然延续到后一格，无跳跃、无重置、无时间倒流。\n\n【运镜指令】用摄像机运动串联所有宫格。每个镜头从以下运镜中选择一种：static | slow push-in | slow pull-out | smooth pan L->R | smooth pan R->L | smooth tracking | slight handheld shake | orbit L | orbit R | tilt up | tilt down | crane up | crane down。速度均匀，不叠加。\n\n【导演语法】每个Shot一行：S1: {运镜}。{动作≤15字}。for N seconds。{声音}\n\n【色温】指定色温时严格遵循：暖光3200K / 中性4500K / 冷光5600K。\n\n【物体状态锁定】物体被摧毁后只留碎片，不复活、不重置。\n\n【产品PAC锁定·企业商业专用】产品外形/材质/颜色/品牌标识严格锁定于参考图。产品几何外形不漂移、不融化、不简化、不被AI重新设计。品牌色严格按参考图色值，不偏色。产品始终是画面主角——每一帧都能看到产品或通过光影/构图暗示其存在。\n\n【禁止】禁止插入额外镜头、禁止跳过宫格、禁止独立分镜切换、禁止在prompt中写光影/场景/角色外观/道具外观描述（参考图已锁定画面）、禁止@图N或Image N语法、禁止分辨率/画幅/模型名。全部通过DeepSeek清洗后输出英文。No text overlays, no watermarks, no subtitles, no dialogue boxes, no captions.",
+  "prompt_rule": "【核心指令】根据分镜图生成一段完整的、带运镜的连续短视频。不是逐帧切换的幻灯片，也不是6个独立片段拼接——而是根据每个宫格的画面内容，合理选择运镜方式，镜头之间自然衔接、流畅过渡，如同一部正常拍摄的短片。\n\n【物理规律·强制】所有运动必须符合真实世界物理规律：重力方向一致向下、物体自然下落而非悬浮、碰撞产生合理反弹、布料/头发/液体按物理规律运动、禁止反重力悬浮、禁止物体凭空出现或消失、禁止违反惯性的瞬时变速。\n\n【故事板宫格·最高优先级】宫格1→2→3→4→5→6 是一个连续短视频，不是6张独立快照。人物/场景/道具/光影跨宫格完全一致，动作从前一格自然延续到后一格，无跳跃、无重置、无时间倒流。\n\n【运镜指令】用摄像机运动串联所有宫格。每个镜头从以下运镜中选择一种：static | slow push-in | slow pull-out | smooth pan L->R | smooth pan R->L | smooth tracking | slight handheld shake | orbit L | orbit R | tilt up | tilt down | crane up | crane down。速度均匀，不叠加。\n\n【导演语法】每个Shot一行：Begin with Shot N [X-Ys]: {运镜}。{动作≤15字}。{声音}（Then Shot N / Cut to Shot N 衔接后续镜头）\n\n【色温】指定色温时严格遵循：暖光3200K / 中性4500K / 冷光5600K。\n\n【物体状态锁定】物体被摧毁后只留碎片，不复活、不重置。\n\n【产品PAC锁定·企业商业专用】产品外形/材质/颜色/品牌标识严格锁定于参考图。产品几何外形不漂移、不融化、不简化、不被AI重新设计。品牌色严格按参考图色值，不偏色。产品始终是画面主角——每一帧都能看到产品或通过光影/构图暗示其存在。\n\n【禁止】禁止插入额外镜头、禁止跳过宫格、禁止独立分镜切换、禁止在prompt中写光影/场景/角色外观/道具外观描述（参考图已锁定画面）、禁止@图N或Image N语法、禁止分辨率/画幅/模型名。全部通过DeepSeek清洗后输出英文。No text overlays, no watermarks, no subtitles, no dialogue boxes, no captions.",
   "constraints": {
     "global_rule": "故事板宫格=连续短视频时间线。摄像机运动串联六格，不添加/不删减/不修改画面内容。提示词只写运镜+动作+声音，画面由参考图锁定。",
     "shot_continuity": "六格→一个连续视频。摄像机运动均匀串联，每格停留足够时间。场景/道具/光影跨格一致。",
@@ -17,7 +17,7 @@
       "提示词只写运镜+动作+声音，不写光影/场景/外观",
       "色温严格按指定值",
       "物体状态跨格锁定",
-      "每Shot格式：S1: {运镜}。{动作≤15字}。for N seconds。{声音}",
+      "每Shot格式：Begin with Shot N [X-Ys]: {运镜}。{动作≤15字}。{声音}（Then Shot N / Cut to Shot N 衔接后续镜头）",
       "运镜从13种中选择：static/slow push-in/slow pull-out/smooth pan/smooth tracking/handheld shake/orbit/tilt/crane",
       "所有运动必须符合真实物理规律（重力/惯性/碰撞/流体），禁止反重力悬浮和物体穿模",
       "产品外形/材质/颜色/Logo严格锁死参考图，禁止AI自行重新设计或简化产品外观"

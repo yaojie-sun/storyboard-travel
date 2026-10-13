@@ -624,7 +624,7 @@ pub async fn get_generate_image_job(
         })
         .await
     {
-        Ok(ProviderTaskPollResult::Running) => {
+        Ok(ProviderTaskPollResult::Queued) | Ok(ProviderTaskPollResult::Running) => {
             // 重置连续错误计数
             {
                 let mut counts = IMAGE_POLL_ERROR_COUNT.lock().await;

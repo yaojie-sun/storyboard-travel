@@ -5,15 +5,18 @@ interface FillGridButtonsProps {
   frames?: Array<{ description: string }>;
   conversationId?: string;
   shotFrameMap?: Record<string, unknown>;
+  selectedRefImages?: number[];
+  /** AI 输出的【故事梗概】（2-3句纯净叙事），随宫格生成注入【全局故事背景】规则块，前端不展示 */
+  storySynopsis?: string;
 }
 
-export function FillGridButtons({ prompt, frames, conversationId, shotFrameMap }: FillGridButtonsProps) {
+export function FillGridButtons({ prompt, frames, conversationId, shotFrameMap, selectedRefImages, storySynopsis }: FillGridButtonsProps) {
   const { t } = useTranslation();
 
   const handleFill = () => {
     window.dispatchEvent(
       new CustomEvent('chat-fill-grid', {
-        detail: { prompt, rows: 2, cols: 3, frames, conversationId, shotFrameMap },
+        detail: { prompt, rows: 2, cols: 3, frames, conversationId, shotFrameMap, selectedRefImages, storySynopsis },
       }),
     );
   };
