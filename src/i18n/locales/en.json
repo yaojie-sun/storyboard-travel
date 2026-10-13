@@ -17,7 +17,8 @@
     "success": "Success",
     "notice": "Notice",
     "recharge": "Recharge",
-    "saving": "Saving..."
+    "saving": "Saving...",
+    "dismiss": "Got it"
   },
   "theme": {
     "dark": "Dark",
@@ -96,7 +97,8 @@
       "aiImageGeneration": "Xiaoya Image",
       "storyboard": "Storyboard Node",
       "storyboardGen": "Storyboard Generation",
-      "textAnnotation": "Text Annotation"
+      "textAnnotation": "Text Annotation",
+      "videoGen": "Direct Video"
     },
     "imageNode": {
       "title": "Image Node",
@@ -172,7 +174,7 @@
     "sceneMarkerEditor": {
       "title": "Edit Marker: {{name}}",
       "addCharacter": "Add Character",
-        "addProp": "Add Element",
+      "addProp": "Add Element",
       "addCamera": "Add Camera",
       "cameraDefaultName": "Camera",
       "characterNamePlaceholder": "Character name",
@@ -205,6 +207,13 @@
       "enableTopDownMap": "Top-Down Positioning Map",
       "enableTopDownMapDesc": "Include character positioning reference map during generation for precise spatial control",
       "floorPlanTitlePrefix": "Top-Down Scene Positioning Reference"
+    },
+    "videoGen": {
+      "refLabel": "Reference {{index}}",
+      "refCount": "{{count}}",
+      "noRefs": "No reference images connected",
+      "emptyPrompt": "No prompt yet",
+      "generate": "Generate Video"
     }
   },
   "viewer": {
@@ -555,6 +564,7 @@
     "send": "Send",
     "sending": "Sending...",
     "inspiration": "💡 Trending Ideas",
+    "uploadImage": "Upload Image",
     "inspirationConfirm": "AI will search recent trending short video styles based on your project and generate 3 tailored creative ideas.",
     "inspirationCost": "3 credits per use",
     "cancelStream": "Stop",
@@ -582,7 +592,43 @@
     "autoMatchContinue": "Continue",
     "askGridPrompt": "Generate 2×3 storyboard grid prompts?",
     "askGridImage": "Generate storyboard grid images?",
-    "generate": "Generate"
+    "generate": "Generate",
+    "directVideoNow": "Generate Video",
+    "generateStoryboard": "Generate storyboard cells",
+    "phaseReading": "Reading reference images…",
+    "phaseThinking": "Thinking…",
+    "storageWarningBackedUp": "Failed to parse the chat file. A copy of the original was saved to: {{path}}",
+    "storageWarningWriteBlocked": "Failed to parse the chat file and the backup also failed: chat file writing has been stopped to protect your original data. Please contact support.",
+    "stage": {
+      "step0": "Does the request match the aspect ratio and duration? (Both come from the project dashboard — no need to fill them in here.)",
+      "confirm": "Yes, write the project brief",
+      "step55": "Self-check passed. Where to next?",
+      "grid": "Confirm and storyboard (recommended)",
+      "direct": "Generate the video directly (skip storyboard)",
+      "rerun": "Re-run the self-check",
+      "step6": "This unit’s video prompt is above.",
+      "step6Done": "Every unit in the film has been written.",
+      "nextUnit": "Next unit ({{unit}} · {{shots}})",
+      "done": "This passage is complete. Keep refining, or drop the prompt onto a node.",
+      "continue": "Continue to the next step?",
+      "next": "Next step",
+      "directNow": "Generate video directly"
+    },
+    "stageName": {
+      "step0": "Requirement recap",
+      "step1": "Project brief",
+      "step2": "Story outline",
+      "step3": "Character list",
+      "step4": "Scene list",
+      "step5": "Six-column shot table",
+      "step55": "Shot table self-check",
+      "step6": "Video prompt",
+      "step7": "Model & resolution",
+      "step9": "Review report",
+      "stageDone": "Completed: {{name}}",
+      "writing": "Writing: {{name}} ({{index}}/{{total}})",
+      "writingPlain": "Writing: {{name}}"
+    }
   },
   "recharge": {
     "title": "WeChat Recharge",
@@ -633,8 +679,10 @@
     "noStoryboardPrompt": "No storyboard/video prompts in Chat. Generate a storyboard in Chat first.",
     "previewPlaceholder": "Video will be previewed here after generation",
     "generating": "Generating video...",
+    "queued": "In queue, please wait...",
+    "queuedHint": "High queue volume, may take minutes. Please keep the window open.",
     "creditCost": "Cost: {{cost}} credits",
-    "generate": "Generate Video",
+    "generate": "Generate Video (2K)",
     "download": "Download",
     "promptRequired": "Please enter a prompt",
     "notImplemented": "Video generation API will be connected in the next phase",
@@ -658,7 +706,17 @@
     "goRecharge": "Recharge",
     "confirmGenerate": "Generate",
     "resuming": "Resuming previous video generation...",
-    "pollTimeout": "Video generation timed out, credits refunded. Please try again later."
+    "pollTimeout": "Video generation timed out, credits refunded. Please try again later.",
+    "completedToast": "Video generation completed",
+    "completedToastNamed": "\"{{title}}\" video generation completed",
+    "dockDone": "Completed",
+    "dockExpand": "Expand",
+    "dockHistoryCount": "{{count}} completed",
+    "dockIdle": "No task in progress",
+    "dockView": "View",
+    "dockWaiting": "Waiting",
+    "estimateHint": "Estimated 30–60 seconds",
+    "minimize": "Minimize"
   },
   "consumption": {
     "title": "Consumption History",

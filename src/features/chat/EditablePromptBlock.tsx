@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useChatStore, type PromptBlock } from '@/stores/chatStore';
+import { useChatStore, resolveSelectedRefImages, type PromptBlock } from '@/stores/chatStore';
 import { FillGridButtons } from './FillGridButtons';
 
 interface EditablePromptBlockProps {
@@ -99,6 +99,8 @@ export function EditablePromptBlock({
                   frames={block.frames}
                   conversationId={conversationId}
                   shotFrameMap={block.shotFrameMap}
+                  selectedRefImages={resolveSelectedRefImages(block)}
+                  storySynopsis={block.storySynopsis}
                 />
               )}
 

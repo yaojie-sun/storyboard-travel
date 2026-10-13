@@ -34,6 +34,17 @@ export async function migrateChatStorage(): Promise<string> {
   return await invoke<string>('migrate_chat_storage');
 }
 
+/**
+ * 把解析失败的对话文件另存一份 `.corrupt-<ts>`，返回备份绝对路径。
+ *
+ * 前端在读坏的那一刻必须先调它：`safeParseConversations` 失败会回退成空列表，
+ * 而 5 秒定时器的下一次整量存盘会把坏文件覆盖成 `[]`。
+ * 后备端**只复制、不动原文件**（见 Rust `backup_corrupt_chat_file`）。
+ */
+export async function backupCorruptChatFile(projectId: string): Promise<string> {
+  return await invoke<string>('backup_corrupt_chat_file', { projectId });
+}
+
 export interface SkillUpgradeInfo {
   upgrade_available: boolean;
   local_version: string;
@@ -72,21 +83,6 @@ export interface StoryAnalysisResult {
   pacing: string;
   analysis_summary: string;
   raw_json: string;
-}
-
-/** DeepSeek清洗 — 去掉光影/场景/外观，只保留运镜+精简动作+声音 */
-export async function cleanVideoPrompt(params: {
-  storyboardPrompt: string;
-  gridFrames: string[];
-  targetModel?: string;
-  referenceImages?: string[];
-}): Promise<string> {
-  return await invoke<string>('integrate_video_prompt', {
-    storyboardPrompt: params.storyboardPrompt,
-    gridFrames: params.gridFrames,
-    targetModel: params.targetModel ?? null,
-    referenceImages: params.referenceImages ?? null,
-  });
 }
 
 export async function analyzeStory(params: {

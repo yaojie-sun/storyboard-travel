@@ -1,4 +1,5 @@
 pub mod deepseek;
+pub mod describe;
 pub mod error;
 pub mod providers;
 
@@ -33,6 +34,7 @@ pub enum ProviderTaskSubmission {
 
 #[derive(Debug, Clone)]
 pub enum ProviderTaskPollResult {
+    Queued,
     Running,
     Succeeded(String),
     Failed(String),

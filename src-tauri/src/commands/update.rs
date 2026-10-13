@@ -15,26 +15,28 @@ pub async fn fetch_grid_prompt_rules() -> Result<String, String> {
     response.text().await.map_err(|e| format!("failed to read grid prompt rules: {e}"))
 }
 
-fn resolve_video_gen_rules_url(model: Option<String>) -> String {
+fn resolve_video_gen_rules_url(model: Option<String>, mode: Option<String>) -> String {
     let model = model
         .filter(|m| !m.is_empty())
         .unwrap_or_else(|| crate::commands::banana_api::get_active_video_model()
             .unwrap_or_default());
+    // 旧存档可能仍带已下线模型名，一并归到 H3 规则，避免取到不存在的规则文件。
+    // mode="direct" = chat 页「直接生成视频」建的 videoGenNode：参考图是若干独立资产，
+    // 没有 6 宫格时间线语义，必须取直出专用规则（否则会拿到「宫格1→6连续时间线」的规则头）。
+    let mode = mode.filter(|m| !m.is_empty()).unwrap_or_else(|| "grid".to_string());
     let file = match model.as_str() {
-        "happyhorse_r2v" | "happyhorse/happyhorse-1.0-r2v" | "happyhorse/happyhorse-1.1-r2v" => "video_gen_rules_travel.json",
-        "travel_r2v" | "travel/travel-1.0-r2v" => "video_gen_rules_travel.json",
-        "wan_r2v" => "video_gen_rules_wan.json",
         "pixverse_c1" | "pixverse/c1" => "video_gen_rules_pixverse_c1.json",
-        _ => "video_gen_rules_wan.json",
+        _ if mode == "direct" => "video_gen_rules_minimax_h3_direct.json",
+        _ => "video_gen_rules_minimax_h3.json",
     };
     let url = format!("{}/{}", RULES_BASE, file);
-    tracing::info!("[Rules] model={}, loading {} -> {}", model, file, url);
+    tracing::info!("[Rules] model={}, mode={}, loading {} -> {}", model, mode, file, url);
     url
 }
 
 #[tauri::command]
-pub async fn fetch_video_gen_rules(model: Option<String>) -> Result<String, String> {
-    let url = resolve_video_gen_rules_url(model);
+pub async fn fetch_video_gen_rules(model: Option<String>, mode: Option<String>) -> Result<String, String> {
+    let url = resolve_video_gen_rules_url(model, mode);
     let response = reqwest::get(&url)
         .await
         .map_err(|e| format!("failed to fetch video gen rules: {e}"))?;

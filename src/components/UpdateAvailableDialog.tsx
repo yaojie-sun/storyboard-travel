@@ -133,7 +133,10 @@ export function UpdateAvailableDialog({
         {notes && !downloading && (
           <div className="mt-3 rounded border border-border-dark bg-bg-dark p-3">
             <p className="mb-1 text-xs font-medium text-text-dark">{t('update.releaseNotes')}</p>
-            <pre className="whitespace-pre-wrap text-xs text-text-muted leading-5">{notes}</pre>
+            {/* 日志必须限高并可滚：UiModal 正文区无 max-height，面板一超高就上下同时溢出，
+                底部三个按钮会被顶出屏幕且无处可滚（2026-10-13 线上事故）。
+                38vh + 本弹窗其余固定内容 ≈ 470–550px，最小窗口（600px）下按钮仍可见。 */}
+            <pre className="max-h-[38vh] overflow-y-auto ui-scrollbar whitespace-pre-wrap text-xs text-text-muted leading-5">{notes}</pre>
           </div>
         )}
       </div>

@@ -159,7 +159,7 @@ function translateImageGenError(errorMsg: string): { title: string; detail: stri
   }
 
   // —— 速率限制 ——
-  if (lower.includes('429') || lower.includes('rate') || lower.includes('限流') || lower.includes('throttl')) {
+  if (lower.includes('429') || lower.includes('rate limit') || lower.includes('rate_limit') || lower.includes('限流') || lower.includes('throttl')) {
     return {
       title: '请求过于频繁',
       detail: '服务器限流中，请等待30秒后再试。积分已保留，不会重复扣费。',

@@ -71,6 +71,9 @@ reference/
 # Icons exclusion was blocking macOS build - icons are required by Tauri
 # icons/ (removed - src-tauri/icons are build-essential)
 
+# External binaries for enhance feature (local only, CI downloads its own)
+src-tauri/resources/
+
 # Exclude old release notes and dev docs (contain credential patterns)
 docs/xiugai*.md
 docs/shengji.md

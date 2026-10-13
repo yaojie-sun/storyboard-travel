@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, Film, ImagePlus, Sparkles, X, FolderOpen, Upload, LoaderCircle } from 'lucide-react';
+import { Download, Film, ImagePlus, Sparkles, X, FolderOpen, Upload, LoaderCircle, Minus } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { canvasEventBus } from '@/features/canvas/application/canvasServices';
@@ -8,18 +8,20 @@ import { useCanvasStore } from '@/stores/canvasStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useAssetStore } from '@/stores/assetStore';
 import { resolveImageDisplayUrl, imageUrlToDataUrl } from '@/features/canvas/application/imageData';
+import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
 import { bananaSubmitVideoJob, bananaPollVideoJob, bananaCheckCredits, bananaReportUsage, bananaRefundCredits } from '@/commands/ai';
-import { cleanVideoPrompt } from '@/commands/chat';
+import { enhanceVideo } from '@/commands/enhance';
 import { RechargeDialog } from '@/components/RechargeDialog';
-import { UiModal, UiChipButton, UiButton } from '@/components/ui';
+import { UiModal, UiChipButton } from '@/components/ui';
 import { StoryboardPromptPicker } from './StoryboardPromptPicker';
 import { useVideoGenStore } from './videoGenStore';
+import { VideoGenDock, VideoGenToast } from './VideoGenDock';
+import { deriveDockSubtitle } from './dockTitle';
 import { inferRefTypes, REF_TYPE_LABELS } from './refTypes';
-import { fetchVideoGenRules } from './videoGenRules';
+import { fetchVideoGenRules, type VideoGenRuleMode } from './videoGenRules';
 import {
   ASPECT_RATIO_OPTIONS,
   VIDEO_DURATION_OPTIONS,
-  VIDEO_RESOLUTION_OPTIONS,
   computeVideoCost,
   type VideoDuration,
   type VideoResolution,
@@ -42,22 +44,33 @@ interface DialogPayload {
   nodeId: string | null;
   initialImages: ReferenceImage[];
   initialGridFrames: string[];
-  gridImageUrl?: string;
   shotFrameMap?: Record<string, unknown>;
+  /**
+   * 规则用途。由落点节点类型推导：
+   * - `videoGenNode`（chat 页「直接生成视频」建的节点）→ `direct`：参考图是独立资产，无宫格时间线
+   * - 其余（宫格/导出节点）→ `grid`：参考图是 1 张 6 宫格故事板
+   */
+  mode: VideoGenRuleMode;
+  /** 小窗标题行第一排：该节点在画布上的标题。**纯显示字段** —— 不落盘、不进 store、
+   *  不进 `imagePool`（§12.4 的冻结区一个字节都没碰），只为让外层渲染完成提示条时
+   *  知道「是哪一单完成了」（多窗并存时只报「视频生成完成」用户对不上号）。 */
+  title?: string;
+  /** 小窗标题行第二排：这一单的内容摘要（摘不出来 ⇒ `undefined` ⇒ 整行不渲染）。 */
+  subtitle?: string;
 }
 
 // ── Outer shell — only event listener, NO store subscriptions ──
 
 /**
- * 解析万相Wan2.7错误码，返回用户友好提示。
- * 错误来源：Rust端 `[WAN_xxx]` 前缀 + DashScope API 返回的code/message。
+ * 解析视频生成错误码，返回用户友好提示。
  * 频率最高：绿网（内容安全审核），需突出显示。
  */
-function translateWanError(errorMsg: string): { title: string; detail: string } {
+function translateVideoError(errorMsg: string): { title: string; detail: string } {
   const msg = errorMsg || '';
-  // 提取 [WAN_xxx] 错误码（Rust端注入）
-  const codeMatch = msg.match(/\[WAN_([^\]]+)\]/);
-  const code = codeMatch?.[1] || '';
+  // 本地操作（超分等）的错误直接透传，不走云端错误翻译
+  if (msg.startsWith('[LOCAL]')) {
+    return { title: '本地处理失败', detail: msg.slice(7).trim() };
+  }
   const lower = msg.toLowerCase();
 
   // —— 内容安全审核（最高频） ——
@@ -67,7 +80,7 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
     'green net', 'greennet', '100008', '100009', '100010',
     'moderation', 'rejected',
   ];
-  if (绿网Keywords.some(k => lower.includes(k)) || 绿网Keywords.some(k => code.toLowerCase().includes(k))) {
+  if (绿网Keywords.some(k => lower.includes(k))) {
     return {
       title: '内容安全审核未通过',
       detail: '本次生成的视频画面触发了网络安全审核。请返回Chat修改分镜提示词，调整画面描述后重新生成宫格图，再试一次。\n\n常见触发场景：裸露、血腥暴力、政治敏感、枪支武器、成人用品等。',
@@ -75,7 +88,7 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
   }
 
   // —— 速率限制 ——
-  if (lower.includes('429') || lower.includes('rate') || lower.includes('限流') || lower.includes('throttl') || code.includes('rate_limit')) {
+  if (lower.includes('429') || lower.includes('rate limit') || lower.includes('rate_limit') || lower.includes('限流') || lower.includes('throttl')) {
     return {
       title: '请求过于频繁',
       detail: '服务器限流中，请等待30秒后再试。积分已保留，不会重复扣费。',
@@ -83,7 +96,7 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
   }
 
   // —— 参数错误 ——
-  if (lower.includes('invalidparameter') || lower.includes('参数') || code.includes('InvalidParameter')) {
+  if (lower.includes('invalidparameter') || lower.includes('参数')) {
     return {
       title: '视频参数有误',
       detail: '视频生成参数不合法。可能是分辨率、时长或参考图格式异常。请检查配置后重试。若持续出现，请联系客服。',
@@ -99,7 +112,7 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
   }
 
   // —— 服务端错误 ——
-  if (lower.includes('internal') || lower.includes('500') || code.includes('internal_error')) {
+  if (lower.includes('internal') || lower.includes('500')) {
     return {
       title: '服务器繁忙',
       detail: '视频生成服务暂时异常，请稍后重试。积分已返还。',
@@ -117,13 +130,76 @@ function translateWanError(errorMsg: string): { title: string; detail: string } 
   // —— 未知错误（显示原始信息） ——
   return {
     title: '视频生成失败',
-    detail: msg.replace(/\[WAN_[^\]]+\]\s*/g, '').trim() || '未知错误，请稍后重试。',
+    detail: msg.trim() || '未知错误，请稍后重试。',
   };
 }
 
+/** 槽位表在 `nodeId` 为空时的兜底 key（见外层槽位表）。不可能与真实节点 id 相撞。 */
+const NO_NODE_KEY = '__videogen_no_node__';
+
+/** 槽位表与小窗数组共用的**去重键**。两处必须是同一个函数 ——
+ *  不一致会让「同一个节点挂两个内层实例」从缝里漏回来。 */
+function slotKeyOf(p: DialogPayload): string {
+  return p.nodeId ?? NO_NODE_KEY;
+}
+
+/**
+ * 数组里替换/移除某个作业（按键匹配），**保持其余项的位置不变**。
+ *
+ * 🔴 **「命中则原地替换、不搬到队尾」是承重的，别改成 remove+push。**
+ * 小窗卡片是 `createPortal` 投进容器的，而 React 对 portal 的处理是
+ * **只追加到容器末尾、重排数组不会移动已挂载的 portal** ⇒
+ * **DOM 顺序 ≡ 各卡片的挂载顺序，不是数组顺序**。
+ * 只有「已存在就不重新挂载」才能让这两者永远一致；一旦改成「先删后加」，
+ * 同一张卡会重新挂载（顺带 abort 它的轮询，正是本次要修的缺陷）并跳到末尾，
+ * 于是数组说一套、屏幕上摆另一套。
+ */
+function replaceSlot(list: DialogPayload[], p: DialogPayload): DialogPayload[] {
+  const key = slotKeyOf(p);
+  const at = list.findIndex((item) => slotKeyOf(item) === key);
+  if (at < 0) return [...list, p];
+  const next = [...list];
+  next[at] = p;
+  return next;
+}
+
+function removeSlot(list: DialogPayload[], p: DialogPayload): DialogPayload[] {
+  const key = slotKeyOf(p);
+  return list.filter((item) => slotKeyOf(item) !== key);
+}
+
 export function VideoGenDialog() {
+  const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
-  const [payload, setPayload] = useState<DialogPayload>({ nodeId: null, initialImages: [], initialGridFrames: [] });
+  const [payload, setPayload] = useState<DialogPayload>({ nodeId: null, initialImages: [], initialGridFrames: [], mode: 'grid' });
+  /**
+   * 「缩小」后的**后台作业槽位**。**每个作业一格**（不是单个）。
+   *
+   * 🔴 它们不是第二个弹窗，而是**同一批内层实例的第二种形态**：内层在 docked 形态下
+   * **保持挂载**，所以轮询、`videoUrl`、生成阶段、已用时长全部原地保留，
+   * 展开回来与缩小前逐字一致（CLAUDE.md §12.4）。详见 `VideoGenDock.tsx` 文件头。
+   *
+   * 🔴 **必须是数组，不能是单个槽位**：单槽会让先前那个作业的 key 从表里消失 ⇒
+   * React 卸载它的内层 ⇒ 它的清理函数 `abort()` 掉轮询 ⇒ **成片不下载落盘**。
+   * 所以数组化是**修缺陷**，不是加功能。
+   *
+   * **去重键 = `nodeId ?? NO_NODE_KEY`**：一个 nodeId 只能有一个内层实例，
+   * 否则同一个 taskId 会被两条轮询各跑一遍、视频下载两遍。
+   */
+  const [docks, setDocks] = useState<DialogPayload[]>([]);
+  /** 完成提示条属于**哪一个作业**（键同 `docks`）。`null` = 不显示提示条。
+   *  多窗之下「完成的是哪一个」必须精确，不能是一个布尔值。 */
+  const [toastKey, setToastKey] = useState<string | null>(null);
+  /** 右侧小窗列的宿主元素。卡片用 `createPortal` 投进这里 ——
+   *  **为什么不直接把卡片嵌进这个容器的 React 子树**：那会让元素换父节点 ⇒ 重新挂载
+   *  ⇒ 正好复现上面那个「轮询被 abort」的缺陷。portal 只挪 DOM，不挪 React 树。 */
+  const [dockCol, setDockCol] = useState<HTMLDivElement | null>(null);
+
+  // `handleOpen` 定义在下面那个 `useEffect(…, [])` 里 —— 它闭包捕获的是**首次渲染**的
+  // state。所有需要读「当前值」的地方一律走 ref。
+  // ⚠️ 槽位数组**不需要** ref：所有读写都走函数式 `setDocks(prev => …)`。
+  const isOpenRef = useRef(isOpen);
+  isOpenRef.current = isOpen;
 
   useEffect(() => {
     const unsubscribe = canvasEventBus.subscribe('video-gen-dialog/open', (p) => {
@@ -180,7 +256,7 @@ export function VideoGenDialog() {
           }
         }
 
-        // 直接调入宫格图，不分割（万相故事板模式）
+        // 直接调入宫格图作为参考图，不分割
         if (gridImageUrl) {
           addImage(gridImageUrl);
         } else {
@@ -196,26 +272,138 @@ export function VideoGenDialog() {
         nodeId: p.nodeId ?? null,
         initialImages: images.slice(0, 5),
         initialGridFrames: gridFrames,
-        gridImageUrl,
         shotFrameMap,
+        mode: clickedNode?.type === 'videoGenNode' ? 'direct' : 'grid',
       });
+      // 用户又点了**同一个**节点的「生成」：弹窗形态会覆盖侧栏形态（见下面的槽位表），
+      // 实例本来就不会重挂载，但小窗数组里会残留一份过期 payload ——
+      // 不清掉的话，等弹窗一关就会冒出一个陈旧的侧栏。
+      // ⚠️ 只清**这一个**节点的那格，其余小窗（别的作业）不能受牵连。
+      // 键一律走 `slotKeyOf`（不写 `item.nodeId !== p.nodeId`）：`nodeId` 为 null 时
+      // 两种写法碰巧等价，但**五处调用点必须共用一个键函数**，否则漏一处就漏一个实例。
+      setDocks((prev) => prev.filter((item) => slotKeyOf(item) !== (p.nodeId ?? NO_NODE_KEY)));
       setIsOpen(true);
     }
   }, []);
 
   const handleClose = useCallback(() => setIsOpen(false), []);
 
-  if (!isOpen) return null;
+  /** 弹窗标题栏的「缩小」——把当前 payload 存进小窗数组，弹窗收起。内层**不卸载**。
+   *  ⚠️ 命中已存在的那一格时**原地替换、保持位置**（不搬到队尾）：多窗并存时，
+   *     用户「展开 A 再缩小 A」不该让 A 的小窗跳到最后 —— 那是没有理由的视觉位移。 */
+  const handleMinimize = useCallback((p: DialogPayload) => {
+    setDocks((prev) => replaceSlot(prev, p));
+    setIsOpen(false);
+  }, []);
+
+  /** 小窗的「展开 / 查看」——把**这一格**搬回弹窗。**同一个 nodeId ⇒ 同一个 key ⇒
+   *  不重挂载**，所以进度、参考图、参数全部原样。
+   *  🔴 **绝不能走 `handleOpen` 重新解析**：`handleOpen` 每次实时读
+   *     `data.frames[].description` / `shotFrameMap` / 在边回溯。用户在缩小期间改了逐格描述
+   *     或删了连线，复用它会**展开回来的参考图与逐格描述就和生成时不一致** —— 直接踩
+   *     §12.4「打开视频生成页看到的必须和生成时一模一样」。⇒ `payload` 是「挂载时那一份」
+   *     的存档，这里**原样恢复**；`handleOpen` 只服务「用户点了生成」这一条路径。
+   *  ⚠️ 参数是内层当场给的 `currentPayload`（不是从数组里捞的陈旧值），
+   *     所以「点哪一格展开哪一格」是精确的。 */
+  const handleExpand = useCallback((p: DialogPayload) => {
+    setDocks((prev) => removeSlot(prev, p));
+    setPayload(p);
+    setToastKey(null);
+    setIsOpen(true);
+  }, []);
+
+  /** 内层报告「作业从进行中变成了已结束且无错」。只在用户没盯着弹窗时才提示。
+   *  ⚠️ 参数是 `nodeId`（内层 prop，调用点作用域内已有）—— 不是 `payload`：
+   *     那条 effect 的依赖数组在 `currentPayload` 定义**之前**求值，引用它会 TDZ。 */
+  const handleJobComplete = useCallback((nodeId: string | null) => {
+    if (!isOpenRef.current) setToastKey(nodeId ?? NO_NODE_KEY);
+  }, []);
+
+  /** 关掉**某一格**小窗。作业本身仍在 Rust 侧跑，`pendingTaskId` 早已随 `saveConfig` 落盘
+   *  ⇒ 重新打开该节点会走既有的续接路径。与今天点 X 的语义完全一致。 */
+  const handleDockClose = useCallback((p: DialogPayload) => {
+    setDocks((prev) => removeSlot(prev, p));
+  }, []);
+
+  /** 关掉提示条。
+   *  ⚠️ **必须用 `useCallback` 包住，不能现写一个内联箭头。**
+   *     `VideoGenToast` 的 10 秒定时器把 `onDismiss` 放进了依赖数组 ⇒ 内联箭头每次
+   *     宿主渲染都换身份 ⇒ 定时器被清掉重排 ⇒ **提示条被无限续命、永远不自动消失**。
+   *     多窗之后宿主渲染比单窗时频繁得多（任一格增减都要重渲），这个毛病会被放大。
+   *     `setToastKey` 本身是稳定的，所以这个回调的身份也是恒定的。 */
+  const handleToastDismiss = useCallback(() => setToastKey(null), []);
+
+  /** 提示条上的「查看」。找不到那一格（用户已经关掉它的小窗）就**不渲染按钮**——
+   *  这是 `VideoGenDock.tsx` 里 `VideoGenToast.onExpand` 那段注释的既有约定。 */
+  const toastPayload = toastKey === null ? null : docks.find((d) => slotKeyOf(d) === toastKey) ?? null;
+
+  // 槽位表：**每个 nodeId 至多一个内层实例**。
+  // ⚠️ 同一个 nodeId 两边都有时，**弹窗形态覆盖侧栏形态** —— 否则同一个节点会挂两个实例，
+  //    对同一个 taskId 跑两条轮询、把同一个视频下载两遍。**写序是承重的，别调换。**
+  const slots = new Map<string, { payload: DialogPayload; variant: 'dialog' | 'docked' }>();
+  for (const d of docks) slots.set(slotKeyOf(d), { payload: d, variant: 'docked' });
+  // 兜底 key：`nodeId` 理论上必非空（四个事件源都带 nodeId），但旧代码
+  // `if (!isOpen) return null` 在 nodeId 为空时照样能开弹窗 —— 槽位表不能比它更窄。
+  if (isOpen) slots.set(slotKeyOf(payload), { payload, variant: 'dialog' });
 
   return (
-    <VideoGenDialogInner
-        nodeId={payload.nodeId}
-        initialImages={payload.initialImages}
-        initialGridFrames={payload.initialGridFrames}
-        gridImageUrl={payload.gridImageUrl}
-        shotFrameMap={payload.shotFrameMap}
-        onClose={handleClose}
+    <>
+      {/* 🔴 小窗列的宿主：**常驻挂载**，不随 `slots` / `docks` 的有无装卸。
+          理由：容器若与第一张小窗在同一帧挂载，portal 目标首帧是 `null` ⇒ 闪一下。
+          空着时它高度为 0（`flex-col` 无子项），不遮挡也不吃点击，代价只是一个空 div。
+          🔴 **不给它 `pointer-events-none`**：它的盒子恰好等于小窗自己占的那条，
+             没有「看不见却吃掉点击」的区域；保持默认 `auto` 才能让鼠标落在卡片之间的
+             `gap-3` 上时**滚轮仍能滚动侧栏**。
+          ⚠️ `pb-2` + `[scrollbar-gutter:stable]`：前者给 `overflow` 留出阴影 ink 空间，
+             后者防止第 4 张卡出现时宽度跳 7px。 */}
+      <div
+        ref={setDockCol}
+        className="ui-scrollbar fixed right-4 top-16 z-40 flex max-h-[calc(100vh-5rem)] w-[280px] flex-col gap-3 overflow-y-auto pb-2 [scrollbar-gutter:stable]"
       />
+      {[...slots].map(([nid, slot]) => (
+        <VideoGenDialogInner
+          // 🔑 `key` 必须是 **nodeId**，两件事同时靠它成立：
+          //    ① 「弹窗 ↔ 侧栏」换形态不换实例 ⇒ 轮询/成片/阶段原地保留（§12.4 要的正是这个）；
+          //    ② 换节点时**真重挂载** —— 这是必需的：`seededRef` 只跑一次且不随 nodeId 重置，
+          //       而 `nodeIdRef` 在渲染期就指向新节点，不重挂载会让 A 的提示词/成片被写进
+          //       B 的 `configs[nodeId]`。
+          //    这个 key 是**承重结构**，不是给 React 消警告用的，别删。
+          key={nid}
+          nodeId={slot.payload.nodeId}
+          initialImages={slot.payload.initialImages}
+          initialGridFrames={slot.payload.initialGridFrames}
+          shotFrameMap={slot.payload.shotFrameMap}
+          mode={slot.payload.mode}
+          variant={slot.variant}
+          dockContainer={dockCol}
+          onClose={handleClose}
+          onMinimize={handleMinimize}
+          onExpand={handleExpand}
+          onDockClose={handleDockClose}
+          onJobComplete={handleJobComplete}
+        />
+      ))}
+      {toastKey !== null && (
+        <VideoGenToast
+          // 写明是哪一单完成了 —— 多窗并存时只报「视频生成完成」用户对不上号。
+          // `title` 由内层算出（已在 payload 里），拿不到就退回不带名字的文案。
+          message={
+            toastPayload?.title
+              ? t('videoGen.completedToastNamed', { title: toastPayload.title })
+              : t('videoGen.completedToast')
+          }
+          onExpand={
+            toastPayload
+              ? () => {
+                  setToastKey(null);
+                  handleExpand(toastPayload);
+                }
+              : undefined
+          }
+          onDismiss={handleToastDismiss}
+        />
+      )}
+    </>
   );
 }
 
@@ -227,16 +415,36 @@ function VideoGenDialogInner({
   nodeId,
   initialImages,
   initialGridFrames,
-  gridImageUrl,
   shotFrameMap: _shotFrameMap, // 保留但不再注入图N引用
+  mode,
+  variant,
+  dockContainer,
   onClose,
+  onMinimize,
+  onExpand,
+  onDockClose,
+  onJobComplete,
 }: {
   nodeId: string | null;
   initialImages: ReferenceImage[];
   initialGridFrames: string[];
-  gridImageUrl?: string;
   shotFrameMap?: Record<string, unknown>;
+  mode: VideoGenRuleMode;
+  /** `dialog` = 完整弹窗；`docked` = 缩小后的右侧侧栏。**同一实例的两种形态**，
+   *  由外层用 `key = nodeId` 保住「换形态不换实例」。 */
+  variant: 'dialog' | 'docked';
+  /** docked 形态下卡片要 portal 进去的宿主（外层常驻的那个右侧列）。见 `VideoGenDock.tsx`。 */
+  dockContainer?: HTMLElement | null;
   onClose: () => void;
+  onMinimize: (payload: DialogPayload) => void;
+  /** 带 payload：多窗并存时「展开哪一格」必须精确，不能再让外层去猜。 */
+  onExpand: (payload: DialogPayload) => void;
+  /** 关掉**这一格**小窗。与 `onClose` 分开：docked 形态下弹窗本来就是关着的，
+   *  用 `onClose` 会落在「把已经关了的弹窗再关一次」上，等于没反应。 */
+  onDockClose: (payload: DialogPayload) => void;
+  /** 只传 `nodeId`（不传 payload）：调用点那条 effect 的依赖数组在 `currentPayload`
+   *  定义之前求值，引用它会 TDZ。见外层 `handleJobComplete`。 */
+  onJobComplete: (nodeId: string | null) => void;
 }) {
   const { t } = useTranslation();
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
@@ -290,9 +498,13 @@ function VideoGenDialogInner({
   }, [savedConfig?.referenceImageUrls, initialImages]);
 
   const [aspectRatio, setAspectRatio] = useState('9:16');
-  const [resolution, setResolution] = useState<VideoResolution>('720P');
+  // 分辨率固定 720P（2026-10-13 下线 1080P，选择器一并移除）。仍会写进配置与提交参数，
+  // 因为后端 `quality` 字段要用它；但它已不再参与计价。
+  const [resolution] = useState<VideoResolution>('720P');
   const [duration, setDuration] = useState<VideoDuration>(4);
-  const [videoModel] = useState<string>('happyhorse/happyhorse-1.1-r2v');
+  // 视频模型固定为 MiniMax H3（compshare 直连）。
+  // 旧存档里的历史模型名不会在此被改写，仅在用户改动参数触发自动保存时惰性升级。
+  const [videoModel] = useState<string>('minimax/minimax-h3');
   const [prompt, setPrompt] = useState('');
   const [gridFrames, setGridFrames] = useState<string[]>(initialGridFrames);
 
@@ -344,9 +556,9 @@ function VideoGenDialogInner({
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
-  const [isUpscaling, setIsUpscaling] = useState(false);
-  const [upscaleTarget, setUpscaleTarget] = useState<'2K' | '4K' | null>(null);
-  const [showUpscaleConfirm, setShowUpscaleConfirm] = useState(false);
+  const [generationPhase, setGenerationPhase] = useState<'queued' | 'generating' | null>(null);
+  const [isLocalEnhancing, setIsLocalEnhancing] = useState(false);
+  const [localEnhanceProgress, setLocalEnhanceProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const submitParamsRef = useRef<{ aspectRatio: string; duration: number; videoModel: string; refUrls: string[]; negativePrompt?: string } | null>(null);
@@ -407,12 +619,15 @@ function VideoGenDialogInner({
             } catch (downloadErr) {
               console.warn('[VideoGenDialog] auto-download failed:', downloadErr);
             }
+            // 生成完成后自动本地超分到 2K，失败则回退原视频
+            const finalVideoPath = await autoEnhanceTo2K(localVideoPath);
+            setVideoUrl(finalVideoPath);
             const config = {
               prompt: prompt.trim() || '',
               aspectRatio,
               duration,
               videoModel,
-              videoUrl: localVideoPath,
+              videoUrl: finalVideoPath,
               referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
               referenceVoice: referenceVoice ?? undefined,
               gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
@@ -425,13 +640,13 @@ function VideoGenDialogInner({
               // 更新画布节点数据，让视频在节点上可见
               try {
                 useCanvasStore.getState().updateNodeData(nodeIdRef.current, {
-                  generatedVideoUrl: localVideoPath,
+                  generatedVideoUrl: finalVideoPath,
                 });
               } catch { /* non-critical */ }
             }
             setIsGenerating(false);
             setIsResuming(false);
-            bananaReportUsage({ api_type: 'pixverse_c1', is_success: true, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: '' }).catch(() => {});
+            bananaReportUsage({ api_type: 'minimax_h3', is_success: true, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: '' }).catch(() => {});
             return;
           }
           if (pollResult.status === 'failed' || pollResult.status === 'retry') {
@@ -453,7 +668,17 @@ function VideoGenDialogInner({
             setIsResuming(false);
             return;
           }
+          // 区分排队中 vs 生成中，驱动前端提示文案
+          if (pollResult.status === 'queued') {
+            setGenerationPhase('queued');
+          } else {
+            setGenerationPhase('generating');
+          }
           // running → continue polling
+          // 后端可能在 polling 中返回 error 字段（如网络波动），记录日志帮助排查
+          if (pollResult.error) {
+            console.warn('[VideoGenDialog] poll returned running with error:', pollResult.error);
+          }
           if (Date.now() - startTime > MAX_POLL_MS) {
             // 超时退费
             if (deducted > 0) {
@@ -462,7 +687,7 @@ function VideoGenDialogInner({
             setError(t('videoGen.pollTimeout', '视频生成超时，积分已返还，请稍后重试'));
             setIsGenerating(false);
             setIsResuming(false);
-            bananaReportUsage({ api_type: 'pixverse_c1', is_success: false, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: 'timeout' }).catch(() => {});
+            bananaReportUsage({ api_type: 'minimax_h3', is_success: false, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: 'timeout' }).catch(() => {});
             return;
           }
         } catch (e) {
@@ -473,7 +698,7 @@ function VideoGenDialogInner({
           setError(t('videoGen.networkError', '网络异常，积分已返还，请检查网络后重试'));
           setIsGenerating(false);
           setIsResuming(false);
-          bananaReportUsage({ api_type: 'pixverse_c1', is_success: false, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: 'network_error' }).catch(() => {});
+          bananaReportUsage({ api_type: 'minimax_h3', is_success: false, cost_credits: deducted, response_time_ms: Date.now() - startTime, category: 'video_generation', image_size: aspectRatio, duration_seconds: duration, prompt_len: prompt.length, error_message: 'network_error' }).catch(() => {});
           return;
         }
       }
@@ -489,19 +714,23 @@ function VideoGenDialogInner({
     const pid = savedConfig?.pendingTaskId;
     if (pid && !savedConfig?.videoUrl) {
       console.log('[VideoGenDialog] resuming pending task:', pid);
-      // PixVerse/BP tasks expire across sessions — don't auto-resume
-      if (pid.startsWith('tsk-')) {
-        console.log('[VideoGenDialog] skipping PixVerse resume (task expires across sessions)');
+      const savedModel = savedConfig?.videoModel ?? '';
+      // 历史模型名（已下线）：其任务在旧通道上，用当前通道轮询必然 404。
+      // 只清任务号，其它字段一律不写 —— 保护历史数据不被改写（§12.4）。
+      if (savedModel.includes('happyhorse')) {
+        console.log('[VideoGenDialog] legacy model task, clearing pendingTaskId only');
         setPendingTaskId(null);
         return;
       }
-      const resumeModel = savedConfig?.videoModel
-        ? (savedConfig.videoModel.includes('happyhorse')
-            ? 'happyhorse/happyhorse-1.1-r2v'
-            : savedConfig.videoModel.includes('pixverse')
-              ? 'pixverse/c1'
-              : 'wan/wan2.7-r2v')
-        : undefined;
+      // PixVerse/BP tasks expire across sessions — don't auto-resume
+      // 只有非 resumable 模型的 tsk- 任务才会跨会话过期。
+      // MiniMax H3 用 tsk- 前缀 — 必须自动续接。
+      if (pid.startsWith('tsk-') && !savedModel.includes('minimax')) {
+        console.log('[VideoGenDialog] skipping non-resumable task resume (expires across sessions)');
+        setPendingTaskId(null);
+        return;
+      }
+      const resumeModel = savedModel.includes('minimax') ? 'minimax/minimax-h3' : undefined;
       setIsResuming(true);
       setIsGenerating(true);
       startPolling(pid, true, savedConfig?.pendingCreditsDeducted ?? 0, resumeModel);
@@ -514,10 +743,6 @@ function VideoGenDialogInner({
       }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const isHappyhorse = videoModel.includes('happyhorse');
-  const isWan = videoModel.includes('wan');
-  const isPixverse = videoModel.includes('pixverse');
 
   const handleClose = useCallback(() => {
     onClose();
@@ -613,7 +838,7 @@ function VideoGenDialogInner({
 
 
   const maxImages = 5;
-  const creditCost = computeVideoCost(duration, resolution, false);
+  const creditCost = computeVideoCost(duration, false);
   // 订阅整个 history 引用，用 useMemo 稳定返回值避免空数组无限渲染
   const historyStore = useVideoGenStore((s) => s.history);
   const historyEntries = useMemo(() => {
@@ -655,7 +880,7 @@ function VideoGenDialogInner({
     // 检查积分
     try {
       const creditsInfo = await bananaCheckCredits();
-      const cost = computeVideoCost(duration, resolution, false);
+      const cost = computeVideoCost(duration, false);
       if (creditsInfo.credits < cost) {
         setInsufficientRequired(cost);
         setInsufficientCurrent(creditsInfo.credits);
@@ -685,29 +910,15 @@ function VideoGenDialogInner({
     setVideoUrl(null);
 
     try {
-      // 1. 获取规则文件
-      const rules = await fetchVideoGenRules(videoModel);
+      // 1. 获取规则文件（mode 决定取宫格版还是直出版规则头）
+      const rules = await fetchVideoGenRules(videoModel, mode);
 
-      // 2. DeepSeek 清洗：去掉光影/场景/外观，只保留运镜+精简动作+声音
-      //    确保文字描述不超出宫格图已锚定的画面内容（第3锁）
-      let userContent = trimmedPrompt;
-      if (isWan || isHappyhorse) {
-        try {
-          userContent = await cleanVideoPrompt({
-            storyboardPrompt: trimmedPrompt,
-            gridFrames,
-            targetModel: isHappyhorse ? 'happyhorse' : 'wan',
-            referenceImages: referenceImages.map(img => img.rawUrl),
-          });
-          console.log('[VideoGenDialog] DeepSeek cleaned prompt:', userContent.length, 'chars (was:', trimmedPrompt.length, 'chars)');
-        } catch (e) {
-          console.warn('[VideoGenDialog] DeepSeek cleaning failed, using original prompt:', e);
-        }
-      }
+      // 分镜提示词原样提交：H3 走自然语言视听时间线，靠 SKILL.md 生成约束
+      // + prompt_rule 注入约束双保险，不再经过二次清洗。
+      const userContent = trimmedPrompt;
 
       // 2.5 shotFrameMap 保留在节点缓存中（用于后续分析/调试），
       // 但不再注入图N引用到 prompt。
-      // 官方文档：Wan2.7 R2V 自动识别宫格逻辑，"无需描述每个宫格"。
       // 让模型从整张六宫格图中自行匹配帧，避免指定图N干扰模型判断。
 
       let finalPrompt: string;
@@ -718,41 +929,29 @@ function VideoGenDialogInner({
       const guidanceScale = rules.guidance_scale;
       const shotType = rules.shot_type;
 
-      // Wan 模型画面锁定尾句（代码层 100% 可靠追加，AI 无法遗忘）
+      // 规则头尾句（代码层 100% 可靠追加，AI 无法遗忘）
       finalPrompt = promptRule
         ? `${promptRule}\n\n${userContent}`
         : userContent;
-      console.log(`[VideoGenDialog] ${isPixverse ? 'PixVerse' : isWan ? 'Wan' : 'HappyHorse'}, refs:`, referenceImages.length, 'hasRule:', !!promptRule, 'hasNegPrompt:', !!negativePrompt, 'guidanceScale:', guidanceScale, 'shotType:', shotType, 'promptLen:', finalPrompt.length);
+      console.log(`[VideoGenDialog] MiniMax H3, mode:`, mode, 'refs:', referenceImages.length, 'hasRule:', !!promptRule, 'hasNegPrompt:', !!negativePrompt, 'guidanceScale:', guidanceScale, 'shotType:', shotType, 'promptLen:', finalPrompt.length);
 
       // 4. 准备参考图 — 直接用 base64
       const imageInput: string[] = [];
-      if (isWan && gridImageUrl) {
-        // 万相：直接传入整张六宫格大图（不拆分）
+      // 传入宫格参考图（compshare 直连，≤9 张）
+      for (const img of referenceImages) {
         try {
-          const dataUrl = gridImageUrl.startsWith('data:')
-            ? gridImageUrl
-            : await imageUrlToDataUrl(resolveImageDisplayUrl(gridImageUrl));
+          const dataUrl = img.rawUrl.startsWith('data:')
+            ? img.rawUrl
+            : await imageUrlToDataUrl(img.url);
           imageInput.push(dataUrl);
         } catch (e) {
-          console.warn('[VideoGenDialog] Wan: failed to convert grid image:', gridImageUrl, e);
-        }
-      } else {
-        // 欢乐马：传入拆分后的六张独立参考图
-        for (const img of referenceImages) {
-          try {
-            const dataUrl = img.rawUrl.startsWith('data:')
-              ? img.rawUrl
-              : await imageUrlToDataUrl(img.url);
-            imageInput.push(dataUrl);
-          } catch (e) {
-            console.warn('[VideoGenDialog] failed to convert to base64:', img.rawUrl, e);
-          }
+          console.warn('[VideoGenDialog] failed to convert to base64:', img.rawUrl, e);
         }
       }
 
       // 准备音色参考 audio data URL
       let voiceUrl: string | undefined;
-      if (referenceVoice && (isHappyhorse || isWan)) {
+      if (referenceVoice) {
         try {
           const rawUrl = referenceVoice.rawUrl;
           if (rawUrl.startsWith('data:')) {
@@ -784,11 +983,7 @@ function VideoGenDialogInner({
         negativePrompt: negativePrompt || undefined,
         guidanceScale,
         shotType,
-        model: isHappyhorse
-          ? 'happyhorse/happyhorse-1.1-r2v'
-          : isPixverse
-            ? 'pixverse/c1'
-            : 'wan/wan2.7-r2v',
+        model: videoModel,
       });
 
       if (result.success) {
@@ -816,12 +1011,15 @@ function VideoGenDialogInner({
           } catch (downloadErr) {
             console.warn('[VideoGenDialog] sync video download failed:', downloadErr);
           }
+          // 生成完成后自动本地超分到 2K，失败则回退原视频
+          const finalVideoPath = await autoEnhanceTo2K(syncVideoPath);
+          setVideoUrl(finalVideoPath);
           const config = {
             prompt: prompt.trim() || '',
             aspectRatio,
             duration,
             videoModel,
-            videoUrl: syncVideoPath,
+            videoUrl: finalVideoPath,
             referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
             referenceVoice: referenceVoice ?? undefined,
             gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
@@ -831,7 +1029,7 @@ function VideoGenDialogInner({
             addToHistory(nodeIdRef.current, config, result.taskId || undefined);
             try {
               useCanvasStore.getState().updateNodeData(nodeIdRef.current, {
-                generatedVideoUrl: syncVideoPath,
+                generatedVideoUrl: finalVideoPath,
               });
             } catch { /* non-critical */ }
           }
@@ -849,11 +1047,7 @@ function VideoGenDialogInner({
               referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
             });
           }
-          startPolling(result.taskId, false, deducted, isHappyhorse
-            ? 'happyhorse/happyhorse-1.1-r2v'
-            : isPixverse
-              ? 'pixverse/c1'
-              : 'wan/wan2.7-r2v');
+          startPolling(result.taskId, false, deducted, videoModel);
         } else {
           setIsGenerating(false);
           setError(t('videoGen.unknownError', '未知错误'));
@@ -861,7 +1055,7 @@ function VideoGenDialogInner({
       } else if (result.error) {
         setIsGenerating(false);
         if (result.error.startsWith('INSUFFICIENT_CREDITS')) {
-          setInsufficientRequired(result.requiredCredits ?? computeVideoCost(duration, resolution, false));
+          setInsufficientRequired(result.requiredCredits ?? computeVideoCost(duration, false));
           setInsufficientCurrent(result.currentCredits ?? 0);
           setShowInsufficientDialog(true);
         } else {
@@ -876,7 +1070,7 @@ function VideoGenDialogInner({
       setError(e?.message || e?.toString() || t('videoGen.unknownError', '未知错误'));
     }
     // 注意：不在 finally 中 setIsGenerating(false)，轮询函数会在完成/失败时设置
-  }, [prompt, aspectRatio, duration, videoModel, referenceImages, t, saveConfig, addToHistory, startPolling]);
+  }, [prompt, aspectRatio, duration, videoModel, referenceImages, t, saveConfig, addToHistory, startPolling, mode]);
 
   // 对话框关闭时强制落盘，防止防抖窗口内数据丢失
   useEffect(() => {
@@ -885,23 +1079,172 @@ function VideoGenDialogInner({
     };
   }, []);
 
+  const autoEnhanceTo2K = useCallback(async (localVideoPath: string): Promise<string> => {
+    setIsLocalEnhancing(true);
+    setLocalEnhanceProgress(0);
+    // 模拟进度条：0→90% 约 3 分钟，完成后跳到 100%
+    const progressTimer = setInterval(() => {
+      setLocalEnhanceProgress(prev => {
+        if (prev >= 90) return prev;
+        const increment = Math.random() * 6 + 2;
+        return Math.min(90, prev + increment);
+      });
+    }, 2500);
+    try {
+      const result = await enhanceVideo(localVideoPath, 2);
+      setLocalEnhanceProgress(100);
+      return result;
+    } catch (e: any) {
+      console.warn('[VideoGenDialog] auto local upscale to 2K failed, fallback to original:', e);
+      return localVideoPath;
+    } finally {
+      clearInterval(progressTimer);
+      setIsLocalEnhancing(false);
+    }
+  }, []);
+
+  // ── 「缩小」到侧栏所需的三个派生值（全部从**已有** state 派生，不新增持久化）──
+
+  /** 本次轮询开始的时刻（`startPolling` 内部的 `startTime` 语义）。
+   *  🔴 口径必须说「本次已等待」而不是「已生成 N 分钟」—— 跨会话续接时它会从 0 重算。
+   *  之所以从这里派生、而不是往 `startPolling` 的成功/失败/超时/网络异常 4 条出口各插一次
+   *  `setState`：那 4 条出口正落在 CLAUDE.md §12.4 的敏感区里，能不动就不动。 */
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  useEffect(() => {
+    setJobStartedAt(isGenerating ? Date.now() : null);
+  }, [isGenerating]);
+
+  /** 作业**成功**结束时通知外层。只在 `isGenerating` 的 true→false 跳变上触发 ——
+   *  否则打开一个**已有成片**的节点会立刻误报一条「生成完成」。
+   *  `error` 为真时不提示（失败有失败的样子，别混成「完成」）。 */
+  const prevGeneratingRef = useRef(false);
+  useEffect(() => {
+    const was = prevGeneratingRef.current;
+    prevGeneratingRef.current = isGenerating;
+    if (was && !isGenerating && !error && videoUrl) onJobComplete(nodeId);
+  }, [isGenerating, error, videoUrl, onJobComplete, nodeId]);
+
+  /** 节点是否还在当前画布上。编辑器**不会**在删节点时调 `forgetConfig`
+   *  （`forgetConfig` 全库零调用者），所以 config 还在、作业也还在 —— 但侧栏的
+   *  「展开」必须禁用，否则点开的是一个画布上根本不存在的节点。
+   *  只订阅一个布尔值 ⇒ 画布抖动不会引起重渲染。 */
+  const nodeExists = useCanvasStore((s) => (nodeId ? s.nodes.some((n) => n.id === nodeId) : false));
+
+  /** 小窗标题行第一排：**该节点在画布上的标题**。
+   *  用画布节点同一个函数（`resolveNodeDisplayName`）取，所以两处天然一致；
+   *  节点已删（`nodeTitle` 为 `null`）时由 `VideoGenDock` 回落成「视频生成」。
+   *  ⚠️ 选择器**返回字符串**（原始类型）⇒ `Object.is` 稳定 ⇒ 画布 60fps 抖动不会引起重渲染。
+   *     不要改成返回对象，那会让每次 store 更新都重渲一次。 */
+  const nodeTitle = useCanvasStore((s) => {
+    if (!nodeId) return null;
+    const node = s.nodes.find((n) => n.id === nodeId);
+    if (!node?.type) return null;
+    return resolveNodeDisplayName(node.type, node.data ?? {});
+  });
+
+  /** 小窗标题行第二排：**这一单的内容摘要**。
+   *  取源优先级 = 逐格描述（`initialGridFrames[0]`，写手写的、逐节点不同）→ 正文。
+   *  **不看 `mode`**：宫格路缺 frames、直出路本就没有 frames，两条路都自动落到正文。
+   *  摘不出来返回 `null`，`VideoGenDock` 据此整行不渲染。纯函数在 `./dockTitle`。 */
+  const dockSubtitle = useMemo(
+    () => deriveDockSubtitle([initialGridFrames[0], prompt]),
+    [initialGridFrames, prompt],
+  );
+
+  /** 交给外层的槽位 payload。刻意用**挂载时那份** `initialImages`/`initialGridFrames`
+   *  （它们是 `useState` 初值，本来就不随后续编辑变化）—— 这样「展开后与缩小前一致」
+   *  是结构性成立的，而不是靠两边各自重算碰巧相等。
+   *  `title`/`subtitle` 是**纯显示字段**：不落盘、不进任何 store、不进 `imagePool`
+   *  （§12.4 的冻结区一个字节都没碰），只为了让外层渲染提示条时知道「是哪一单」。 */
+  const currentPayload = useMemo<DialogPayload>(
+    () => ({
+      nodeId,
+      initialImages,
+      initialGridFrames,
+      shotFrameMap: _shotFrameMap,
+      mode,
+      title: nodeTitle ?? undefined,
+      subtitle: dockSubtitle ?? undefined,
+    }),
+    [nodeId, initialImages, initialGridFrames, _shotFrameMap, mode, nodeTitle, dockSubtitle],
+  );
+
+  /** 标题栏「缩小」。
+   *  这些浮层/查看器的开合标志**不会**随形态切换自动复位，不清掉的话
+   *  docked 期间它们的状态悬着，展开时会毫无预兆地弹出来。 */
+  const handleMinimizeClick = useCallback(() => {
+    setShowConfirmDialog(false);
+    setShowPromptPicker(false);
+    setAddMenuOpen(false);
+    setShowAssetPicker(false);
+    setShowHistory(false);
+    onMinimize(currentPayload);
+  }, [onMinimize, currentPayload]);
+
+  // ── docked 形态：**同一实例的另一种皮**，不是第二个弹窗 ──
+  // ⚠️ 这个提前 return 必须落在**所有 hooks 之后**（已核：本文件在弹窗 JSX 之后
+  //    到文件末尾没有任何 hook 调用）。
+  if (variant === 'docked') {
+    const videoErr = error ? translateVideoError(error) : null;
+    return (
+      <VideoGenDock
+        isGenerating={isGenerating}
+        isResuming={isResuming}
+        generationPhase={generationPhase}
+        jobStartedAt={jobStartedAt}
+        videoUrl={videoUrl}
+        errorTitle={videoErr?.title ?? null}
+        errorDetail={videoErr?.detail ?? null}
+        historyCount={combinedHistory.length}
+        nodeExists={nodeExists}
+        title={nodeTitle}
+        subtitle={dockSubtitle}
+        container={dockContainer ?? null}
+        // 这两个回调都带 payload ⇒ 多窗之下「展开/关闭的是哪一格」是内层当场指定的，
+        // 外层不用猜。
+        onExpand={() => onExpand(currentPayload)}
+        onClose={() => onDockClose(currentPayload)}
+      />
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="flex h-[92vh] max-h-[900px] w-[1100px] max-w-[95vw] overflow-hidden rounded-2xl border border-[rgba(255,255,255,0.12)] bg-surface-dark shadow-2xl">
         {/* Left panel: parameters */}
         <div className="flex w-[420px] shrink-0 flex-col border-r border-[rgba(255,255,255,0.08)]">
           <div className="flex items-center justify-between border-b border-[rgba(255,255,255,0.08)] px-5 py-3.5">
-            <h2 className="flex items-center gap-2 text-base font-semibold text-text-dark">
-              <Film className="h-4 w-4 text-purple-400" />
-              {t('videoGen.title', '视频生成')}
+            <h2 className="flex min-w-0 items-center gap-2 text-base font-semibold text-text-dark">
+              <Film className="h-4 w-4 shrink-0 text-purple-400" />
+              {/* 多窗并存时弹窗之间也要能分辨 —— 缩小 ↔ 展开不该丢掉身份。
+                  节点标题与画布上那个节点同名（同一个 `resolveNodeDisplayName`）。 */}
+              {nodeTitle ? (
+                <>
+                  <span className="shrink-0">{t('videoGen.title')}</span>
+                  <span className="truncate text-sm font-normal text-text-muted">· {nodeTitle}</span>
+                </>
+              ) : (
+                <span className="truncate">{t('videoGen.title')}</span>
+              )}
             </h2>
-            <button
-              type="button"
-              onClick={handleClose}
-              className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-bg-dark hover:text-text-dark"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-0.5">
+              {/* 缩小到右侧侧栏 —— 内层**不卸载**，只换形态，所以轮询与进度原地保留。 */}
+              <button
+                type="button"
+                onClick={handleMinimizeClick}
+                title={t('videoGen.minimize')}
+                className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-bg-dark hover:text-text-dark"
+              >
+                <Minus className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-bg-dark hover:text-text-dark"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
 
           <div className="ui-scrollbar flex-1 space-y-5 overflow-y-auto p-5">
@@ -922,29 +1265,6 @@ function VideoGenDialogInner({
                 ))}
               </select>
             </div>
-
-            {/* Resolution — 暂时隐藏，默认720P */}
-            {false && (<div>
-              <label className="mb-1.5 block text-xs font-medium text-text-muted">
-                {t('videoGen.resolution', '分辨率')}
-              </label>
-              <div className="flex gap-2">
-                {VIDEO_RESOLUTION_OPTIONS.map((r) => (
-                  <button
-                    key={r}
-                    type="button"
-                    onClick={() => setResolution(r)}
-                    className={`flex-1 rounded-lg border py-2 text-sm font-medium transition-colors ${
-                      resolution === r
-                        ? 'border-purple-400/60 bg-purple-500/20 text-purple-200'
-                        : 'border-[rgba(255,255,255,0.1)] bg-bg-dark text-text-muted hover:border-purple-400/30'
-                    }`}
-                  >
-                    {r}
-                  </button>
-                ))}
-              </div>
-            </div>)}
 
             {/* Duration */}
             <div>
@@ -1093,7 +1413,7 @@ function VideoGenDialogInner({
                 )}
               </div>
 
-              {/* 音色参考上传（Wan2.7 支持配音） */}
+              {/* 音色参考上传 */}
               <div className="mt-4">
                 <label className="mb-1.5 block text-xs font-medium text-text-muted">
                   {t('videoGen.voiceRef', '音质参考（可选）')}
@@ -1142,8 +1462,9 @@ function VideoGenDialogInner({
 
         {/* Right panel: preview */}
         <div className="flex flex-1 flex-col items-center justify-center p-6">
-          {!isUpscaling && videoUrl ? (
-            <>
+          {isLocalEnhancing && videoUrl ? (
+            /* 本地2K超分 — 视频上叠加进度蒙版 */
+            <div className="relative">
               <video
                 src={displayVideoUrl ?? undefined}
                 controls
@@ -1151,8 +1472,32 @@ function VideoGenDialogInner({
                 autoPlay
                 loop
               />
-            </>
-          ) : isGenerating || isUpscaling ? (
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center rounded-xl bg-bg-dark/65">
+                <div className="w-56 space-y-3">
+                  <p className="text-center text-sm font-medium text-white">正在生成2K视频...</p>
+                  <div className="h-2.5 w-full overflow-hidden rounded-full bg-white/15">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-700 ease-out"
+                      style={{ width: `${localEnhanceProgress}%` }}
+                    />
+                  </div>
+                  <p className="text-center text-xs text-white/70">
+                    {localEnhanceProgress < 100
+                      ? `${Math.round(localEnhanceProgress)}% — 预计需要 2–5 分钟`
+                      : '处理完成'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : videoUrl ? (
+            <video
+              src={displayVideoUrl ?? undefined}
+              controls
+              className="max-h-[600px] max-w-full rounded-xl"
+              autoPlay
+              loop
+            />
+          ) : isGenerating ? (
             <div className="flex flex-col items-center gap-6">
               <div className="relative">
                 <div className="absolute inset-0 animate-ping rounded-full border-2 border-purple-400/30" />
@@ -1161,14 +1506,14 @@ function VideoGenDialogInner({
               </div>
               <div className="flex flex-col items-center gap-2">
                 <p className="text-sm font-medium text-text-dark">
-                  {isUpscaling
-                    ? `正在生成${upscaleTarget}视频 (-${upscaleTarget === '2K' ? '20' : '35'}积分)...`
-                    : isResuming
-                      ? t('videoGen.resuming', '正在恢复之前的视频生成任务...')
-                      : t('videoGen.generating', '正在生成视频...')}
+                  {isResuming
+                    ? t('videoGen.resuming', '正在恢复之前的视频生成任务...')
+                      : generationPhase === 'queued'
+                        ? t('videoGen.queued', '正在排队中，请耐心等待...')
+                        : t('videoGen.generating', '正在生成视频...')}
                 </p>
                 <span className="inline-flex items-center gap-1 text-xs text-text-muted">
-                  {isUpscaling ? '预计需要 1–3 分钟' : isResuming ? '小鸭正在处理中，请耐心等待...' : '预计需要 30–60 秒'}
+                  {isResuming ? '小鸭正在处理中，请耐心等待...' : generationPhase === 'queued' ? t('videoGen.queuedHint', '排队任务较多，可能需要几分钟到十几分钟，请勿关闭窗口') : '预计需要 30–60 秒'}
                   <span className="inline-flex items-center">
                     <span className="mx-0.5 h-1 w-1 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '0ms' }} />
                     <span className="mx-0.5 h-1 w-1 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '150ms' }} />
@@ -1315,45 +1660,17 @@ function VideoGenDialogInner({
                 <Sparkles className="h-3.5 w-3.5" />
                 {isResuming
                   ? t('videoGen.resuming', '正在恢复...')
-                  : t('videoGen.generate', '生成视频')}
+                  : t('videoGen.generate', '生成视频（2K）')}
               </button>
             </div>
           </div>
 
-          {/* Super-Resolution buttons — below action row */}
-          <div className="mt-2 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                if (!videoUrl) { setError('请先生成视频，再生成高分辨率版本'); return; }
-                setUpscaleTarget('2K'); setShowUpscaleConfirm(true);
-              }}
-              disabled={isGenerating || isUpscaling}
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-purple-400/30 bg-purple-500/10 px-3 text-xs font-medium text-purple-300 transition-colors hover:bg-purple-500/20 disabled:opacity-40"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              生成 2K (-20积分)
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (!videoUrl) { setError('请先生成视频，再生成高分辨率版本'); return; }
-                setUpscaleTarget('4K'); setShowUpscaleConfirm(true);
-              }}
-              disabled={isGenerating || isUpscaling}
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 text-xs font-medium text-amber-300 transition-colors hover:bg-amber-500/20 disabled:opacity-40"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              生成 4K (-35积分)
-            </button>
-          </div>
-
           {error && (() => {
-            const wanErr = translateWanError(error);
+            const videoErr = translateVideoError(error);
             return (
               <div className="mt-3 max-w-md rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-left">
-                <p className="text-sm font-semibold text-red-400">{wanErr.title}</p>
-                <p className="mt-1 text-xs leading-relaxed text-red-300/80 whitespace-pre-wrap">{wanErr.detail}</p>
+                <p className="text-sm font-semibold text-red-400">{videoErr.title}</p>
+                <p className="mt-1 text-xs leading-relaxed text-red-300/80 whitespace-pre-wrap">{videoErr.detail}</p>
               </div>
             );
           })()}
@@ -1537,57 +1854,6 @@ function VideoGenDialogInner({
         </div>
       )}
 
-      {/* Upscale confirmation modal */}
-      <UiModal
-        isOpen={showUpscaleConfirm}
-        title={`生成${upscaleTarget}视频`}
-        onClose={() => setShowUpscaleConfirm(false)}
-        widthClassName="w-[400px]"
-        footer={
-          <div className="flex gap-2 w-full">
-            <UiButton variant="muted" size="sm" onClick={() => setShowUpscaleConfirm(false)} className="flex-1">
-              {t('common.cancel', '取消')}
-            </UiButton>
-            <UiButton variant="primary" size="sm" onClick={async () => {
-              setShowUpscaleConfirm(false);
-              if (!upscaleTarget || !videoUrl) return;
-              setIsUpscaling(true);
-              setError(null);
-              try {
-                const { baiduUpscaleVideo } = await import('@/commands/ai');
-                const result = await baiduUpscaleVideo(videoUrl, upscaleTarget);
-                setVideoUrl(result);
-                // Add to history with 2K/4K label
-                if (nodeIdRef.current) {
-                  const label = upscaleTarget === '2K' ? '【2K视频】' : '【4K视频】';
-                  addToHistory(nodeIdRef.current, {
-                    prompt: label + (prompt?.trim() || ''),
-                    aspectRatio,
-                    duration,
-                    videoModel,
-                    videoUrl: result,
-                    referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
-                    referenceVoice: referenceVoice ?? undefined,
-                    gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
-                  });
-                }
-              } catch (e: any) {
-                setError(e?.message || String(e));
-              } finally {
-                setIsUpscaling(false);
-              }
-            }} className="flex-1">
-              {t('common.confirm', '确认')}
-            </UiButton>
-          </div>
-        }
-      >
-        <div className="text-center py-4">
-          <p className="text-sm text-text-dark">
-            将当前视频超分为{upscaleTarget}分辨率，消耗{upscaleTarget === '2K' ? '20' : '35'}积分，处理需要 1-3 分钟。
-          </p>
-        </div>
-      </UiModal>
     </div>
   );
 }

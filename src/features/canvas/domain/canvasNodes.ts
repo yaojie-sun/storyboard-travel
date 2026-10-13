@@ -9,6 +9,7 @@ export const CANVAS_NODE_TYPES = {
   group: 'groupNode',
   storyboardSplit: 'storyboardNode',
   storyboardGen: 'storyboardGenNode',
+  videoGen: 'videoGenNode',
 } as const;
 
 export type CanvasNodeType = (typeof CANVAS_NODE_TYPES)[keyof typeof CANVAS_NODE_TYPES];
@@ -158,7 +159,29 @@ export interface StoryboardGenNodeData {
   generatedVideoUrl?: string | null;
   /** 分镜→宫格帧映射。AI 生成宫格时输出【分镜映射】，前端解析后存入。视频生成时读取注入 */
   shotFrameMap?: ShotFrameMap;
+  /** AI 输出的【故事梗概】（2-3句纯净叙事）。生成时注入【全局故事背景】规则块，帮助图片模型理解剧情，前端不展示 */
+  storySynopsis?: string;
   [key: string]: unknown;
+}
+
+/**
+ * 直出视频节点 —— 由 Chat 的「直接生成视频」按钮创建。
+ *
+ * 🔴 该节点**自身不持有图片**（imageUrl 恒为空），参考图通过连线从上流 upload 节点收集
+ * （`graphImageResolver.collectInputImages`）。正因为没有 imageUrl，VideoGenDialog 打开时
+ * 会走「无 imageUrl ⇒ 用传入 images」的分支，正是直出路线需要的行为。
+ *
+ * 所有字段均为 optional：新增节点类型必须向后兼容，默认值由 nodeRegistry.createDefaultData 补齐。
+ */
+export interface VideoGenNodeData extends NodeDisplayData {
+  /** 提交给视频生成的提示词正文（用户在 Chat 气泡里编辑的结果落到这里） */
+  prompt?: string;
+  /** 画幅比例，如 '9:16' */
+  aspectRatio?: string;
+  /** 时长（秒） */
+  duration?: number;
+  /** 上次生成成功的视频地址（由 VideoGenDialog 回写） */
+  generatedVideoUrl?: string | null;
 }
 
 export type CanvasNodeData =
@@ -168,7 +191,8 @@ export type CanvasNodeData =
   | GroupNodeData
   | ImageEditNodeData
   | StoryboardSplitNodeData
-  | StoryboardGenNodeData;
+  | StoryboardGenNodeData
+  | VideoGenNodeData;
 
 export type CanvasNode = Node<CanvasNodeData, CanvasNodeType>;
 export type CanvasEdge = Edge;
@@ -241,6 +265,16 @@ export function isStoryboardGenNode(
   return node?.type === CANVAS_NODE_TYPES.storyboardGen;
 }
 
+export function isVideoGenNode(
+  node: CanvasNode | null | undefined
+): node is Node<VideoGenNodeData, typeof CANVAS_NODE_TYPES.videoGen> {
+  return node?.type === CANVAS_NODE_TYPES.videoGen;
+}
+
+/**
+ * ⚠️ 直出视频节点**不进** nodeHasImage：它自身不带图。
+ * 若把它算作「有图」，节点工具条会出现重复的「视频生成」入口。
+ */
 export function nodeHasImage(node: CanvasNode | null | undefined): boolean {
   if (!node) {
     return false;

@@ -1,9 +1,12 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,12 +97,22 @@ pub fn add_asset(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("png");
-    let dest_file_name = format!("{}-{}.{}", id, &file_name, ext);
+    let src_bytes = std::fs::read(&source_path)
+        .map_err(|e| format!("Failed to read source asset: {}", e))?;
+    let (out_bytes, out_ext) = match crate::ai::describe::compress_for_upload(&src_bytes) {
+        Ok(crate::ai::describe::UploadImage::Original(b)) => (b, ext.to_string()),
+        Ok(crate::ai::describe::UploadImage::CompressedJpeg(b)) => {
+            info!("asset {} 大图已压缩落盘", id);
+            (b, "jpg".to_string()) // 压缩后扩展名改 jpg，避免 jpg 字节挂 .png 名
+        }
+        Err(_) => (src_bytes, ext.to_string()), // 解码失败原样兜底，不阻塞上传
+    };
+    let dest_file_name = format!("{}-{}.{}", id, &file_name, out_ext);
     let dest_path = assets_dir.join(&dest_file_name);
     let dest_path_str = dest_path.to_string_lossy().to_string();
 
-    std::fs::copy(&source_path, &dest_path)
-        .map_err(|e| format!("Failed to copy asset file: {}", e))?;
+    std::fs::write(&dest_path, &out_bytes)
+        .map_err(|e| format!("Failed to write asset file: {}", e))?;
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -256,6 +269,10 @@ pub fn delete_asset(app: AppHandle, id: String) -> Result<(), String> {
     conn.execute("DELETE FROM assets WHERE id = ?1", params![id])
         .map_err(|e| format!("Failed to delete asset: {}", e))?;
 
+    // Delete description cache (best-effort)
+    let _ = ensure_asset_descriptions_table(&conn);
+    let _ = conn.execute("DELETE FROM asset_descriptions WHERE asset_id = ?1", params![id]);
+
     // Delete file
     if let Some(path) = file_path {
         let _ = std::fs::remove_file(&path);
@@ -263,3 +280,181 @@ pub fn delete_asset(app: AppHandle, id: String) -> Result<(), String> {
 
     Ok(())
 }
+// ============ 读图描述（视觉描述缓存） ============
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetDescription {
+    pub asset_id: String,
+    pub description: String,
+}
+
+fn ensure_asset_descriptions_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS asset_descriptions (
+          asset_id TEXT PRIMARY KEY,
+          file_hash TEXT NOT NULL,
+          description TEXT NOT NULL,
+          model TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("Failed to initialize asset_descriptions table: {}", e))
+}
+
+/// 读图进行中集合（asset_id → 已发起读图但缓存尚未写入）。
+/// 用 RAII guard 标记，离开作用域（含 future 被取消）自动移除，避免并发重复计费。
+static DESCRIBE_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn describe_in_flight() -> &'static Mutex<HashSet<String>> {
+    DESCRIBE_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+struct DescribeInFlightGuard {
+    asset_id: String,
+}
+
+impl DescribeInFlightGuard {
+    /// 若该 asset 已有并发读图进行中则返回 None（调用方跳过）；否则标记进行中并返回 guard。
+    fn acquire(asset_id: &str) -> Option<Self> {
+        let mut set = describe_in_flight()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if set.contains(asset_id) {
+            return None;
+        }
+        set.insert(asset_id.to_string());
+        Some(DescribeInFlightGuard {
+            asset_id: asset_id.to_string(),
+        })
+    }
+}
+
+impl Drop for DescribeInFlightGuard {
+    fn drop(&mut self) {
+        let mut set = describe_in_flight()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set.remove(&self.asset_id);
+    }
+}
+
+/// 读图核心逻辑：先查缓存（file_hash 命中则秒回），未命中再调 DeepSeek 视觉模型并写缓存。
+/// 幂等，可被前端 describe_asset 重复调用，不会重复产生读图费用。
+async fn describe_asset_inner(app: &AppHandle, asset_id: &str) -> Result<Option<String>, String> {
+    let api_key = crate::commands::banana_api::get_deepseek_chat_key()
+        .ok_or_else(|| "DeepSeek视觉读图API密钥未配置".to_string())?;
+
+    // 阶段一（同步）：读文件 + 查缓存。conn 必须在 await 前 drop（rusqlite Connection 非 Send）。
+    let (file_hash, bytes, cached_desc) = {
+        let conn = open_db(app)?;
+        ensure_assets_table(&conn)?;
+        ensure_asset_descriptions_table(&conn)?;
+
+        let file_path: String = conn
+            .query_row(
+                "SELECT file_path FROM assets WHERE id = ?1",
+                params![asset_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Failed to find asset: {}", e))?;
+
+        let bytes = std::fs::read(&file_path)
+            .map_err(|e| format!("Failed to read asset file: {}", e))?;
+        let file_hash = format!("{:x}", md5::compute(&bytes));
+
+        let cached: Option<String> = conn
+            .query_row(
+                "SELECT description FROM asset_descriptions WHERE asset_id = ?1 AND file_hash = ?2",
+                params![asset_id, file_hash],
+                |row| row.get(0),
+            )
+            .ok();
+
+        (file_hash, bytes, cached)
+    };
+
+    if let Some(desc) = cached_desc {
+        return Ok(Some(desc));
+    }
+
+    // 去重锁：同一 asset 的并发读图只允许一路真正调用 DeepSeek 视觉模型，
+    // 其余并发调用直接跳过（首个调用写缓存后，下次命中缓存秒回），避免重复计费。
+    let _in_flight = match DescribeInFlightGuard::acquire(asset_id) {
+        Some(guard) => guard,
+        None => return Ok(None),
+    };
+
+    // 阶段二（await）：调读图。此时不持有 conn，future 保持 Send。
+    let description = crate::ai::describe::describe_image(&bytes, &api_key)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 阶段三（同步）：写缓存
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    {
+        let conn = open_db(app)?;
+        ensure_asset_descriptions_table(&conn)?;
+        conn.execute(
+            r#"
+            INSERT INTO asset_descriptions (asset_id, file_hash, description, model, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(asset_id) DO UPDATE SET
+              file_hash = ?2, description = ?3, model = ?4, updated_at = ?5
+            "#,
+            // 与 ai::describe::DEEPSEEK_VL_MODEL 保持一致；该列**只写不读**
+            // （查询只按 asset_id + file_hash 命中），因此改这个名字不会让缓存失效。
+            params![asset_id, file_hash, description, "deepseek-flash", now],
+        )
+        .map_err(|e| format!("Failed to save asset description: {}", e))?;
+    }
+
+    Ok(Some(description))
+}
+
+#[tauri::command]
+pub async fn describe_asset(app: AppHandle, asset_id: String) -> Result<Option<String>, String> {
+    describe_asset_inner(&app, &asset_id).await
+}
+
+#[tauri::command]
+pub fn get_asset_descriptions(
+    app: AppHandle,
+    project_id: String,
+) -> Result<Vec<AssetDescription>, String> {
+    let conn = open_db(&app)?;
+    ensure_assets_table(&conn)?;
+    ensure_asset_descriptions_table(&conn)?;
+
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT d.asset_id, d.description
+            FROM asset_descriptions d
+            JOIN assets a ON a.id = d.asset_id
+            WHERE a.project_id = ?1
+            "#,
+        )
+        .map_err(|e| format!("Failed to prepare get descriptions: {}", e))?;
+
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok(AssetDescription {
+                asset_id: row.get(0)?,
+                description: row.get(1)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query descriptions: {}", e))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("Failed to read description row: {}", e))?);
+    }
+    Ok(out)
+}
+

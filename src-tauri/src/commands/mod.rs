@@ -2,6 +2,7 @@ pub mod ai;
 pub mod asset;
 pub mod banana_api;
 pub mod chat;
+pub mod enhance;
 pub mod image;
 pub mod project_state;
 pub mod seedance_integration;
