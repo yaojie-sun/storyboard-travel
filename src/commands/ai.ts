@@ -275,11 +275,11 @@ export async function submitGenerateImageJob(request: GenerateRequest): Promise<
     throw new Error('当前不是 Tauri 容器环境，请使用 `npm run tauri dev` 启动');
   }
 
-  // 仅小鸭优化开启时额外扣 2 积分（与宫格扣 10 积分独立，互不干涉）
+  // 仅小鸭优化开启时额外扣 1 积分（与宫格扣 10 积分独立，互不干涉）
   if (request.enable_optimization) {
     try {
       await invoke<string>('banana_consume_credit', { count: 1 });
-      console.info('[小鸭] 优化扣费成功 x2，现在提交实际的图像生成作业');
+      console.info('[小鸭] 优化扣费成功 x1，现在提交实际的图像生成作业');
     } catch (error) {
       console.error('[小鸭] 优化扣费失败，阻止作业提交:', error);
       throw error;

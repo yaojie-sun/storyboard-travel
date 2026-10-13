@@ -249,6 +249,7 @@ pub fn run() {
             chat::migrate_chat_storage,
             chat::check_skill_upgrade,
             chat::perform_skill_upgrade,
+            chat::backup_corrupt_chat_file,
             chat::analyze_story,
 
             chat::load_videogen_store,

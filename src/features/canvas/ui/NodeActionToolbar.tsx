@@ -12,10 +12,11 @@ import {
   isStoryboardGenNode,
   isStoryboardSplitNode,
   isUploadNode,
+  isVideoGenNode,
   type CanvasNode,
   type NodeToolType,
 } from '@/features/canvas/domain/canvasNodes';
-import { canvasEventBus } from '@/features/canvas/application/canvasServices';
+import { canvasEventBus, graphImageResolver } from '@/features/canvas/application/canvasServices';
 import { getNodeToolPlugins } from '@/features/canvas/tools';
 import type { ToolIconKey } from '@/features/canvas/tools';
 import { UiChipButton, UiModal, UiPanel } from '@/components/ui';
@@ -73,6 +74,7 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
   const tools = useMemo(() => getNodeToolPlugins(node), [node]);
   const deleteNode = useCanvasStore((state) => state.deleteNode);
   const ungroupNode = useCanvasStore((state) => state.ungroupNode);
+  const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const canReupload = isUploadNode(node) && Boolean(node.data.imageUrl);
   const downloadPresetPaths = useSettingsStore((state) => state.downloadPresetPaths);
   const ignoreAtTagWhenCopyingAndGenerating = useSettingsStore(
@@ -318,8 +320,6 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
     [closeDownloadMenu, imageSource, node.id]
   );
 
-  const updateNodeData = useCanvasStore((state) => state.updateNodeData);
-
   const handleEnhance = useCallback(async () => {
     if (!imageSource) return;
 
@@ -520,17 +520,37 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
               event.stopPropagation();
               closeDownloadMenu();
               const d = node.data as any;
+              // 整张拼合图直接喂，**不再**把切好的单格塞进去（对齐 Local 2026-09-11 定案反转）。
+              // 老项目数据里可能还留着 `gridCellImageUrls`，这里刻意忽略它。
+              // 旧行为是「拼合图 + 6 个单格」共 7 张 —— 单格与拼合图内容重复，
+              // 每多一张参考图都是一笔 token/耗时成本（见 Local `docs/h3video.md` 的 token 公式）。
               const images: string[] = [];
               if (d.previewImageUrl) images.push(d.previewImageUrl);
               if (d.imageUrl && d.imageUrl !== d.previewImageUrl) images.push(d.imageUrl);
-              if (Array.isArray(d.gridCellImageUrls)) {
-                for (const u of d.gridCellImageUrls) {
-                  if (u && !images.includes(u)) images.push(u);
-                }
-              }
               canvasEventBus.publish('video-gen-dialog/open', {
                 nodeId: node.id,
                 images,
+              });
+            }}
+          >
+            <Film className="h-3.5 w-3.5" />
+            {t('nodeToolbar.videoGen')}
+          </UiChipButton>
+        )}
+        {/* 直出视频节点：它自己没有 imageUrl（`hasImageData` 恒 false），参考图在上游入边上。
+            这里从图上重算一次入边图再开弹窗 —— §12.4 要求「关掉弹窗再点开，看到的和生成时一样」，
+            参考图的真相源就是这些入边。与节点自身底栏的生成 chip 走同一条链路。 */}
+        {isVideoGenNode(node) && (
+          <UiChipButton
+            key="video-gen-direct"
+            className={`h-8 ${TOOLBAR_BUTTON_RADIUS_CLASS} px-2.5 text-xs ${TOOLBAR_NEUTRAL_BUTTON_CLASS} hover:!border-purple-400/60 hover:!bg-purple-500/20 hover:!text-purple-200`}
+            onClick={(event) => {
+              event.stopPropagation();
+              closeDownloadMenu();
+              const { nodes, edges } = useCanvasStore.getState();
+              canvasEventBus.publish('video-gen-dialog/open', {
+                nodeId: node.id,
+                images: graphImageResolver.collectInputImages(node.id, nodes, edges),
               });
             }}
           >
@@ -670,6 +690,7 @@ export const NodeActionToolbar = memo(({ node }: NodeActionToolbarProps) => {
           </div>
         </div>
       </UiModal>
+
     </ReactFlowNodeToolbar>
   );
 });

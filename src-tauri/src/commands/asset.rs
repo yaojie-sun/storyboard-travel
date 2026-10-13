@@ -1,4 +1,6 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
@@ -95,25 +97,16 @@ pub fn add_asset(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("png");
-
-    // 大图（最长边 > 2048 或体积 > 5MB）先压缩再落盘，避免原图过大拖慢宫格/画布加载；
-    // 小图原样保留，压缩/解码失败则原样保存兜底，不阻塞上传。
     let src_bytes = std::fs::read(&source_path)
-        .map_err(|e| format!("Failed to read asset file: {}", e))?;
+        .map_err(|e| format!("Failed to read source asset: {}", e))?;
     let (out_bytes, out_ext) = match crate::ai::describe::compress_for_upload(&src_bytes) {
         Ok(crate::ai::describe::UploadImage::Original(b)) => (b, ext.to_string()),
         Ok(crate::ai::describe::UploadImage::CompressedJpeg(b)) => {
-            info!(
-                "asset {} 原图 {} bytes 已压缩为 {} bytes (jpg)",
-                id,
-                src_bytes.len(),
-                b.len()
-            );
-            (b, "jpg".to_string())
+            info!("asset {} 大图已压缩落盘", id);
+            (b, "jpg".to_string()) // 压缩后扩展名改 jpg，避免 jpg 字节挂 .png 名
         }
-        Err(_) => (src_bytes, ext.to_string()),
+        Err(_) => (src_bytes, ext.to_string()), // 解码失败原样兜底，不阻塞上传
     };
-
     let dest_file_name = format!("{}-{}.{}", id, &file_name, out_ext);
     let dest_path = assets_dir.join(&dest_file_name);
     let dest_path_str = dest_path.to_string_lossy().to_string();
@@ -155,9 +148,6 @@ pub fn add_asset(
         ],
     )
     .map_err(|e| format!("Failed to insert asset: {}", e))?;
-
-    // 读图改为「生成分镜时」触发（见 chatStore.sendMessage 调 buildProjectChatContext(readIfMissing:true)），
-    // 上传时不再后台自动读图，避免「传错图/白读」。
 
     Ok(record)
 }
@@ -290,7 +280,6 @@ pub fn delete_asset(app: AppHandle, id: String) -> Result<(), String> {
 
     Ok(())
 }
-
 // ============ 读图描述（视觉描述缓存） ============
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,16 +304,45 @@ fn ensure_asset_descriptions_table(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("Failed to initialize asset_descriptions table: {}", e))
 }
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{Mutex as TokioMutex, OnceCell as TokioOnceCell};
+/// 读图进行中集合（asset_id → 已发起读图但缓存尚未写入）。
+/// 用 RAII guard 标记，离开作用域（含 future 被取消）自动移除，避免并发重复计费。
+static DESCRIBE_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
-static IN_FLIGHT_DESCRIBES: std::sync::LazyLock<
-    TokioMutex<HashMap<String, Arc<TokioOnceCell<String>>>>,
-> = std::sync::LazyLock::new(|| TokioMutex::new(HashMap::new()));
+fn describe_in_flight() -> &'static Mutex<HashSet<String>> {
+    DESCRIBE_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
-/// 读图核心逻辑：先查缓存（file_hash 命中秒回），未命中调 DeepSeek 视觉模型并写缓存。
-/// 幂等，可被 add_asset 异步任务和前端 describe_asset 重复调用，不会重复产生读图费用。
+struct DescribeInFlightGuard {
+    asset_id: String,
+}
+
+impl DescribeInFlightGuard {
+    /// 若该 asset 已有并发读图进行中则返回 None（调用方跳过）；否则标记进行中并返回 guard。
+    fn acquire(asset_id: &str) -> Option<Self> {
+        let mut set = describe_in_flight()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if set.contains(asset_id) {
+            return None;
+        }
+        set.insert(asset_id.to_string());
+        Some(DescribeInFlightGuard {
+            asset_id: asset_id.to_string(),
+        })
+    }
+}
+
+impl Drop for DescribeInFlightGuard {
+    fn drop(&mut self) {
+        let mut set = describe_in_flight()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set.remove(&self.asset_id);
+    }
+}
+
+/// 读图核心逻辑：先查缓存（file_hash 命中则秒回），未命中再调 DeepSeek 视觉模型并写缓存。
+/// 幂等，可被前端 describe_asset 重复调用，不会重复产生读图费用。
 async fn describe_asset_inner(app: &AppHandle, asset_id: &str) -> Result<Option<String>, String> {
     let api_key = crate::commands::banana_api::get_deepseek_chat_key()
         .ok_or_else(|| "DeepSeek视觉读图API密钥未配置".to_string())?;
@@ -362,21 +380,17 @@ async fn describe_asset_inner(app: &AppHandle, asset_id: &str) -> Result<Option<
         return Ok(Some(desc));
     }
 
-    // 阶段二（await）：调读图，带并发合并锁（首个调用者读图，后续 await 复用同一结果）。
-    let cell = {
-        let mut map = IN_FLIGHT_DESCRIBES.lock().await;
-        map.entry(asset_id.to_string())
-            .or_insert_with(|| Arc::new(TokioOnceCell::new()))
-            .clone()
+    // 去重锁：同一 asset 的并发读图只允许一路真正调用 DeepSeek 视觉模型，
+    // 其余并发调用直接跳过（首个调用写缓存后，下次命中缓存秒回），避免重复计费。
+    let _in_flight = match DescribeInFlightGuard::acquire(asset_id) {
+        Some(guard) => guard,
+        None => return Ok(None),
     };
-    let description: String = cell
-        .get_or_try_init(|| async {
-            crate::ai::describe::describe_image(&bytes, &api_key)
-                .await
-                .map_err(|e| e.to_string())
-        })
-        .await?
-        .clone();
+
+    // 阶段二（await）：调读图。此时不持有 conn，future 保持 Send。
+    let description = crate::ai::describe::describe_image(&bytes, &api_key)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // 阶段三（同步）：写缓存
     let now = SystemTime::now()
@@ -393,7 +407,9 @@ async fn describe_asset_inner(app: &AppHandle, asset_id: &str) -> Result<Option<
             ON CONFLICT(asset_id) DO UPDATE SET
               file_hash = ?2, description = ?3, model = ?4, updated_at = ?5
             "#,
-            params![asset_id, file_hash, description, "deepseek-v4-flash-vision-exp", now],
+            // 与 ai::describe::DEEPSEEK_VL_MODEL 保持一致；该列**只写不读**
+            // （查询只按 asset_id + file_hash 命中），因此改这个名字不会让缓存失效。
+            params![asset_id, file_hash, description, "deepseek-flash", now],
         )
         .map_err(|e| format!("Failed to save asset description: {}", e))?;
     }
@@ -441,3 +457,4 @@ pub fn get_asset_descriptions(
     }
     Ok(out)
 }
+

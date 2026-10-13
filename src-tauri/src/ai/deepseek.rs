@@ -145,4 +145,3 @@ pub async fn optimize_prompt(prompt: &str, api_key: &str) -> Result<String, AIEr
 
     Ok(optimized)
 }
-

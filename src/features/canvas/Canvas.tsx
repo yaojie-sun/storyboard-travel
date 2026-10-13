@@ -31,6 +31,12 @@ import { useEpisodeStore } from '@/stores/episodeStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useAssetStore } from '@/stores/assetStore';
 import { canvasAiGateway, canvasEventBus } from '@/features/canvas/application/canvasServices';
+import { matchRefAssets } from '@/features/canvas/application/chatRefImages';
+import {
+  DEFAULT_VIDEO_GEN_ASPECT_RATIO,
+  DEFAULT_VIDEO_GEN_DURATION,
+} from '@/features/canvas/domain/nodeRegistry';
+import { useVideoGenStore } from '@/features/videoGeneration/videoGenStore';
 import {
   CANVAS_NODE_TYPES,
   type CanvasEdge,
@@ -63,7 +69,6 @@ import { buildProjectChatContext } from '@/features/chat/projectContext';
 import { splitGridPromptIntoFrames } from '@/utils/gridPromptParser';
 
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
-
 /// 生成宫格图时，自动连线到宫格节点的最近参考图数量（按上传时间倒序取最近 N 张）
 const MAX_AUTO_REF_IMAGES = 6;
 
@@ -399,6 +404,8 @@ export function Canvas() {
   // Build project context for AI chat on mount (with fallback when no MD exists)
   useEffect(() => {
     if (!canvasProjectId) return;
+    const project = useProjectStore.getState().currentProject;
+    if (!project) return;
 
     void buildProjectChatContext(canvasProjectId).then((context) =>
       useChatStore.getState().setProjectContext(context),
@@ -1406,35 +1413,16 @@ export function Canvas() {
         referenceIndex: null,
       }));
 
-      // Auto-link reference images: AI 选图优先（【选图】@图N），无选图时回退到最近上传 N 张
-      const matchedAssets: Array<{ name: string; filePath: string; index: number }> = [];
+      // Auto-link reference images —— 以写手为准（【选图】@图N）。
+      // 锚点是 getAssets 的原始顺序（与 @图N 同源），不做任何 filter/sort。
       const projectId = useProjectStore.getState().currentProject?.id;
-      if (projectId) {
-        const allAssets = useAssetStore
-          .getState()
-          .getAssets(projectId)
-          .filter((asset) => asset.filePath)
-          .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-
-        const selected = detail.selectedRefImages;
-        if (selected && selected.length > 0) {
-          // AI 选中的 @图N 编号（1-based），映射到按上传时间倒序的资产列表
-          for (const n of selected.slice(0, MAX_AUTO_REF_IMAGES)) {
-            const asset = allAssets[n - 1];
-            if (asset) {
-              matchedAssets.push({ name: asset.name, filePath: asset.filePath, index: n - 1 });
-            }
-          }
-        } else {
-          matchedAssets.push(
-            ...allAssets.slice(0, MAX_AUTO_REF_IMAGES).map((asset, index) => ({
-              name: asset.name,
-              filePath: asset.filePath,
-              index,
-            })),
-          );
-        }
-      }
+      const matchedAssets = matchRefAssets(
+        projectId ? useAssetStore.getState().getAssets(projectId) : [],
+        detail.selectedRefImages,
+        MAX_AUTO_REF_IMAGES,
+        () =>
+          console.warn('[Canvas] 本轮写手没有【选图】⇒ 不挂任何参考图（以写手为准）'),
+      );
 
       // Create upload nodes for matched assets
       const uploadNodeIds: string[] = [];
@@ -1481,6 +1469,110 @@ export function Canvas() {
 
     window.addEventListener('chat-fill-grid', handleChatFillGrid);
     return () => window.removeEventListener('chat-fill-grid', handleChatFillGrid);
+  }, [reactFlowInstance, addNode, addEdge]);
+
+  // Listen for chat-direct-video: 直出视频 —— 跳过六宫格，直接用分镜提示词 + 写手选中的参考图。
+  // 参考图规则与宫格路完全一致（以写手为准：没写【选图】就一张都不挂）。
+  //
+  // 🔴 必须落一个真实的 videoGen 节点：VideoGenDialog 的全部持久化都被
+  // `if (nodeIdRef.current)` 包住，nodeId 为空时视频能生成但静默不落盘（违反 §12.4）。
+  useEffect(() => {
+    const handleChatDirectVideo = (e: Event) => {
+      const detail = (e as CustomEvent<{
+        prompt: string;
+        conversationId?: string;
+        selectedRefImages?: number[];
+      }>).detail;
+
+      const prompt = detail.prompt?.trim();
+      if (!prompt) {
+        return;
+      }
+
+      const wrapper = wrapperRef.current;
+      if (!wrapper || !reactFlowInstance) {
+        return;
+      }
+
+      const viewport = reactFlowInstance.getViewport();
+      const rect = wrapper.getBoundingClientRect();
+      const centerX = (rect.width / 2 - viewport.x) / viewport.zoom;
+      const centerY = (rect.height / 2 - viewport.y) / viewport.zoom;
+
+      const projectId = useProjectStore.getState().currentProject?.id;
+      const matchedAssets = matchRefAssets(
+        projectId ? useAssetStore.getState().getAssets(projectId) : [],
+        detail.selectedRefImages,
+        MAX_AUTO_REF_IMAGES,
+        () =>
+          console.warn('[Canvas] 本轮写手没有【选图】⇒ 不挂任何参考图（以写手为准）'),
+      );
+
+      // 参考图上传节点排在直出节点下方，与宫格路的布局一致
+      const uploadNodeIds: string[] = [];
+      if (matchedAssets.length > 0) {
+        const uploadNodeWidth = 160;
+        const spacing = 20;
+        const totalWidth =
+          matchedAssets.length * uploadNodeWidth + (matchedAssets.length - 1) * spacing;
+        const startX = centerX - totalWidth / 2;
+        const uploadY = centerY + 220;
+
+        matchedAssets.forEach((asset, i) => {
+          const nodeId = addNode(
+            CANVAS_NODE_TYPES.upload,
+            { x: startX + i * (uploadNodeWidth + spacing), y: uploadY },
+            {
+              imageUrl: asset.filePath,
+              previewImageUrl: null,
+              aspectRatio: '1:1',
+              displayName: asset.name,
+            },
+          );
+          if (nodeId) {
+            uploadNodeIds.push(nodeId);
+          }
+        });
+      }
+
+      const videoNodeId = addNode(
+        CANVAS_NODE_TYPES.videoGen,
+        { x: centerX, y: centerY },
+        {
+          prompt,
+          aspectRatio: DEFAULT_VIDEO_GEN_ASPECT_RATIO,
+          duration: DEFAULT_VIDEO_GEN_DURATION,
+        },
+      );
+      if (!videoNodeId) {
+        return;
+      }
+
+      uploadNodeIds.forEach((uploadId) => {
+        addEdge(uploadId, videoNodeId);
+      });
+
+      // 预置生成配置：关掉弹窗再点开、甚至重启软件，看到的都是同一份提示词与参数
+      useVideoGenStore.getState().saveConfig(videoNodeId, {
+        prompt,
+        aspectRatio: DEFAULT_VIDEO_GEN_ASPECT_RATIO,
+        duration: DEFAULT_VIDEO_GEN_DURATION,
+        referenceImageUrls: matchedAssets.map((asset) => ({
+          id: asset.filePath,
+          rawUrl: asset.filePath,
+          url: asset.filePath,
+        })),
+      });
+
+      // 打开弹窗让用户确认；**不提交任务**，扣费只发生在用户手动点「生成视频」之后
+      canvasEventBus.publish('video-gen-dialog/open', {
+        nodeId: videoNodeId,
+        images: matchedAssets.map((asset) => asset.filePath),
+      });
+    };
+
+    window.addEventListener('chat-direct-video', handleChatDirectVideo);
+    return () => window.removeEventListener('chat-direct-video', handleChatDirectVideo);
   }, [reactFlowInstance, addNode, addEdge]);
 
   const handleConnectStart = useCallback(

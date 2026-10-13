@@ -26,7 +26,7 @@ export async function buildProjectChatContext(
       if (project.aspectRatio) parts.push(`- 画幅比例: ${project.aspectRatio}`);
       if (project.style) parts.push(`- 视觉风格: ${project.style}`);
       if (project.tone) parts.push(`- 项目调性: ${project.tone}`);
-      if (project.directorRef) parts.push(`- 旅行视频风格: ${project.directorRef}`);
+      if (project.directorRef) parts.push(`- 视频风格: ${project.directorRef}`);
       const emphasisLabels = getEmphasisLabels(
         project.emphasisDimensions.filter((d) => d.enabled).map((d) => d.key),
       );
@@ -41,10 +41,10 @@ export async function buildProjectChatContext(
   try {
     const assetLines = await buildAssetReferenceLines(projectId, opts);
     if (assetLines.length > 0) {
-      context = `${context}\n## 可用参考图\n${assetLines.join('\n')}\n\n生成分镜/宫格提示词时，如需引用参考图请使用 @图N 格式。请在回复中单独输出一行【选图】@图N,@图M,...，只列出本段脚本/分镜中真实出现其场景的参考图编号（最多6张），脚本未涉及、分镜未出现的场景一律不选（宁缺毋滥）。`;
+      context = `${context}\n## 可用参考图\n${assetLines.join('\n')}\n\n生成分镜/宫格提示词时，如需引用参考图请使用 @图N 格式。请在回复中单独输出一行【选图】@图N,@图M,...，只列出本段脚本/分镜中真实出现其角色/场景/道具的参考图编号（最多6张），脚本未涉及、分镜未出现的角色/场景一律不选（宁缺毋滥）。`;
     }
   } catch {
-    // assets not critical for chat — ignore errors
+    // assets 不是 chat 的必需项，读失败就跳过
   }
 
   return context;

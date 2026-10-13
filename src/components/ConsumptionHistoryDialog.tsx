@@ -58,8 +58,11 @@ export function ConsumptionHistoryDialog({ isOpen, onClose }: ConsumptionHistory
     }
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 客户端按年/月筛选
+  // 客户端筛选：0 分流水不展示 + 按年/月
   const filteredRecords = allRecords.filter(r => {
+    // 0 分流水对用户只是噪声：写手链一条提示词 = 8 次网关调用，只有首步扣 1 分，
+    // 其余自动串链的续步（网关 `prompt_continue` 标记）各落一条 0 分记录。
+    if (r.credits_consumed === 0) return false;
     if (!r.created_at) return true;
     const d = new Date(r.created_at);
     if (selectedYear !== 'all' && d.getFullYear().toString() !== selectedYear) return false;

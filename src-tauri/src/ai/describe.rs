@@ -7,14 +7,18 @@ use tracing::{info, warn};
 
 use crate::ai::error::AIError;
 
-/// DeepSeek 多模态视觉模型读图（deepseek-v4-flash-vision-exp）。
+/// DeepSeek 多模态视觉模型读图（deepseek-flash）。
 /// 端点与鉴权采用 OpenAI 兼容模式：Bearer <API Key>。
 /// 一次性完成「读图」——产出可直接供分镜提示词生成的图片信息；参考图只读一次（file_hash 缓存），
 /// 后续进入画布复用缓存文本，不再重复读图。
 const DEEPSEEK_VL_URL: &str = "https://api.deepseek.com/chat/completions";
 /// 读图模型标识。需与服务器 /api-configs/active 下发时一致；
 /// 复刻到服饰版/美妆版/科普版等衍生版本时无需改动（行业无关）。
-const DEEPSEEK_VL_MODEL: &str = "deepseek-v4-flash-vision-exp";
+/// 🔴 用官方名 `deepseek-flash`（官方文档脚注(1)：旧名 `deepseek-v4-flash` /
+///    `deepseek-v4-flash-vision-exp` 仍可调用，但对应模型已下线，请求由
+///    DeepSeek-V4.1-Flash 提供服务）。本函数**直连 api.deepseek.com**，
+///    模型名必须跟随官方口径 —— 不要改回旧名。官方 flash 本身支持图像理解。
+const DEEPSEEK_VL_MODEL: &str = "deepseek-flash";
 
 /// 读图前统一下采样：最长边压到 MAX_EDGE 内并重编码 JPEG。
 /// 大图（如 4MB）直接 base64 会导致请求体过大、处理慢甚至超时，压到 ~100-200KB 秒回。

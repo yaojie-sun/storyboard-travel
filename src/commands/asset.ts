@@ -45,7 +45,6 @@ export async function listAssets(projectId: string): Promise<AssetRecord[]> {
 export async function deleteAsset(id: string): Promise<void> {
   await invoke('delete_asset', { id });
 }
-
 export interface AssetDescription {
   assetId: string;
   description: string;
@@ -61,6 +60,7 @@ export async function getAssetDescriptions(projectId: string): Promise<AssetDesc
 
 // 组装 Chat context 用的 @图N 参考图行（含视觉描述）。
 // readIfMissing=true 时才补读缺失描述（生成分镜时显式触发）；默认 false 不读，避免「上传/进画布即读图」。
+// 行业无关，复刻到各行业版时仅 catLabel 文案随行业微调。
 export async function buildAssetReferenceLines(
   projectId: string,
   opts?: { readIfMissing?: boolean },
@@ -83,7 +83,7 @@ export async function buildAssetReferenceLines(
   }
 
   const catLabel = (cat: string) =>
-    cat === 'character' ? '角色' : cat === 'scene' ? '场景' : '服饰道具';
+    cat === 'character' ? '角色' : cat === 'scene' ? '场景' : '服装及道具';
 
   return assets.map((a, i) => {
     const base = `@图${i + 1}: ${a.name} (${catLabel(a.category)})`;
@@ -91,3 +91,4 @@ export async function buildAssetReferenceLines(
     return desc ? `${base}\n  视觉描述：${desc}` : base;
   });
 }
+

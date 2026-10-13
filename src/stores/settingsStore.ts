@@ -126,7 +126,7 @@ const SETTINGS_DEFAULTS = {
   ignoreAtTagWhenCopyingAndGenerating: true,
   enableStoryboardGenGridPreviewShortcut: false,
   showStoryboardGenAdvancedRatioControls: false,
-  deepseekPromptOptimization: false,
+  deepseekPromptOptimization: true,
   showNodePrice: false,
   priceDisplayCurrencyMode: 'auto' as const,
   usdToCnyRate: 7.2,

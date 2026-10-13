@@ -285,9 +285,29 @@ html[data-platform='macos'] #root {
   animation: chat-hint-bounce 1.6s ease-in-out infinite;
 }
 
+/* 视频生成小窗的不定量扫描条（`VideoGenDock`）。
+   后端没有进度字段 ⇒ 只表达「在动」，不要往里塞百分比。 */
+@keyframes video-dock-scan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+.video-dock-scan {
+  animation: video-dock-scan 1.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .canvas-processing-edge__flow {
     animation: none;
+  }
+  /* 定住一条静止的 1/3 宽条纹：保留「有任务在跑」的视觉线索，去掉动效。 */
+  .video-dock-scan {
+    animation: none;
+    transform: translateX(100%);
   }
 }
 

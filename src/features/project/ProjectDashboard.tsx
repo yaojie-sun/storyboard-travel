@@ -4,13 +4,13 @@ import { ArrowLeft, Settings, Film, RefreshCw } from 'lucide-react';
 import { useProjectStore } from '@/stores/projectStore';
 import { useEpisodeStore } from '@/stores/episodeStore';
 import { useChatStore } from '@/stores/chatStore';
+import { buildProjectChatContext } from '@/features/chat/projectContext';
 import { UiButton } from '@/components/ui/primitives';
 import { RenameDialog } from './RenameDialog';
 import { EditParamsDialog } from './EditParamsDialog';
 import { EpisodeList } from './EpisodeList';
 import { AssetManager } from './AssetManager';
 import { ReanalyzeDialog } from './ReanalyzeDialog';
-import { buildProjectChatContext } from '@/features/chat/projectContext';
 
 type DialogMode = 'rename' | 'params' | 'reanalyze' | null;
 
@@ -92,6 +92,8 @@ export function ProjectDashboard() {
   const enabledDimensions = project.emphasisDimensions.filter((d) => d.enabled);
 
   const buildAndSetContext = useCallback(async () => {
+    // 统一走共享实现（与 Canvas / ReanalyzeDialog / chatStore 同一份），
+    // 保证「可用参考图」里始终带【选图】指令，写手才能选出参考图。
     const context = await buildProjectChatContext(projectId);
     setProjectContext(context);
   }, [projectId, setProjectContext]);

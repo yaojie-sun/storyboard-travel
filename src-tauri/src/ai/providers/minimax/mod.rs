@@ -12,10 +12,10 @@ use crate::ai::{
     AIProvider, GenerateRequest, ProviderTaskHandle, ProviderTaskPollResult, ProviderTaskSubmission,
 };
 
-// ── MiniMax H3 via 百度 VOD 原生透传 ──
-// 只走百度 VOD 通道（vod.bj.baidubce.com/v3/aigc/minimax），
-// 复用 BAIDU_VIDEO_KEY，不通过 MiniMax 直连 token、不碰阿里云、不碰 wan2.7。
-const BASE_URL: &str = "https://vod.bj.baidubce.com/v3/aigc/minimax";
+// ── MiniMax H3 via 优云智算 compshare 直连 ──
+// 走 compshare（UCloud，境内）原生通道 cp.compshare.cn/minimax，
+// 复用 COMPSHARE_VIDEO_KEY（经自有服务器配置下发），不经百度 VOD、不碰阿里云。
+const BASE_URL: &str = "https://cp.compshare.cn/minimax";
 const CREATE_PATH: &str = "/v2/video_generation";
 const QUERY_PATH: &str = "/v2/query/video_generation";
 const POLL_INTERVAL_MS: u64 = 10000;
@@ -49,6 +49,15 @@ struct MinimaxTask {
     content: Option<MinimaxContent>,
     #[serde(rename = "videoUrl")]
     video_url: Option<String>,
+    /// 失败时 compshare 在 task.error 里给出 {code, message}
+    error: Option<MinimaxError>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct MinimaxError {
+    code: Option<String>,
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +90,40 @@ impl MiniMaxProvider {
             .split_once('/')
             .map(|(_, bare)| bare.to_string())
             .unwrap_or_else(|| model.to_string())
+    }
+
+    /// compshare H3 只接受 480P/768P/1080P/2K/4K（区分大小写，无 720P）。
+    /// 上游 banana_api 写入的 key 是 quality（小写 "720p"），
+    /// 这里统一归一化：720P/720p → 768P（H3 最低档，积分档位仍按原 720P 计、不变），
+    /// 其余不受支持的值一律回落 768P。
+    fn normalize_resolution(raw: Option<&str>) -> String {
+        const ALLOWED: [&str; 5] = ["480P", "768P", "1080P", "2K", "4K"];
+        let q = raw.unwrap_or("").trim();
+        if q.eq_ignore_ascii_case("720p") {
+            return "768P".to_string();
+        }
+        let up = q.to_uppercase();
+        if ALLOWED.contains(&up.as_str()) {
+            up
+        } else {
+            "768P".to_string()
+        }
+    }
+
+    /// compshare H3 画幅白名单。
+    fn normalize_ratio(raw: Option<&str>) -> String {
+        const ALLOWED: [&str; 7] = ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
+        let r = raw.unwrap_or("").trim();
+        if ALLOWED.contains(&r) {
+            r.to_string()
+        } else {
+            "adaptive".to_string()
+        }
+    }
+
+    /// compshare H3 duration 区间 4–30 秒。
+    fn normalize_duration(raw: Option<u64>) -> u32 {
+        raw.unwrap_or(5).clamp(4, 30) as u32
     }
 
     fn query_status(resp: &MinimaxQueryResponse) -> String {
@@ -134,7 +177,7 @@ impl MiniMaxProvider {
             .map(|u| u.clone())
     }
 
-    /// 检测 MiniMax/百度 VOD 以 HTTP 200 返回的错误体 {"type":"error",...}，
+    /// 检测 MiniMax/compshare 以 HTTP 200 返回的错误体 {"type":"error",...}，
     /// 提取最内层 error.message（可能是嵌套 JSON 字符串）。
     fn extract_error_body(raw: &str) -> Option<String> {
         let val: Value = serde_json::from_str(raw).ok()?;
@@ -182,15 +225,17 @@ impl MiniMaxProvider {
     }
 
     /// H3 用 content[] 结构：text + image_url（role=reference_image）。
-    /// 参考图走 base64 直传（百度 VOD 透传，不经七牛）。
+    /// 参考图走 base64 直传（compshare 直连，经自有服务器下发 key，图片不落第三方）。
+    /// compshare 限制参考图 ≤9 张，超出直接截断，避免整单被拒。
     fn build_content(prompt: &str, reference_images: &[String]) -> Vec<Value> {
+        const MAX_REF_IMAGES: usize = 9;
         let mut content: Vec<Value> = vec![json!({
             "type": "text",
             "text": prompt,
         })];
-        for ref_img in reference_images {
+        for ref_img in reference_images.iter().take(MAX_REF_IMAGES) {
             if ref_img.starts_with("data:") {
-                // base64 参考图：H3 单边上限 5760，超限先等比缩放
+                // base64 参考图：单边上限 5760，超限先等比缩放
                 let url = Self::downscale_base64_image(ref_img, 5760)
                     .unwrap_or_else(|| ref_img.clone());
                 content.push(json!({
@@ -215,45 +260,56 @@ impl MiniMaxProvider {
         api_key: &str,
         request: &GenerateRequest,
     ) -> Result<String, AIError> {
-        let duration = request
-            .extra_params
-            .as_ref()
-            .and_then(|params| params.get("duration_seconds"))
-            .and_then(|raw| raw.as_u64())
-            .unwrap_or(5) as u32;
+        let duration = Self::normalize_duration(
+            request
+                .extra_params
+                .as_ref()
+                .and_then(|params| params.get("duration_seconds"))
+                .and_then(|raw| raw.as_u64()),
+        );
 
-        // H3 只支持 768P / 2K，不支持 720P。banana_api 写入的 key 是 quality（小写 "720p"），
-        // 这里统一归一化为 "768P"（H3 最低档），积分档位仍按原 720P 计、不变。
-        let resolution = request
-            .extra_params
-            .as_ref()
-            .and_then(|params| params.get("quality"))
-            .and_then(|raw| raw.as_str())
-            .map(|q| {
-                if q.eq_ignore_ascii_case("720p") {
-                    "768P".to_string()
-                } else {
-                    q.to_uppercase()
-                }
-            })
-            .unwrap_or_else(|| "768P".to_string());
+        let resolution = Self::normalize_resolution(
+            request
+                .extra_params
+                .as_ref()
+                .and_then(|params| params.get("quality"))
+                .and_then(|raw| raw.as_str()),
+        );
 
-        let reference_images = request.reference_images.as_deref().unwrap_or(&[]);
-        let content = Self::build_content(&request.prompt, reference_images);
+        let ratio = Self::normalize_ratio(Some(request.aspect_ratio.as_str()));
+
+        let content = Self::build_content(&request.prompt, request.reference_images.as_deref().unwrap_or(&[]));
+        let refs = content.iter().filter(|c| c.get("type").and_then(|t| t.as_str()) == Some("image_url")).count();
 
         let body = json!({
             "model": API_MODEL,
             "content": content,
             "resolution": resolution,
             "duration": duration,
-            "ratio": request.aspect_ratio,
+            "ratio": ratio,
+            "use_context_ir": false,
+            "aigc_watermark": false,
         });
 
         let endpoint = format!("{}{}", BASE_URL, CREATE_PATH);
+
+        // compshare 请求体上限 72MiB（参考图 base64 占比最大），超限直接给出可读错误，
+        // 避免把整包发出去换来一个语焉不详的 4xx。
+        const MAX_BODY_BYTES: usize = 72 * 1024 * 1024;
+        let body_bytes = serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0);
+        if body_bytes > MAX_BODY_BYTES {
+            return Err(AIError::InvalidRequest(format!(
+                "参考图体积过大（{} MiB，上限 {} MiB），请减少参考图数量或尺寸",
+                body_bytes / (1024 * 1024),
+                MAX_BODY_BYTES / (1024 * 1024)
+            )));
+        }
+
         info!(
-            "[MiniMax H3 createTask] model={}, duration={}, resolution={}, ratio={}, refs={}, promptLen={}",
-            API_MODEL, duration, resolution, request.aspect_ratio,
-            reference_images.len(), request.prompt.chars().count()
+            "[MiniMax H3 createTask] url={}, model={}, duration={}, resolution={}, ratio={}, refs={}, promptLen={}, bodyMiB={}",
+            endpoint, API_MODEL, duration, resolution, ratio,
+            refs, request.prompt.chars().count(),
+            body_bytes / (1024 * 1024)
         );
         info!("[MiniMax H3 createTask] FULL PROMPT:\n{}", request.prompt);
 
@@ -324,7 +380,7 @@ impl MiniMaxProvider {
 
         info!("[MiniMax H3 Poll] raw response: {}", raw);
 
-        // 百度 VOD 可能以 HTTP 200 返回错误体 {"type":"error",...}（如参数非法），
+        // compshare 可能以 HTTP 200 返回错误体 {"type":"error",...}（如参数非法），
         // 视为任务失败（终态），避免前端无限轮询卡死。
         if let Some(err_msg) = Self::extract_error_body(&raw) {
             info!("[MiniMax H3] task {} FAILED (error body): {}", task_id, err_msg);
@@ -359,7 +415,16 @@ impl MiniMaxProvider {
                 Ok(ProviderTaskPollResult::Running)
             }
             "FAILED" | "ERROR" | "CANCELLED" => {
-                let msg = resp.message.unwrap_or_else(|| "生成失败".to_string());
+                // compshare 把失败原因放在 task.error.message，取不到再退顶层 message
+                let msg = resp
+                    .task
+                    .as_ref()
+                    .and_then(|t| t.error.as_ref())
+                    .and_then(|e| e.message.as_deref())
+                    .filter(|m| !m.is_empty())
+                    .map(|m| m.to_string())
+                    .or_else(|| resp.message.clone().filter(|m| !m.is_empty()))
+                    .unwrap_or_else(|| "生成失败".to_string());
                 info!("[MiniMax H3] task {} FAILED: {}", task_id, msg);
                 Ok(ProviderTaskPollResult::Failed(msg))
             }
@@ -439,11 +504,11 @@ impl AIProvider for MiniMaxProvider {
 
         let task_id = self.create_task(&api_key, &request).await?;
 
-        // 通道固定为百度 VOD，api_key 存入 metadata 用于跨会话续传
+        // 通道固定为 compshare 直连，api_key 存入 metadata 用于跨会话续传
         Ok(ProviderTaskSubmission::Queued(ProviderTaskHandle {
             task_id,
             metadata: Some(serde_json::json!({
-                "backend": "baidu_vod",
+                "backend": "compshare",
                 "api_key": api_key,
                 "api_model": API_MODEL,
             })),

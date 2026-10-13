@@ -1,11 +1,21 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useChatStore } from '@/stores/chatStore';
+import { AlertTriangle } from 'lucide-react';
+import { useChatStore, resolveSelectedRefImages } from '@/stores/chatStore';
 import { useEpisodeStore } from '@/stores/episodeStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { checkSkillUpgrade, performSkillUpgrade, type SkillUpgradeInfo } from '@/commands/chat';
 import { ChatBubble } from './ChatBubble';
+import { FillGridButtons } from './FillGridButtons';
+import { StageProcessLine } from './StageProcessLine';
 import { ChatInput } from './ChatInput';
+import {
+  autoNextAnchor,
+  cardForStage,
+  isProcessStage,
+  isStageAnchorMessage,
+  resolveUnitPlan,
+} from './stageCards';
 
 const PANEL_MIN_WIDTH = 300;
 const PANEL_DEFAULT_WIDTH = 380;
@@ -59,7 +69,13 @@ export function ChatPanel({ isOpen, onToggle }: ChatPanelProps) {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const streamingText = useChatStore((s) => s.streamingText);
   const streamingMessageId = useChatStore((s) => s.streamingMessageId);
+  const streamPhase = useChatStore((s) => s.streamPhase);
+  const streamingStage = useChatStore((s) => s.streamingStage);
+  const autoChain = useChatStore((s) => s.autoChain);
+  const autoChainMode = useChatStore((s) => s.autoChainMode);
   const error = useChatStore((s) => s.error);
+  const chatStorageWarning = useChatStore((s) => s.chatStorageWarning);
+  const setChatStorageWarning = useChatStore((s) => s.setChatStorageWarning);
   const createConversation = useChatStore((s) => s.createConversation);
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const deleteConversation = useChatStore((s) => s.deleteConversation);
@@ -84,14 +100,49 @@ export function ChatPanel({ isOpen, onToggle }: ChatPanelProps) {
     (c) => c.id === activeConversationId,
   );
 
+  // 单元进度（`【单元】U1/U2/…`）—— `STEP6` 的「出下一单元」按钮靠它算。
+  // 会话整条扫一遍，**不能放进逐条消息的渲染里**（那样是 O(n²)）。
+  // 拿不到（老会话、单单元脚本、写手没给〈分段建议〉）⇒ `null` ⇒ 该按钮不出现，
+  // 行为与改动前一致。
+  const unitPlan = useMemo(
+    () => resolveUnitPlan(activeConversation?.messages),
+    [activeConversation?.messages],
+  );
+
+  // 🔴 可见列表与高亮 id 失配时自愈。
+  //    高亮由 `switchToProject` 挑（`chatStore.ts`），列表由上面这个 memo 按
+  //    `currentEpisodeId` 过滤 —— 两条判据不保证重合。一旦不重合，
+  //    `activeConversation` 就是 `undefined`，下面消息区**连空状态文案都不渲染**
+  //    （判据 `activeConversation?.messages.length === 0` 在 undefined 时求值为
+  //    `undefined === 0` = false）⇒ 整片空白，且不会自己恢复，只能整页刷新。
+  //    这里只挪「选中哪一条」这个指针，不动任何对话数据。
+  useEffect(() => {
+    if (conversations.length === 0) return;
+    if (conversations.some((c) => c.id === activeConversationId)) return;
+    setActiveConversation(conversations[0].id);
+  }, [conversations, activeConversationId, setActiveConversation]);
+
   // 项目切换时：保存当前项目数据，加载新项目数据
   const prevProjectRef = useRef<string>('');
   useEffect(() => {
     const pid = currentProjectId || '';
-    if (pid === prevProjectRef.current) return;
+
+    // 🔴 判据必须同时问「store 里装的到底是不是这个项目」。
+    //    只比「项目 id 有没有变」（`pid === prevProjectRef.current`）是不够的：
+    //    模块热替换会重新执行 chatStore、把 store 重置成空状态
+    //    （currentProjectId 归空、hydrated 归 false），而组件被 Fast Refresh **保留**、
+    //    useRef 里的 id 没变 ⇒ 这里会把「store 被清空」误判成「没换项目」而早退，
+    //    `switchToProject` 永远不被调用，面板就一直空着，只能整页刷新才回来。
+    if (chatProjectId === pid && chatHydrated) {
+      prevProjectRef.current = pid;
+      return;
+    }
+
+    // 空 id 且此前也是空的：没有可加载的项目，直接跳过
+    // （避免对 '' 调用 switchToProject，那会白走一趟保存逻辑）
+    if (!pid && !prevProjectRef.current) return;
+
     prevProjectRef.current = pid;
-    // 如果 store 已经是这个项目的数据，跳过
-    if (chatProjectId === pid && chatHydrated) return;
     switchToProject(pid);
   }, [currentProjectId, chatProjectId, chatHydrated, switchToProject]);
 
@@ -560,6 +611,22 @@ export function ChatPanel({ isOpen, onToggle }: ChatPanelProps) {
           ref={scrollRef}
           className="flex-1 overflow-y-auto py-4 space-y-4 ui-scrollbar"
         >
+          {/* 🔴 `activeConversation` 为 undefined 时必须给出可见交代。
+              原来只有下面那一条判据，而它在 undefined 时**什么也不渲染**：
+              `activeConversation?.messages.length === 0` 求值是 `undefined === 0` = false。
+              「一条对话都没有」与「有对话但全被 currentEpisodeId 过滤掉」两种情况
+              都会落到这里 —— 面板看起来就像被清空了。
+              上面那个自愈 effect 会在一帧内把选中项挪到可见对话上，所以这条只是兜底，
+              不会与它抢。 */}
+          {!activeConversation && !isStreaming && (
+            <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)] gap-3">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+              </svg>
+              <p className="text-sm">{t('chat.noConversations', '暂无对话')}</p>
+            </div>
+          )}
+
           {activeConversation?.messages.length === 0 && !isStreaming && (
             <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)] gap-3">
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
@@ -570,50 +637,167 @@ export function ChatPanel({ isOpen, onToggle }: ChatPanelProps) {
           )}
 
           {activeConversation?.messages.flatMap((msg) => {
-            const bubble = <ChatBubble key={msg.id} message={msg} />;
-            if (!isStreaming && msg.role === 'assistant') {
-              // L2: video prompt → ask for grid generation
-              if (msg.promptBlocks?.some((b) => b.type === 'video' && b.content.trim())) {
-                return [
-                  bubble,
-                  <div key={`${msg.id}-ask`} className="flex items-center gap-2 px-1 pt-2">
-                    <button type="button" onClick={() => useChatStore.getState().sendMessage('A')}
-                      className="px-4 py-2 text-sm font-medium rounded-xl bg-[var(--accent)] text-white hover:opacity-90 transition-opacity shadow-sm">
-                      A-生成宫格提示词
-                    </button>
-                  </div>,
-                ];
-              }
-              // L3: grid prompt + continuation → ask whether to continue to next segment
-              if (msg.continuationPrompt && msg.promptBlocks?.some((b) => b.type === 'grid')) {
-                return [
-                  bubble,
-                  <div key={`${msg.id}-l3`} className="flex items-center gap-2 px-1 pt-2">
-                    <button type="button" onClick={() => useChatStore.getState().sendMessage('继续')}
-                      className="px-4 py-2 text-sm font-medium rounded-xl bg-[var(--accent)] text-white hover:opacity-90 transition-opacity shadow-sm">
-                      继续生成下一段
-                    </button>
-                    <button type="button" onClick={() => useChatStore.getState().sendMessage('暂停')}
-                      className="px-4 py-2 text-sm font-medium rounded-xl bg-[var(--surface)] text-[var(--text)] border border-[var(--ui-border-soft)] hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
-                      暂停
-                    </button>
-                  </div>,
-                ];
-              }
-            }
-            return bubble;
+            // 🔴 用户定调：「前边五步不需要显示给用户内容，
+            //    用户能看到的，就是最终的视频提示词，用户选择是直出还是宫格就行了」。
+            //
+            // ① **机器替用户发的锚点整条不渲染** —— 自动串联每跑完一步就替用户发一条
+            //    `【阶段】STEPn`，那是机器对机器的对话，落成气泡对用户只是噪音。
+            //    ⚠️ 判据必须精确到 `【阶段】`：用户贴的脚本首行**常常也是 `【` 开头**
+            //    （`【场景】雨夜…`），放宽到「首行是 `【`」会把用户的脚本一起吞掉
+            //    —— 见 `stageCards.isStageAnchorMessage` 的注释。
+            if (msg.role === 'user' && isStageAnchorMessage(msg.content)) return null;
+
+            // ② **过程步=缩略回执**：一行步骤名 + 两行正文预览，点标题展开全文。
+            //    ⇒ 与「前边五步不显示内容」合起来的读法是
+            //      **默认不占版面，但要能看到写手在干嘛**。
+            //    🔴 **这里只换气泡、不能提前 `return`** —— 下面那段选项卡逻辑还得走：
+            //       `STEP5.5` 正是过程步的**最后一格**，那张「宫格 / 直出 / 重跑自检」
+            //       三选一的卡就挂在它身上（提前 return 会把卡一起吞掉）。
+            const isProcess = msg.role === 'assistant' && isProcessStage(msg.stage);
+            const bubble = isProcess ? (
+              <StageProcessLine key={msg.id} content={msg.content} stage={msg.stage} />
+            ) : (
+              <ChatBubble key={msg.id} message={msg} />
+            );
+
+            // ── 气泡外的动作区 ────────────────────────────────────────────────
+            // 🔴 用户定调（原话）：「**直接生成视频的按钮跑到气泡里面了，
+            //    这个是有问题的，必须在气泡外**」。
+            // ⇒ 分叉按钮（生成宫格分镜 / 生成宫格图 / 直接生成视频）住在**这里**，
+            //    **不再住在 `EditablePromptBlock` 里面**。
+            //
+            // 🔴 它**不看 `msg.stage`**：老会话（`stage` 为 `undefined`）里那个
+            //    「生成宫格图」按钮一直长在提示词块里、从不依赖 `stage`；搬到这儿必须
+            //    保持同样的覆盖范围，否则老对话会凭空少一个按钮。
+            const videoBlock = msg.promptBlocks?.find((b) => b.type === 'video' && b.content.trim());
+            const gridBlock = msg.promptBlocks?.find((b) => b.type === 'grid' && b.content.trim());
+
+            // 🔴 **这里现算，不直接读 `block.selectedRefImages`。**
+            //    那个字段是**解析时刻**的缓存，老块**连键都没有**（`undefined` 不进 JSON），
+            //    而会话加载路径不会再解析一遍 ⇒ 用户点「直接生成视频」时它恒为 `undefined`
+            //    ⇒ Canvas 判「写手没选图」⇒ **一张参考图都不挂**。
+            //    判据一直在 `content` 里，所以读取时刻现算即可；四级顺序见
+            //    `resolveSelectedRefImages` 的注释 —— 先盘上（解析时刻的权威值），
+            //    再正文现算；宫格块优先于视频块，与改动前的 `??` 链**同序**。
+            const blockRefImages =
+              gridBlock?.selectedRefImages ??
+              videoBlock?.selectedRefImages ??
+              resolveSelectedRefImages(gridBlock) ??
+              resolveSelectedRefImages(videoBlock);
+
+            // 🔴 用户上报：「在生成状态步骤提示中，多出了这两个按钮，需要去掉，
+            //    视频提示词下方有这两个按钮是对的」。
+            //    起因：写手在**过程步**里也可能吐出一份完整六段式，解析器照常建出
+            //    `video` 块，而这里若不看 `stage` ⇒ 分叉按钮被挂到 `StageProcessLine`
+            //    那条**回执**下面，看着就像「步骤提示自己长了两个按钮」。
+            // ⇒ 加一条 `!isProcess`：**过程步只当回执，不发指令**。该出现分叉按钮的是
+            //    `STEP6` —— 唯一产出送模型正文的那一步，它**不是**过程步。
+            //    老会话 `stage` 为 `undefined` ⇒ `isProcessStage` 返回 `false` ⇒ 覆盖范围不变。
+            const showActions =
+              !isProcess &&
+              !isStreaming &&
+              msg.role === 'assistant' &&
+              Boolean(videoBlock || gridBlock);
+
+            // 🔴 会自动续下一步的那些步**不渲染选项卡**。
+            //    渲染了也只存在一帧（下一帧锚点就被自动发出去），用户看到的是「闪一下」。
+            //    链路停在 `STEP6`、用户点了停止（`autoChain` 转 false）、或这一步不在主链上时，
+            //    选择权才交回用户 —— 那时卡片照常出现。
+            const chainContinues =
+              autoChain && msg.stage
+                ? autoNextAnchor(msg.stage, autoChainMode) !== null
+                : false;
+
+            // 🔴 **选项卡查表，不写死**（新协议）。
+            //    旧代码在这里硬编码了两张卡（L2 的「A-生成宫格提示词 / 继续生成下一段」、
+            //    L3 的「继续 / 暂停」），发的都是裸词 —— 那套词表连同协议一起废掉了。
+            //    现在**光标在前端**：`msg.stage` 是产生这条回复时我们问的那一步，
+            //    从这里查 `STAGE_CARDS` 得到该屏的选项，每个选项自带一行锚点。
+            //    「写手该输出什么」住在 B 层（`writer_rules/step_shapes.md`），**不在这里**。
+            const showCard =
+              !isStreaming && msg.role === 'assistant' && Boolean(msg.stage) && !chainContinues;
+            //    `unitPlan` 只有 `STEP6` 用得上（「出下一单元」）；其余步骤忽略它。
+            const card = showCard && msg.stage ? cardForStage(msg.stage, unitPlan) : null;
+            const cardHasOptions = Boolean(card && card.options.length > 0);
+
+            if (!showActions && !cardHasOptions) return bubble;
+
+            return [
+              bubble,
+              (showActions || cardHasOptions) && (
+                <div key={`${msg.id}-actions`} className="flex flex-col items-start gap-2 px-1 pt-2">
+                  {/* ① **分叉按钮**：主决策，放最上面。
+                      宫格那份数据取自 `grid` 块（`frames` / `shotFrameMap` / 场景锚点都在它身上），
+                      直出那份取自 `video` 块 —— 用户**可能刚编辑过**，要发的就是改后的那一份。 */}
+                  {showActions && (
+                    <FillGridButtons
+                      prompt={gridBlock?.content ?? videoBlock?.content ?? ''}
+                      frames={gridBlock?.frames}
+                      conversationId={activeConversation?.id}
+                      shotFrameMap={gridBlock?.shotFrameMap}
+                      selectedRefImages={blockRefImages}
+                      storySynopsis={gridBlock?.storySynopsis}
+                      characterContext={gridBlock?.characterContext}
+                      sceneContext={gridBlock?.sceneContext}
+                      // ⚠️ 只有 **video** 块的正文才是送视频模型的六段式；`grid` 块的正文是
+                      //    6 格描述，拿它当直出正文会把宫格描述喂给模型。
+                      directPrompt={videoBlock?.content}
+                      directSelectedRefImages={blockRefImages}
+                      // 没有 `grid` 块 = 写手按 `【模式】直出` 跑的、这一轮**还没有** 6 格
+                      // ⇒ 宫格按钮变成「生成宫格分镜」（再问写手要一次），见 `needsCells`。
+                      needsCells={!gridBlock}
+                    />
+                  )}
+
+                  {/* ② 选项卡（复检按钮已按用户定调摘除入口、保留能力） */}
+                  {card && card.options.length > 0 && (
+                    <>
+                      {card.question && (
+                        <p className="text-xs text-[var(--text-muted)]">{t(card.questionKey, card.question)}</p>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2">
+                        {card.options.map((option) => (
+                          <button
+                            key={option.labelKey}
+                            type="button"
+                            onClick={() => useChatStore.getState().sendMessage(option.anchor)}
+                            className={
+                              option.recommended
+                                ? 'px-4 py-2 text-sm font-medium rounded-xl bg-[var(--accent)] text-white hover:opacity-90 transition-opacity shadow-sm'
+                                : 'px-4 py-2 text-sm font-medium rounded-xl bg-[var(--surface)] text-[var(--text)] border border-[var(--ui-border-soft)] hover:bg-black/5 dark:hover:bg-white/10 transition-colors'
+                            }
+                          >
+                            {t(option.labelKey, {
+                              ...(option.labelVars ?? {}),
+                              defaultValue: option.label,
+                            })}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              ),
+            ].filter(Boolean);
           })}
 
-          {/* Streaming message */}
+          {/* Streaming message
+              🔴 不要给 `content` 加 `|| '...'` 之类的兜底：
+              `ChatBubble` 靠 `isStreaming && !message.content` 判断「还没出字」。
+              写手调用是**非流式**的，`streamingText` 在整条链路上只被赋值为空串
+              ⇒ 任何非空兜底都会让 `!message.content` 恒为 false，
+              「正在写」的那个点阵动画一次都进不去，用户看到的就永远是兜底字符串。 */}
           {isStreaming && streamingMessageId && (
             <ChatBubble
               message={{
                 id: streamingMessageId,
                 role: 'assistant',
-                content: streamingText || '...',
+                content: streamingText,
                 timestamp: Date.now(),
               }}
               isStreaming
+              phase={streamPhase}
+              stage={streamingStage}
             />
           )}
 
@@ -621,6 +805,27 @@ export function ChatPanel({ isOpen, onToggle }: ChatPanelProps) {
           {error && (
             <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-500">
               {error}
+            </div>
+          )}
+
+          {/* 对话文件损坏告警 —— 不能静默：「记录没了」和「文件还在、只是我们不敢写」是两回事 */}
+          {chatStorageWarning && (
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-sm text-amber-600 dark:text-amber-400 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="break-words">
+                  {chatStorageWarning.kind === 'backedUp'
+                    ? t('chat.storageWarningBackedUp', { path: chatStorageWarning.path })
+                    : t('chat.storageWarningWriteBlocked')}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setChatStorageWarning(null)}
+                  className="mt-1.5 text-xs underline opacity-70 hover:opacity-100"
+                >
+                  {t('common.dismiss')}
+                </button>
+              </div>
             </div>
           )}
 

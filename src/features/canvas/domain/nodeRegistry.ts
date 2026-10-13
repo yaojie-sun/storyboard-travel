@@ -12,11 +12,17 @@ import {
   type StoryboardGenNodeData,
   type TextAnnotationNodeData,
   type UploadImageNodeData,
+  type VideoGenNodeData,
 } from './canvasNodes';
 import { DEFAULT_NODE_DISPLAY_NAME } from './nodeDisplay';
 import { DEFAULT_IMAGE_MODEL_ID } from '../models';
 
-export type MenuIconKey = 'upload' | 'sparkles' | 'layout' | 'text';
+export type MenuIconKey = 'upload' | 'sparkles' | 'layout' | 'text' | 'film';
+
+/** 直出视频节点默认画幅（竖版短视频） */
+export const DEFAULT_VIDEO_GEN_ASPECT_RATIO = '9:16';
+/** 直出视频节点默认时长（秒） */
+export const DEFAULT_VIDEO_GEN_DURATION = 4;
 
 export interface CanvasNodeCapabilities {
   toolbar: boolean;
@@ -252,6 +258,33 @@ const storyboardGenNodeDefinition: CanvasNodeDefinition<StoryboardGenNodeData> =
   }),
 };
 
+const videoGenNodeDefinition: CanvasNodeDefinition<VideoGenNodeData> = {
+  type: CANVAS_NODE_TYPES.videoGen,
+  menuLabelKey: 'node.menu.videoGen',
+  menuIcon: 'film',
+  visibleInMenu: true,
+  capabilities: {
+    toolbar: true,
+    promptInput: false,
+  },
+  connectivity: {
+    sourceHandle: true,
+    // ⚠️ 必须为 true：上传节点要连进来（addEdge 在 targetHandle=false 时会静默返回 null）
+    targetHandle: true,
+    connectMenu: {
+      fromSource: true,
+      fromTarget: false,
+    },
+  },
+  createDefaultData: () => ({
+    displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.videoGen],
+    prompt: '',
+    aspectRatio: DEFAULT_VIDEO_GEN_ASPECT_RATIO,
+    duration: DEFAULT_VIDEO_GEN_DURATION,
+    generatedVideoUrl: null,
+  }),
+};
+
 export const canvasNodeDefinitions: Record<CanvasNodeType, CanvasNodeDefinition> = {
   [CANVAS_NODE_TYPES.upload]: uploadNodeDefinition,
   [CANVAS_NODE_TYPES.imageEdit]: imageEditNodeDefinition,
@@ -260,6 +293,7 @@ export const canvasNodeDefinitions: Record<CanvasNodeType, CanvasNodeDefinition>
   [CANVAS_NODE_TYPES.group]: groupNodeDefinition,
   [CANVAS_NODE_TYPES.storyboardSplit]: storyboardSplitDefinition,
   [CANVAS_NODE_TYPES.storyboardGen]: storyboardGenNodeDefinition,
+  [CANVAS_NODE_TYPES.videoGen]: videoGenNodeDefinition,
 };
 
 export function getNodeDefinition(type: CanvasNodeType): CanvasNodeDefinition {

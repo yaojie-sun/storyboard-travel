@@ -20,6 +20,7 @@ static VIDEO_POLL_ERROR_COUNT: std::sync::LazyLock<Arc<Mutex<HashMap<String, u32
 static DEVICE_TOKEN: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 
 // 服务端下发的第三方 API 密钥（不在 provider 体系内）
+static HAPPYHORSE_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static DEEPSEEK_CHAT_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static QINIU_ACCESS_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static QINIU_SECRET_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
@@ -27,10 +28,11 @@ static QINIU_BUCKET: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync
 static QINIU_DOMAIN: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static ACTIVE_VIDEO_MODEL: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static BAIDU_VIDEO_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
+/// 优云智算 compshare 视频生成密钥（MiniMax H3 直连，sk-ml-...）
+static COMPSHARE_VIDEO_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static BAIDU_ACCESS_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static BAIDU_SECRET_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static KIE_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
-static QIANFAN_VL_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 
 macro_rules! secret_getter {
     ($name:ident, $static_ref:ident) => {
@@ -43,6 +45,7 @@ macro_rules! secret_getter {
     };
 }
 
+secret_getter!(get_happyhorse_key, HAPPYHORSE_KEY);
 secret_getter!(get_deepseek_chat_key, DEEPSEEK_CHAT_KEY);
 secret_getter!(get_qiniu_access_key, QINIU_ACCESS_KEY);
 secret_getter!(get_qiniu_secret_key, QINIU_SECRET_KEY);
@@ -63,6 +66,7 @@ macro_rules! secret_setter {
     };
 }
 
+secret_setter!(set_happyhorse_key, HAPPYHORSE_KEY);
 secret_setter!(set_deepseek_chat_key, DEEPSEEK_CHAT_KEY);
 secret_setter!(set_qiniu_access_key, QINIU_ACCESS_KEY);
 secret_setter!(set_qiniu_secret_key, QINIU_SECRET_KEY);
@@ -74,8 +78,8 @@ secret_setter!(set_baidu_video_key, BAIDU_VIDEO_KEY);
 secret_setter!(set_baidu_access_key, BAIDU_ACCESS_KEY);
 secret_setter!(set_baidu_secret_key, BAIDU_SECRET_KEY);
 secret_getter!(get_baidu_video_key, BAIDU_VIDEO_KEY);
-secret_setter!(set_qianfan_vl_key, QIANFAN_VL_KEY);
-secret_getter!(get_qianfan_vl_key, QIANFAN_VL_KEY);
+secret_setter!(set_compshare_video_key, COMPSHARE_VIDEO_KEY);
+secret_getter!(get_compshare_video_key, COMPSHARE_VIDEO_KEY);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoginRequest {
@@ -2102,10 +2106,12 @@ pub async fn banana_update_local_api_keys(
                 set_deepseek_chat_key(config.api_key.clone()).await;
                 continue;
             },
-            // 欢乐马视频生成密钥（1.1 走百度 VOD，与 baidu_video 同源）
-            "happyhorse_video" => {
-                info!("存储欢乐马视频生成密钥（百度 VOD）: {}", config.id);
-                set_baidu_video_key(config.api_key.clone()).await;
+            // 优云智算 compshare 视频生成密钥（MiniMax H3 直连）。
+            // 服务端 api_type 可能以多种写法下发，这里做多别名匹配，避免因字符串不一致导致密钥为空。
+            "compshare_video" | "COMPSHARE_VIDEO" | "minimax_h3" | "MINIMAX_H3"
+            | "minimax_video" | "MINIMAX_VIDEO" | "compshare" | "COMPSHARE" => {
+                info!("存储 compshare 视频生成密钥 (MiniMax H3): {}", config.id);
+                set_compshare_video_key(config.api_key.clone()).await;
                 continue;
             },
             // 百度视频生成密钥 (拍我AI PixVerse C1)
@@ -2169,12 +2175,6 @@ pub async fn banana_update_local_api_keys(
             "baidu_sk" | "BAIDU_SK" => {
                 info!("存储百度云SecretKey: {}", config.id);
                 set_baidu_secret_key(config.api_key.clone()).await;
-                continue;
-            },
-            // 千帆 ERNIE-VL 多模态读图密钥（独立于百度 VOD，千帆大模型平台单独授权）
-            "qianfan_vl" | "QIANFAN_VL" | "ernie_vl" | "ERNIE_VL" => {
-                info!("存储千帆VL读图密钥: {}", config.id);
-                set_qianfan_vl_key(config.api_key.clone()).await;
                 continue;
             },
             _ => {
@@ -2596,15 +2596,17 @@ pub async fn banana_submit_video_job(
     };
 
     // 2. 计算所需积分（与前端 videoPricing.ts 保持同步）
-    let is_1080p = resolution.as_deref() == Some("1080P");
-    let base_credits = match (duration_seconds, is_1080p) {
-        (4, false) => 35,  (4, true) => 45,
-        (6, false) => 45,  (6, true) => 55,
-        (8, false) => 55,  (8, true) => 78,
-        (10, false) => 65, (10, true) => 93,
-        (12, false) => 78, (12, true) => 105,
-        (15, false) => 93, (15, true) => 120,
-        _ => 100,
+    //    2026-10-13 起只有 720P 一档（1080P 已下线），故 match 只按时长。
+    //    计费口径：0.3 元/秒；1 积分 = 0.1 元 ⇒ 3 积分/秒（15 秒 = 45 积分）。
+    let base_credits = match duration_seconds {
+        4 => 12,
+        6 => 18,
+        8 => 24,
+        10 => 30,
+        12 => 36,
+        15 => 45,
+        // 兜底与上表同口径（3 积分/秒），避免出现「未知时长按旧价」的意外扣费
+        other => other * 3,
     };
     let has_video = video_input.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
     let total_credits = (base_credits as f64 * (if has_video { 1.5 } else { 1.0 })).ceil() as u32;
@@ -2623,7 +2625,31 @@ pub async fn banana_submit_video_job(
         }));
     }
 
-    // 4. 调用现有 banana_consume_credit 扣费（精确积分，不取整）
+    // 4. 根据模型选择 Provider（仅境内供应商）
+    //    密钥解析放在扣费之前：密钥缺失属配置问题，不应先扣后退。
+    let is_pixverse = model_name.starts_with("pixverse/");
+    let is_minimax = model_name.starts_with("minimax/");
+
+    let provider: std::sync::Arc<dyn crate::ai::AIProvider> = if is_pixverse {
+        let api_key = get_baidu_video_key()
+            .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?;
+        let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(crate::ai::providers::pixverse::PixVerseProvider::new());
+        p.set_api_key(api_key).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
+        p
+    } else if is_minimax {
+        let api_key = get_compshare_video_key()
+            .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?;
+        let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(crate::ai::providers::minimax::MiniMaxProvider::new());
+        p.set_api_key(api_key).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
+        p
+    } else {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": format!("不支持的视频模型: {}，仅支持 pixverse/ 与 minimax/ 前缀的模型", model_name)
+        }));
+    };
+
+    // 5. 调用现有 banana_consume_credit 扣费（精确积分，不取整）
     match banana_consume_credit(app.clone(), None, Some("video_generation".to_string()), Some(total_credits)).await {
         Ok(msg) => info!("扣费成功: {} (扣除{}积分)", msg, total_credits),
         Err(e) => {
@@ -2633,40 +2659,6 @@ pub async fn banana_submit_video_job(
             }));
         }
     }
-
-    // 5. 根据模型选择 Provider（仅境内供应商）
-    let is_happyhorse = model_name.starts_with("happyhorse/");
-    let is_pixverse = model_name.starts_with("pixverse/");
-    let is_minimax = model_name.starts_with("minimax/");
-
-    let provider: std::sync::Arc<dyn crate::ai::AIProvider> = if is_happyhorse {
-        let key = get_baidu_video_key()
-            .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
-        let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(
-            crate::ai::providers::happyhorse::HappyHorseProvider::new_baidu_vod(&model_name),
-        );
-        p.set_api_key(key.clone()).await.map_err(|e| format!("设置欢乐马百度VOD密钥失败: {}", e))?;
-        p
-    } else if is_pixverse {
-        let api_key = get_baidu_video_key()
-            .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
-        let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(crate::ai::providers::pixverse::PixVerseProvider::new());
-        p.set_api_key(api_key).await.map_err(|e| format!("设置百度视频密钥失败: {}", e))?;
-        p
-    } else if is_minimax {
-        let api_key = get_baidu_video_key()
-            .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
-        let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(
-            crate::ai::providers::minimax::MiniMaxProvider::new()
-        );
-        p.set_api_key(api_key).await.map_err(|e| format!("设置MiniMax百度VOD密钥失败: {}", e))?;
-        p
-    } else {
-        return Ok(serde_json::json!({
-            "success": false,
-            "error": format!("不支持的视频模型: {}，仅支持 happyhorse/ 、 pixverse/ 和 minimax/ 前缀的模型", model_name)
-        }));
-    };
 
     let mut extra_params = std::collections::HashMap::new();
     extra_params.insert("duration_seconds".to_string(), serde_json::json!(duration_seconds));
@@ -2714,8 +2706,8 @@ pub async fn banana_submit_video_job(
         }
     }
 
-    // 5a. HappyHorse 1.1 / MiniMax H3 via BaiduVod 用 base64 直传（百度 VOD 无法下载 Qiniu CDN URL）
-    let is_baidu_vod = is_happyhorse && model_name.contains("happyhorse-1.1") || is_minimax;
+    // 5a. MiniMax via compshare 用 base64 直传（compshare 无法下载 Qiniu CDN URL）
+    let is_baidu_vod = is_minimax;
     let qiniu_images = if is_baidu_vod {
         info!("[BaiduVod] 跳过七牛云上传，使用 base64 直传");
         image_input
@@ -2781,27 +2773,20 @@ pub async fn banana_poll_video_job(
 ) -> Result<serde_json::Value, String> {
     use crate::ai::AIProvider;
     let model_name = model.unwrap_or_default();
-    let is_happyhorse = model_name.starts_with("happyhorse/");
     let is_pixverse = model_name.starts_with("pixverse/");
     let is_minimax = model_name.starts_with("minimax/");
 
-    let provider: Box<dyn AIProvider + Send> = if is_happyhorse {
+    let provider: Box<dyn AIProvider + Send> = if is_pixverse {
         let api_key = get_baidu_video_key()
-            .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
-        let p = crate::ai::providers::happyhorse::HappyHorseProvider::new_baidu_vod(&model_name);
-        p.set_api_key(api_key).await.map_err(|e| format!("设置欢乐马百度VOD密钥失败: {}", e))?;
-        Box::new(p)
-    } else if is_pixverse {
-        let api_key = get_baidu_video_key()
-            .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
+            .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?;
         let p = crate::ai::providers::pixverse::PixVerseProvider::new();
-        p.set_api_key(api_key).await.map_err(|e| format!("设置百度视频密钥失败: {}", e))?;
+        p.set_api_key(api_key).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
         Box::new(p)
     } else if is_minimax {
-        let api_key = get_baidu_video_key()
-            .ok_or_else(|| "百度视频生成密钥未配置，请联系管理员".to_string())?;
+        let api_key = get_compshare_video_key()
+            .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?;
         let p = crate::ai::providers::minimax::MiniMaxProvider::new();
-        p.set_api_key(api_key).await.map_err(|e| format!("设置MiniMax百度VOD密钥失败: {}", e))?;
+        p.set_api_key(api_key).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
         Box::new(p)
     } else {
         return Ok(serde_json::json!({
@@ -2878,7 +2863,7 @@ pub async fn banana_poll_video_job(
             }))
         }
         Ok(crate::ai::ProviderTaskPollResult::Queued) => {
-            // 任务排队中：重置连续错误计数，返回 queued
+            // 重置连续错误计数（任务仍在排队）
             {
                 let mut counts = VIDEO_POLL_ERROR_COUNT.lock().await;
                 counts.remove(&task_id);

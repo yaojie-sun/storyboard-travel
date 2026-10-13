@@ -5,9 +5,9 @@ import { useDialogTransition } from '@/components/ui/useDialogTransition';
 import { analyzeStory, type StoryAnalysisResult } from '@/commands/chat';
 import { generateProjectGlobalsMd } from '@/commands/projectState';
 import { useProjectStore } from '@/stores/projectStore';
+import { buildProjectChatContext } from '@/features/chat/projectContext';
 import { useChatStore } from '@/stores/chatStore';
 import { PresetPicker } from './PresetPicker';
-import { buildProjectChatContext } from '@/features/chat/projectContext';
 import {
   ASPECT_RATIO_OPTIONS,
   STYLE_PRESETS,
@@ -135,9 +135,9 @@ export function ReanalyzeDialog({ isOpen, onClose, projectId }: ReanalyzeDialogP
       });
     }
 
-    // Refresh chat context with new globals + assets
-    const context = await buildProjectChatContext(projectId);
-    useChatStore.getState().setProjectContext(context);
+    // 统一走共享实现（与 Canvas / ProjectDashboard / chatStore 同一份），
+    // 保证「可用参考图」里始终带【选图】指令，写手才能选出参考图。
+    useChatStore.getState().setProjectContext(await buildProjectChatContext(projectId));
 
     onClose();
   };

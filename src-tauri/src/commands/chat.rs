@@ -9,9 +9,155 @@ const SKILL_VERSION_URL: &str = "https://aixiaoxi.top/jy/uploads/install_guide/f
 
 const GATEWAY_MESSAGES_URL: &str = "https://aixiaoxi.top/jy/api/v1/gateway/v1/messages";
 const CHAT_MODEL: &str = "claude-sonnet-4-6";
-const CHAT_MAX_TOKENS: u32 = 8192;
-const ANALYSIS_MODEL: &str = "deepseek-v4-flash";
+const CHAT_MAX_TOKENS: u32 = 16384;
+/// 分镜分析模型 —— 与读图统一为官方名 `deepseek-flash`。
+///
+/// ⚠️ 这个名字**走自有网关**（`GATEWAY_MESSAGES_URL`），网关必须认它。
+/// 写手的 `CHAT_MODEL` / 提示词优化的 `OPTIMIZE_MODEL` 用的是网关**自有别名**
+/// `claude-sonnet-4-6`，不受官方改名约束，**不要一起改**（改了会断链）。
+const ANALYSIS_MODEL: &str = "deepseek-flash";
 const ANALYSIS_MAX_TOKENS: u32 = 2048;
+
+// ─────────────────────────── 写手规则块（writer_rules/） ───────────────────────────
+//
+// 🔴 2026-10-13：全盘改用 **STEP 0–9 门机**，旧协议（L1 分段确认 G/X → L2 宫格问
+//    A/B → L3 继续确认「继续-生成下一段」）整体下线。旧词表在 `needs_stall_guard`
+//    里把 `A` / `B` / `G` / `X` / `1` / `灵感` 当成控制词 —— 新协议下前端**不再发裸词**，
+//    改发锚点行 `【阶段】STEPn`（后可跟 `【模式】宫格|直出` / `【修改要求】…` / `【当前版本】…`）。
+//
+// ⚠️ **块文件开头的空行与结尾的无换行都是有意的**（拼接时的分隔符），别顺手「格式化」。
+
+/// 【通用约束】+ 输出契约 + 内容铁律 —— 正文的唯一存放处。
+const BLOCK_CONSTRAINTS: &str = include_str!("writer_rules/block_constraints.md");
+
+/// 【分镜映射】JSON 铁律（宫格链路）—— 正文的唯一存放处。
+const BLOCK_MAPPING: &str = include_str!("writer_rules/block_mapping.md");
+
+/// CRITICAL 路由块（产品流程分派）—— 正文的唯一存放处。
+const BLOCK_CRITICAL: &str = include_str!("writer_rules/block_critical.md");
+
+/// 「STEP 门机」形状块 —— **只在锚点轮注入**（见调用点说明）。
+///
+/// 与 [`STALL_GUARD`] 的注入条件**互斥**：护栏给非锚点轮（用户第一次贴脚本），
+/// 本块给机器发来的锚点轮。
+const STEP_SHAPES: &str = include_str!("writer_rules/step_shapes.md");
+
+/// 「别停」护栏 —— 用户消息**没写时长**时贴在 system 最末。
+///
+/// 🔴 **只在真的没写时长/控制行时才加**：它是对模型陈述事实的一句话，
+/// 写成假话比不写更危险（改词属另一条变更，必须单独重测）。
+const STALL_GUARD: &str = include_str!("writer_rules/stall_guard.md");
+
+/// 这一轮用户消息要不要加 [`STALL_GUARD`]。
+///
+/// 🔴 **2026-10-13：控制轮判据从「词表枚举」换成「结构判据」。**
+///
+/// 旧协议（词表）必须排除的那些多轮控制消息 —— `A` / `B-不生成` / `继续-生成下一段` /
+/// `暂停` / `1` / `💡` / `灵感` —— 在新协议里**整体下线**：前端不再发裸词，改发锚点行。
+/// ⇒ 「首行以 `【` 开头」就是「这是机器发来的控制轮」的**结构性等价物**，不会随词表漂移。
+///
+/// ⚠️ **旧词表必须一并删掉，不能留着当保险**：新协议下 `A` 不再是控制词，
+/// 留着它反而会把「用户真的写了一句话脚本以 A 开头」那一轮漏掉护栏。半改比不改更危险。
+///
+/// ⚠️ **判据只看首行**：锚点行后面还跟着 `【模式】…` 等控制细节，整条消息比对会漏掉它。
+/// 不用长度阈值 —— 「一个人在海边跑」这种短创意不能被误判成控制词。
+fn needs_stall_guard(user_msg: &str) -> bool {
+    if user_msg.is_empty() {
+        return false;
+    }
+    let first_line = user_msg.lines().next().unwrap_or("").trim();
+    if first_line.starts_with('【') || first_line.starts_with("暂停") {
+        return false;
+    }
+    true
+}
+
+/// 从锚点**首行**解析步骤号：`【阶段】STEP6` → `Some("STEP6")`、`【阶段】STEP5.5` → `Some("STEP5.5")`。
+///
+/// 🔴 **解析不出来一律返回 `None`，调用方必须按「保守」处理**（= 不瘦身、全量注入）。
+/// 锚点由前端 `stageCards.ts` 生成，形状是可控的；但用户手打、老会话、第三方输入都可能
+/// 长得不一样 —— 这种情况下「多花点 token」永远优于「把写手的规范依据切掉」。
+///
+/// ⚠️ 只认首行（与 [`needs_stall_guard`] 同口径）：`【模式】…` / `【单元】Uk` 等控制行在
+/// 第 2 行往后，整条消息做匹配会漏掉。
+fn parse_anchor_stage(first_line: &str) -> Option<String> {
+    let rest = first_line.trim().strip_prefix("【阶段】")?.trim();
+    let rest = rest.strip_prefix("STEP")?;
+    let token: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    if token.is_empty() {
+        return None;
+    }
+    // 步骤号后面必须是边界（行尾 / 空格 / `【`），`STEP6X` 这种形状一律不认。
+    if let Some(next) = rest[token.len()..].chars().next() {
+        if next.is_ascii_alphanumeric() {
+            return None;
+        }
+    }
+    Some(format!("STEP{}", token))
+}
+
+// ─────────────────────────── 技能瘦身（按步注入） ───────────────────────────
+//
+// 🔴 **背景（2026-10-13 成本实测）**：自动串链出一段提示词 = **8 次网关调用**，
+//    每次都要重发整份 system（含 SKILL.md，约 7.1 万字符）。而 SKILL.md 里
+//    **官方写作规范原文那一段（约 1.2 万 token）只有 STEP6 真的在用** ——
+//    STEP0–5.5 写的是需求复述 / 项目简报 / 故事大纲 / 角色清单 / 场景清单 / 镜头表 / 自检，
+//    一个字都不碰提示词格式。
+//
+// ⇒ 于是把官原文那一段用标记圈起来，**非 STEP6 的锚点轮剥掉它再拼 system**。
+//    实测口径见 `docs/skills/SKILL-trim-plan.md`。
+//
+// ⚠️ 这是**纯注入侧**的裁剪：SKILL.md 本身、写手能力、产物格式都不变。
+//    剥掉的那一段在 STEP6（唯一产出送模型正文的一步）照旧**全文注入**。
+
+/// SKILL.md 里圈官方规范原文的两个标记（`<!-- OFFICIAL_SPEC_BEGIN … -->` 起，`…_END -->` 止）。
+/// ⚠️ 用前缀匹配即可 —— 标记行后半句是给人看的说明文字，会随时改。
+const OFFICIAL_SPEC_BEGIN: &str = "<!-- OFFICIAL_SPEC_BEGIN";
+const OFFICIAL_SPEC_END: &str = "<!-- OFFICIAL_SPEC_END";
+
+/// **白名单**：只有这些步骤确定「不写送模型的六段式正文」，才值得剥掉官方规范原文。
+///
+/// 0 需求复述 → 1 项目简报 → 2 故事大纲 → 3 角色清单 → 4 场景清单 → 5 镜头表 → 5.5 镜头表自检
+/// （⚡ 与前端 `src/features/chat/stageCards.ts` 的 `MAIN_CHAIN` 同源；步骤名两侧逐字一致）
+///
+/// 🔴 **不在这张表里的一律全量注入**，包括 STEP6（唯一出片步）、STEP7/9（模型分辨率 / 复查报告），
+///    以及**任何将来新增或写错的步骤名**。理由：白名单漏一个 ⇒ 只是多花点 token；
+///    黑名单（「不是 STEP6 就剥」）漏一个 ⇒ 把出片那一轮的规范依据切掉，产出格式会莫名其妙地崩，
+///    而日志里只有一行「已省略」看不出来。
+const NO_SPEC_STAGES: &[&str] = &["STEP0", "STEP1", "STEP2", "STEP3", "STEP4", "STEP5", "STEP5.5"];
+
+/// 剥掉 SKILL.md 里两个标记之间的官方规范原文。
+///
+/// 🔴 **fail-open（承重）**：标记缺任一个、或顺序颠倒（`END` 在 `BEGIN` 前面）时
+///    **原样返回**。宁可多花点 token，也绝不能把 system 提示词切瘸 ——
+///    那会让整条 STEP0–5.5 链失去规范依据，症状是「产出格式莫名其妙地崩了」，
+///    而日志里只有一行「技能瘦身」看不出问题。
+///
+/// ⚠️ 顺带说明一处**故意保留的排版残迹**：原文件在区块前后各有一条 `---` 分隔线，
+///    剥掉中间之后会剩一对相邻的 `---`。不去动它 —— 花代码去做正则清理换不来什么，
+///    还多一份「清理逻辑本身出错」的风险。
+fn strip_official_spec(skill: &str) -> String {
+    let Some(begin) = skill.find(OFFICIAL_SPEC_BEGIN) else {
+        return skill.to_string();
+    };
+    let Some(end) = skill[begin..].find(OFFICIAL_SPEC_END).map(|i| begin + i) else {
+        return skill.to_string();
+    };
+    // 保留 BEGIN 标记**所在行之前**、END 标记**所在行之后**（标记行本身一并去掉）。
+    let head_end = skill[..begin].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let tail_start = match skill[end..].find('\n') {
+        Some(i) => end + i + 1,
+        None => skill.len(),
+    };
+    let mut out = String::with_capacity(skill.len());
+    out.push_str(&skill[..head_end]);
+    out.push_str(&skill[tail_start..]);
+    out
+}
+
 
 const STORY_ANALYSIS_SYSTEM_PROMPT: &str = r#"你是一位资深的影视项目策划专家，擅长分析故事大纲并提取结构化参数。请分析用户提供的项目信息，输出以下 JSON 格式（仅 JSON，不要其他文字）：
 
@@ -138,102 +284,28 @@ fn extract_openai_text(response: &serde_json::Value) -> String {
         .to_string()
 }
 
-#[tauri::command]
-pub(crate) async fn chat_send_message(
-    messages: Vec<ChatMessageDto>,
-    project_context: String,
+/// 单次网关往返（Anthropic Messages 形状）——返回（可见文本, 完整响应 JSON）。
+///
+/// 🔴 正文为空时**不在这里报错**，由调用方决定要不要重发：
+///    `stop_reason=max_tokens` + 空文本是**可重试**的（上游把输出预算烧在思考里），
+///    而内容过滤造成的空响应重发也是同一结果、白花一次调用。
+///
+/// 抽出来只为让「重试一次」这件事只写一遍；请求形状与本函数出现之前**逐字一致**。
+async fn call_gateway_once(
+    client: &reqwest::Client,
+    api_key: &str,
+    system_prompt: &str,
+    messages: &[ChatMessageDto],
+    max_tokens: u32,
     billing_tag: Option<String>,
-) -> Result<ChatResponse, String> {
-    let chat_id = Uuid::new_v4().to_string();
-    info!("[Chat] 新对话请求 chat_id={}", chat_id);
-
-    let mut system_prompt = ensure_skill_md().await?;
-    info!("[Chat] SKILL.md 已加载 ({} 字符)", system_prompt.len());
-
-    // 注入项目全局上下文（如果有）
-    if !project_context.is_empty() {
-        system_prompt.push_str("\n\n【项目全局上下文】\n");
-        system_prompt.push_str(&project_context);
-        info!("[Chat] 项目上下文已注入 ({} 字符)", project_context.len());
-    }
-
-    // 通用约束 — 不绑定任何特定模型，所有模型共用的基本规则
-    // 模型专属规则（格式、运镜、示例）全部在 SKILL.md 中定义，升级技能文件即可生效
-    system_prompt.push_str(
-        "\n\n【通用约束 — 所有模型共享，不可协商】\n\
-        1. 宫格分镜图永远是 2×3 六宫格。绝对禁止 3×3 九宫格。\n\
-        2. 禁止向用户显示或提及任何 AI 模型名称。\n\
-        3. 严格按照 SKILL.md 中定义的提示词格式和运镜规则输出。\n\
-        4. 物体持久：所有物体在视频全程逐帧存在，数量与宫格一致。禁止消失或新增。\n\
-        5. 故事板=唯一视觉真相：画面内容全看参考图，文字只提供运镜和动作指令。\n\
-        6. 遵守180度轴线规则，摄像机不越轴。\n\
-        7. 禁止使用\"电影感\"\"大片质感\"\"高清摄影\"\"顶级CG\"\"史诗级\"等抽象模板词。\n\
-        8. 【项目全局上下文】「可用参考图」中的 @图N 是系统注入的参考图索引，其「视觉描述」可直接采信为参考图内容。但你在输出分镜/视频提示词时，绝对禁止出现 @图N / Image N 语法——参考图内容已由系统自动用于宫格生成。\n\
-        9. 禁止在提示词中写分辨率（4K/1080P/720P）和画幅比例（16:9/9:16 等）。",
-    );
-
-    // 【分镜映射】铁律 — 放在最前面，AI 第一眼看到
-    system_prompt.push_str(
-        "\n\n🔴 【分镜映射】铁律 — 最高优先级，先于所有规则：\n\
-        每次生成宫格提示词后，必须紧接着输出【分镜映射】JSON块。\n\
-        {\"shots\":[{\"shot\":1,\"time\":\"00:00.000\",\"frames\":[1,2],\"camera\":\"...\",\"sound\":\"...\"},...]}\n\
-        shots[].frames=该镜头覆盖的宫格帧编号(1-6)。6帧必须全覆盖[1..6]。\n\
-        无论第1段还是第2段、第3段，每次生成宫格提示词都必须输出此JSON。不可省略。\n",
-    );
-
-    // Unified instruction — same system prompt for every request so DeepSeek cache hits
-    system_prompt.push_str(
-        "\n\nCRITICAL — READ THE USER'S LAST MESSAGE (apply the FIRST matching rule):\n\
-        [1] If user message contains 💡 or \"爆款灵感\" or \"灵感\" → ignore ALL below. Follow the \"💡 爆款灵感模式\" workflow in SKILL.md. Do NOT output 【视频提示词】.\n\
-        [2] If user message is a single digit \"1\" / \"2\" / \"3\" → user selected an inspiration scheme. Duration & segment plan already set. Skip to Step 2. Output the L1 split confirmation: \"📐 您的内容预计需要 {总时长} 秒，需要分 {N} 段来实现。回复 G 开始生成第一段。G — 生成第 1 段    X — 修改分段\". Wait. Do NOT output any prompt header.\n\
-        [2X] If user said \"X\" or \"X-修改分段\": user wants to adjust the split plan. Ask what changes they want (fewer/more segments, different duration, etc.). Do NOT output any prompt header.\n\
-        [3] If user said \"G\" or \"G-生成\": user confirmed L1 split plan. Generate the CURRENT segment's video prompt now. Output 【视频提示词】+ shots. Then follow step 7 (L2 grid question: \"需要生成2×3六宫格分镜图吗？A-生成 B-不生成\").\n\
-        [4] If user described a video idea (not \"A\", not \"B\", not \"灵感\", not \"继续\", not \"暂停\", not \"G\", not \"X\"): output up to step 7.\n\
-          If the video needs multiple segments (>15s), output L1 split confirmation first (per SKILL.md Step 2 item 7). Do NOT start with 【视频提示词】 until L1 is confirmed.\n\
-          If single segment (≤15s), your response MUST start with 【视频提示词】, then output the prompt with appropriate number of shots (per SKILL.md: ≤5s=1 shot, 6-10s=1-3 shots, 11-15s=2-4 shots). Then STOP with L2 grid question.\n\
-        [5] If user said \"A\" or \"A-生成\": output 【分镜提示词】+ grid frames per step 8. Frames start from numbered items (1、2、…6、) — NO style anchor/camera/description headers.\n\
-          IMMEDIATELY after the 6 frames, output 【分镜映射】 JSON mapping each video shot to its grid frames: {\"shots\":[{\"shot\":1,\"time\":\"00:00.000\",\"frames\":[1,2,3],\"camera\":\"...\",\"sound\":\"...\"},{\"shot\":2,\"time\":\"MM:SS.mmm\",\"frames\":[4,5,6],\"camera\":\"...\",\"sound\":\"...\"}]}\n\
-          shots[].shot = shot number. shots[].time = from video prompt \"[Shot N] At MM:SS.mmm\" start timestamp exactly (保留三位毫秒). shots[].frames = grid frame numbers (1-6) this shot covers. shots[].camera/sound/bgm = from video prompt.\n\
-          ALL 6 frames [1..6] MUST be covered across all shots. This 【分镜映射】 JSON is MANDATORY for EVERY segment. Both segment 1 AND segment 2 must have it.\n\
-          THEN, if multi-segment AND not final segment, output L3: 【继续确认】\\n第N段已完成。是否继续生成第N+1段[标题]？\\n继续-生成下一段 暂停-先处理当前内容\n\
-        [6] If user said \"继续\" or \"继续-生成下一段\": generate NEXT segment's video prompt (Step 3 onward). Output 【视频提示词】+ next segment shots. When later user says \"A\" to generate grid for THIS segment, also output 【分镜映射】 JSON — same as rule [5].\n\
-        [7] If user said \"B\" or \"B-不生成\": skip grid. If multi-segment, output L3 【继续确认】. Only full-stop on \"暂停\" or \"B-暂停\".\n\
-        [8] If user said \"暂停\" or \"B-暂停\": stop. Brief ack. No prompt block headers.\n\
-        \n\
-        MANDATORY for single-segment: end with \"需要生成2×3六宫格分镜图吗？A-生成 B-不生成\".\n\
-        DO NOT output 【分镜提示词】 until user replies \"A\".",
-    );
-
-    let device_token = {
-        let store = banana_api::get_device_token_store();
-        let guard = store.lock().await;
-        guard
-            .clone()
-            .ok_or("未登录，请先登录".to_string())?
-    };
-
-    let api_key = match banana_api::get_user_api_key(&device_token).await {
-        Ok(key) if !key.is_empty() => key,
-        other => {
-            warn!("[Chat] get_user_api_key 失败({:?})，回退到 ensure_user_api_token", other.as_ref().err());
-            banana_api::ensure_user_api_token(&device_token).await?
-        }
-    };
-    info!("[Chat] API Key 已获取");
-
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
-
+) -> Result<(String, serde_json::Value), String> {
     let request_body = ChatRequest {
         model: CHAT_MODEL.to_string(),
-        system: system_prompt.clone(),
-        messages: messages.clone(),
-        max_tokens: CHAT_MAX_TOKENS,
+        system: system_prompt.to_string(),
+        messages: messages.to_vec(),
+        max_tokens,
         stream: false,
-        billing_tag: billing_tag.clone(),
+        billing_tag,
     };
 
     let response = client
@@ -267,12 +339,260 @@ pub(crate) async fn chat_send_message(
         }
     };
 
-    let text_len = text.len();
-    info!("[Chat] 响应完成 chat_id={} len={}", chat_id, text_len);
+    Ok((text, response_json))
+}
+
+#[tauri::command]
+pub(crate) async fn chat_send_message(
+    messages: Vec<ChatMessageDto>,
+    project_context: String,
+    billing_tag: Option<String>,
+) -> Result<ChatResponse, String> {
+    let chat_id = Uuid::new_v4().to_string();
+    info!("[Chat] 新对话请求 chat_id={}", chat_id);
+
+    // 本轮的最后一条用户消息：判「锚点轮」与「这是第几步」都只用它。
+    // ⚠️ 原先这两句在下面〈规则块装配〉那一节，**提前到这里**是因为技能瘦身要在拼装之前
+    //    先决定给不给官方规范原文 —— 见 [`strip_official_spec`]。语义一字未改。
+    let last_user_msg = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.as_str())
+        .unwrap_or("");
+
+    let anchor_turn = last_user_msg
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .starts_with('【');
+
+    // ───────────────────── 技能瘦身：官方规范原文按步注入 ─────────────────────
+    //
+    // 🔴 **官方规范原文只在「确定不写六段式正文」的步骤省掉**（见 [`NO_SPEC_STAGES`]）；
+    //    STEP6（唯一出片步）与任何未知步骤**照旧全文注入**。
+    //
+    //    理由（成本）：自动串链出一段提示词要 **8 次**网关调用，每次重发整份 system
+    //    （含 SKILL.md，7 万余字，其中官方原文约 4.1 万字）。而 8 步里只有 STEP6 在写
+    //    送模型的提示词正文，STEP0–5.5 写的是需求复述 / 项目简报 / 故事大纲 / 角色清单 /
+    //    场景清单 / 镜头表 / 自检 —— 它们**不读**这两篇官方文档。
+    //
+    // 🔴 **fail-open**：`anchor_turn` 为假（非锚点轮）、首行解析不出步骤号
+    //    （用户手打 / 老会话 / 形状不合）、或步骤不在白名单里 ⇒ **不瘦身，全量注入**。
+    //    宁可多花 token，也绝不能把 system 切瘸 —— 那是「产出格式莫名其妙地崩了」，
+    //    而日志里只有一行「已省略」看不出来。锚点形状由前端 `stageCards.ts` 生成，
+    //    两侧契约见 CLAUDE.md §12.3。
+    let anchor_stage = if anchor_turn {
+        parse_anchor_stage(last_user_msg.lines().next().unwrap_or(""))
+    } else {
+        None
+    };
+    let strip_official = anchor_stage
+        .as_deref()
+        .map_or(false, |s| NO_SPEC_STAGES.contains(&s));
+
+    let mut system_prompt = ensure_skill_md().await?;
+    if strip_official {
+        let before = system_prompt.chars().count();
+        system_prompt = strip_official_spec(&system_prompt);
+        let after = system_prompt.chars().count();
+        // ⚠️ 报**字符数**（不是字节数）：SKILL.md 是中文，字节数会是字符数的 2–3 倍，
+        //    与 `docs/skills/` 里按字符统计的口径对不上，看日志的人会以为哪里错了。
+        info!(
+            "[Chat] 技能瘦身：本轮 stage={} ⇒ 官方规范原文已省略（{} → {} 字符）",
+            anchor_stage.as_deref().unwrap_or("?"),
+            before,
+            after
+        );
+        if after == before {
+            // ⚠️ 长度没变 = 标记没找到（本地缓存的是老 SKILL.md）⇒ 说明此轮**没瘦成**。
+            //    不报错（fail-open 是对的），但要留个痕迹，免得以为一直在省却在白花 token。
+            warn!("[Chat] 技能瘦身未生效：SKILL.md 里找不到官方规范标记，本轮按全量注入");
+        }
+    } else if anchor_turn {
+        // 出片轮与未知步骤：走全量。留一行，方便对着日志确认「该省的省了、该给的给了」。
+        info!(
+            "[Chat] 技能瘦身：本轮 stage={} ⇒ 官方规范原文**全量注入**",
+            anchor_stage.as_deref().unwrap_or("（无法解析）")
+        );
+    }
+    info!(
+        "[Chat] SKILL.md 已加载 ({} 字符)",
+        system_prompt.chars().count()
+    );
+
+    // 注入项目全局上下文（如果有）
+    if !project_context.is_empty() {
+        system_prompt.push_str("\n\n【项目全局上下文】\n");
+        system_prompt.push_str(&project_context);
+        info!("[Chat] 项目上下文已注入 ({} 字符)", project_context.len());
+    }
+
+    // ─────────────────────────── 规则块装配 ───────────────────────────
+    //
+    // 🔴 **拼装次序是承重的，不是排版细节**（2026-09-19 实测，同一输入/同一份 system 前缀、
+    //    块体积逐字节相同，只换次序）：路由表③ 排在约束①② **之前** 时退化 0/12；
+    //    排在末尾时退化 12/12 —— 它紧贴 user 消息时，模型去做**路由判断**而不是**写提示词**，
+    //    于是把启动欢迎语或旧 L1 分段确认原样吐回来。用户看到的「丢脚本元素、自己造动作」，
+    //    有相当一部分根本不是写手写坏的，是它**压根没写**。动这几行之前先看这段。
+    //
+    // ⇒ 次序恒定：CRITICAL（路由）→ 通用约束 → 分镜映射。
+    system_prompt.push_str(BLOCK_CRITICAL);
+    system_prompt.push_str(BLOCK_CONSTRAINTS);
+    system_prompt.push_str(BLOCK_MAPPING);
+
+    // 🔴 「STEP 门机」形状块 —— **只在锚点轮注入**。
+    //
+    //    锚点轮 = 用户消息**首行以 `【` 开头**（`【阶段】STEPn`，后可跟 `【模式】…` 等控制行）。
+    //    非锚点轮（用户第一次贴脚本 / 贴画面描述）走 `BLOCK_CRITICAL` 的 `[2]` 分支，
+    //    那条分支**自带** STEP 0 入料的形状，不需要这一块。
+    //
+    //    ⇒ 与 [`STALL_GUARD`] 的注入条件**互斥**：护栏给非锚点轮，本块给锚点轮。
+    //
+    //    ⚠️ `last_user_msg` / `anchor_turn` 已在函数开头算好（技能瘦身要先判步骤号），
+    //    这里**不再重算** —— 两个来源一旦分叉，就会出现「瘦身按 A 判、注入按 B 判」。
+    if anchor_turn {
+        system_prompt.push_str(STEP_SHAPES);
+        info!("[Chat] 已注入「STEP 门机」形状块（锚点轮）");
+    }
+
+    // 🔴 用户消息没写时长时，路由块会让模型判不出该走哪条规则，于是它不写提示词，
+    //    退化成欢迎语。同一句话压到 system **最末**（紧贴 user 消息）可解（0/6 vs 6/6 退化）。
+    //    与 memory `prompt-rule-position-beats-wording` 同构：**位置是杠杆，措辞不是**。
+    //
+    //    ⚠️ **只在真的没写时长（即非控制轮）时才加** —— 这是一句对模型陈述事实的话，
+    //    写成假话比不写更危险。
+    if needs_stall_guard(last_user_msg) {
+        system_prompt.push_str(STALL_GUARD);
+        info!("[Chat] 已注入「别停」护栏（首行非控制行）");
+    }
+
+    let device_token = {
+        let store = banana_api::get_device_token_store();
+        let guard = store.lock().await;
+        guard
+            .clone()
+            .ok_or("未登录，请先登录".to_string())?
+    };
+
+    let api_key = match banana_api::get_user_api_key(&device_token).await {
+        Ok(key) if !key.is_empty() => key,
+        other => {
+            warn!("[Chat] get_user_api_key 失败({:?})，回退到 ensure_user_api_token", other.as_ref().err());
+            banana_api::ensure_user_api_token(&device_token).await?
+        }
+    };
+    info!("[Chat] API Key 已获取");
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+    // 🔴 **空响应原样重发一次**（用户反馈：写手明明能出，却报
+    //    「写手这一轮没有返回内容（stop_reason=max_tokens）」）。
+    //
+    //    实测成因：这类空响应**不是上游真没内容**，而是输出预算被思考吃光 ——
+    //    2026-10-13 实测 `stop_reason=max_tokens` 且 `output_tokens` **正好等于**
+    //    `CHAT_MAX_TOKENS`、`content[0].text` 是空串。同一轮重发通常就能收敛。
+    //    这一轮对用户是**纯亏损**：已计费、产物为空、链条停在原地，用户只能重贴脚本
+    //    ⇒ 整条链从 STEP1 重跑（8 次调用）。所以这里直接重发，不把这个错推给用户手动重试。
+    //
+    //    ⚠️ 重发**不推进链条、不落盘**：只有真拿到正文才会走下面的 `Ok(ChatResponse …)`，
+    //       失败的那一轮前端什么也收不到（`Err`）⇒ 不会记 `stage`、不会续下一环。
+    const MAX_ATTEMPTS: usize = 2;
+    let mut text = String::new();
+    let mut response_json: serde_json::Value = serde_json::Value::Null;
+    for attempt in 1..=MAX_ATTEMPTS {
+        // 重发（attempt ≥ 2）改带 `prompt_retry`：**同一逻辑步骤的重发不该二次计费**。
+        // 首步无标记、走 token 阶梯计费，照原标记重发会被再扣一次（这里就是要修的那次）；
+        // 续步本就带 `prompt_continue`（0 分），换成 `prompt_retry` 同样 0 分。
+        // 价目见服务器 `backend/app/api/endpoints/gateway.py` 的 billing_tag 分支。
+        let attempt_tag = if attempt == 1 {
+            billing_tag.clone()
+        } else {
+            Some("prompt_retry".to_string())
+        };
+        let (t, rj) = call_gateway_once(
+            &client,
+            &api_key,
+            &system_prompt,
+            &messages,
+            CHAT_MAX_TOKENS,
+            attempt_tag,
+        )
+        .await?;
+        text = t;
+        response_json = rj;
+
+        // 真实用量（上游报的 `prompt_tokens` / `completion_tokens`，由服务器
+        // `build_anthropic_response` 换算成 Anthropic 形状透传下来）——**不是估数**。
+        // 每轮都打：STEP 门机一轮要发 8 次调用，成本口径只能靠这几行实测，不能靠推算。
+        let usage = response_json
+            .get("usage")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let stop_reason = response_json
+            .get("stop_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(未给)");
+        info!(
+            "[Chat] 响应完成 chat_id={} attempt={}/{} len={} stop_reason={} usage={}",
+            chat_id,
+            attempt,
+            MAX_ATTEMPTS,
+            text.len(),
+            stop_reason,
+            usage
+        );
+
+        if !text.is_empty() {
+            break;
+        }
+        // ⚠️ **只重试「预算耗尽」这一种**：内容过滤 / 上游 2xx 空体重发也是同一结果。
+        if stop_reason != "max_tokens" || attempt == MAX_ATTEMPTS {
+            break;
+        }
+        warn!(
+            "[Chat] 输出预算被思考吃光（attempt={}/{}），原样重发一次 chat_id={}",
+            attempt, MAX_ATTEMPTS, chat_id
+        );
+    }
 
     if text.is_empty() {
-        warn!("[Chat] 响应文本为空 chat_id={}", chat_id);
-        return Ok(ChatResponse { chat_id, text });
+        // 🔴 空响应**不能当成功**返回。
+        //
+        // 原先这里只 warn 一句然后 `Ok(ChatResponse { text: "" })` 返回，于是：
+        //   ① 前端把它当正常回复落盘（`stage` 照记），自动串联在终点停住
+        //      ⇒ 用户看到的是「链条莫名断了、一个字都没有」；
+        //   ② 日志里没有任何线索 —— 网关 `200` + 空文本至少有三种成因
+        //      （上游只回了思考内容、`finish_reason=length` 把 max_tokens 全吃在思考上、
+        //       上游内容过滤），三者在客户端长得一模一样。
+        // 现在：把 `stop_reason` / `usage` / 原始响应片段打进日志，并返回 `Err`
+        // 让前端走错误分支（显示原因、且**不续下一环**，见 chatStore 的 catch）。
+        let stop_reason = response_json
+            .get("stop_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(未给)");
+        let usage = response_json
+            .get("usage")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let raw: String = serde_json::to_string(&response_json).unwrap_or_default();
+        let raw_head: String = raw.chars().take(1200).collect();
+        warn!(
+            "[Chat] 响应文本为空 chat_id={} stop_reason={} usage={} raw={}",
+            chat_id, stop_reason, usage, raw_head
+        );
+        return Err(format!(
+            "写手这一轮没有返回内容（stop_reason={}）。已经自动原样重发过 {} 次仍是空响应 —— \
+             这是网关侧的空响应，不是你的输入问题，手动再发一次通常即可；若反复出现，\
+             请把这条报错原样发给我。",
+            stop_reason,
+            MAX_ATTEMPTS - 1
+        ));
     }
 
     // 拦截 <search> 标签：AI 请求搜索 → 执行搜索 → 注入结果 → 再调用 AI
@@ -349,29 +669,18 @@ async fn intercept_search_and_continue(
         _ => None,
     };
 
-    let request_body = ChatRequest {
-        model: CHAT_MODEL.to_string(),
-        system: system_prompt.to_string(),
-        messages: continued_messages,
-        max_tokens: CHAT_MAX_TOKENS,
-        stream: false,
-        billing_tag: continue_tag,
-    };
-
-    let response = client
-        .post(GATEWAY_MESSAGES_URL)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&request_body)
-        .send()
-        .await
-        .ok()?;
-
-    let response_json: serde_json::Value = response.json().await.ok()?;
-    let continued_text = {
-        let t = extract_anthropic_text(&response_json);
-        if !t.is_empty() { t } else { extract_openai_text(&response_json) }
-    };
+    // 续写这一路仍走同一助手（形状/额度与主路一致）；失败就当没有搜索结果，
+    // 不重试 —— 这里本来就用 `.ok()?` 容错，空响应只是丢掉搜索结果，不会伤主链路。
+    let (continued_text, _) = call_gateway_once(
+        client,
+        api_key,
+        system_prompt,
+        &continued_messages,
+        CHAT_MAX_TOKENS,
+        continue_tag,
+    )
+    .await
+    .ok()?;
 
     if continued_text.is_empty() { None } else { Some(continued_text) }
 }
@@ -482,7 +791,7 @@ pub(crate) async fn analyze_story(
         user_content.push_str(&format!("项目调性: {}\n", tone));
     }
     if !director_ref.is_empty() {
-        user_content.push_str(&format!("旅行视频风格: {}\n", director_ref));
+        user_content.push_str(&format!("科普风格: {}\n", director_ref));
     }
     if !emphasis_dimensions.is_empty() {
         user_content.push_str(&format!("提示词重点维度: {}\n", emphasis_dimensions.join(", ")));
@@ -648,6 +957,38 @@ pub(crate) fn load_chat_conversations(app: AppHandle, project_id: String) -> Res
             Err(format!("加载对话失败: {}", e))
         }
     }
+}
+
+/// 把**解析失败**的对话文件另存一份，返回备份的绝对路径。
+///
+/// 🔴 存在的理由：前端 `safeParseConversations` 解析失败时会静默回退到空列表，
+/// 紧接着任何一次存盘（5 秒定时器保证一定有）就会把那个坏文件**整量覆盖成 `[]`**
+/// —— 一次坏读把「可修复」变成「永久空」。所以前端在读坏的那一刻先调本命令留一份副本，
+/// 再继续正常工作。
+///
+/// **只复制、不改名、不动原文件** ⇒ 不违反 §12.4「禁止删除 `users/{id}/` 下的文件」。
+#[tauri::command]
+pub(crate) fn backup_corrupt_chat_file(app: AppHandle, project_id: String) -> Result<String, String> {
+    let path = resolve_chat_path(&app, &project_id)?;
+    if !path.exists() {
+        return Err("对话文件不存在，无需备份".to_string());
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "chat.json".to_string());
+    let bak = path.with_file_name(format!("{}.corrupt-{}", name, ts));
+    std::fs::copy(&path, &bak).map_err(|e| format!("备份损坏对话文件失败: {}", e))?;
+    info!(
+        "[Chat] 损坏的对话文件已备份到 {} (project={}, 原文件未改动)",
+        bak.display(),
+        project_id
+    );
+    Ok(bak.to_string_lossy().to_string())
 }
 
 /// 迁移旧版单文件 chat_conversations.json → 新版 per-project chat/*.json
