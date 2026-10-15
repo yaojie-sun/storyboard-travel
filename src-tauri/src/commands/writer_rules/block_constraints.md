@@ -16,12 +16,21 @@
 9. 禁止在提示词中写分辨率（4K/1080P/720P）和画幅比例（16:9/9:16 等）。
 10. 用户台词逐字保留铁律：用户提供的台词/对白/配音内容必须逐字保留进视频提示词，不得改写/润色/翻译/增删字词/替换说法。台词本体以用户输入为准一字不差，仅角色名与情绪语调可按格式补充。
    台词在提示词中用 <d>[Chinese] 台词原文</d> 包装，标签内文字一字不改。
+
+   🔴 **台词写法一律以官方原文为准（以下逐字引自官方写作规范，不得增补改写）**：
+   · "Write complete dialogue and lyrics only inside `<d>` in `detailed_description`; do not repeat them in these two sections."（官方 §5.4）
+   · "Give vocal sources stable `(S1)`, `(S2)`, and subsequent IDs. Write dialogue and lyrics as `<d>[Language] ...</d>`."（官方 §5.4）
+   · "Assign `(Sx)` once according to the order of actual vocal events in the target video. Reuse the corresponding ID at every actual vocal event in `detailed_description`."（官方 §5.4）
+   · "When the same line of dialogue or lyrics crosses a cut, use `<scenetrans>` at the connecting points in both parts and explicitly state that the audio continues across the cut."（官方 §4.4）
+   · "Use `<scenetrans>`, `<cutoff>`, and the corresponding continuity descriptions for dialogue crossing a cut, speech truncated by the video ending, and continuous audio across shots."（官方 §5.4）
 11. 🔴 视频提示词正文恒为六段式，段名逐字、次序固定、段名独占一行、尾随半角冒号、段间空行：
    subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:
    客户端按字符串认段名，写错/漏段/换序 = 解析失败。主字段是 detailed_description，
    不是 integrated_multimodal_description。六段之外不要再加第七段工程约束段。
-12. 🔴 六段正文里一律不写否定句（"没有人声""不含配乐""没有动"）。
-   没有的东西写官方占位符 N/A。本模型无负面分支，否定句会被当成要求渲染出来。
+12. 🔴 声音两段里「没有声音」只有官方占位符 `N/A` 一个写法 —— 官方原句逐字：
+   · §4.6 "Use `N/A` only when the user explicitly requests complete silence throughout the video."
+   · §4.7 "Use `N/A` when there is no non-diegetic music."
+   · §6 "Write complete dialogue and lyrics only inside `<d>` in `detailed_description`; do not repeat them in these two sections." 
 13. 🔴 运镜只能取自官方三维闭集：12 类 motion type（Zoom In/Out、Push In/Pull Out、
    Pan Left/Right、Truck Left/Right、Tilt Up/Down、Pedestal Up/Down、Arc Shot、Tracking Shot、
    Static Shot、Shake Slightly/Strongly、POV、Roll Clockwise/Counterclockwise）
@@ -33,17 +42,28 @@
    没写这一行 = 这一段一张参考图都不挂，系统不会替你找。
 16. 🔴 时间戳三条：[Shot 1] 不带时间戳；第 2 镜起 At MM:SS.mmm 严格递增且落在总时长内；
    镜头标记与镜头内容必须在同一行。
-17. 🔴 说话与嘴部：画内说话时，在 </d> 之后逐字写"他说话时下颌开合、嘴唇随字句张动"
-   （主语按实际说话人换成她/它，其余逐字不动）；只有画外音才写"嘴唇保持完全闭合"。
-   🔴🔴 无用户台词的镜头，一律不许写成"正在说话"。二选一：
+17. 🔴 说话与嘴部（官方 §4.4 原句逐字）：
+   "Place the speaker's identifying phrase, ID, action, and delivery outside `<d>`. Inside `<d>`,
+   include only the language tag and the actual user-provided spoken content."
+   ⇒ 说话人的识别语、ID、动作与语气写在 `<d>` 外面；`<d>` 里只放语言标签 + 用户台词原文（逐字不改）。
+   "For voiceover, use the exact phrase `says in an off-screen voiceover`. Immediately after every
+   voiceover `<d>` block, state that the corresponding on-screen character's lips remain closed"
+   ⇒ 画外音用 `(Sx)` + 台词逐字进 `<d>`，紧跟一句写明该人物双唇保持闭合（本仓沿用中文写法
+   `嘴唇保持完全闭合`）；画外音以外不写这句。
+   官方 §4.4：同一句台词跨切镜时用 `<scenetrans>` 在切口两侧各标一处，并写明声音跨切连续
+   （官方可用说法：`continues seamlessly across the cut` / `continues uninterrupted into the next shot` /
+   `carries over from the previous shot` / `remains audible across the transition`）；
+   台词被片尾截断时用 `<cutoff>`。
+   官方 §5.4：听不清的一段写 `[unclear]`，不许猜写或改写；标点只用 `,` `.` `?` `!` 这类基本书面符号。
+   官方 §5.4：`(Sx)` 只按目标视频里实际发声的先后编号一次并处处复用；多人同时发声用复合号 `(S1,S2)`；
+   `(Sx)` 不写进 `retention_analysis`。
+   🔴🔴 有发声动作就必须有台词原文：正文里凡出现"说""开口"这类发声动作的镜头，本镜必须有不为空的
+   `<d>[Chinese] 台词原文</d>` —— 模型没字可念，只会自己配一段听不懂的人声（客户听到的"声音不对"）。
+   🔴 无用户台词的镜头，一律不许写成"正在说话"。二选一：
    ① 这一镜必须有台词 ⇒ 按内容铁律回问用户要台词（问完就停），拿到后逐字进 <d>[Chinese] 台词原文</d>；
    ② 这一镜不需要台词 ⇒ 正面写不发声的嘴部动作，例如"她的双唇合着，只听得见呼吸"。
-   🔴 绝对禁止半截写法：写了"张嘴说话""开始说话"或"下颌随字句张动"这类跟字同步的嘴部动作，
-   却没有 <d>[Chinese] 台词原文</d> 台词文本 —— 模型没字可念，只会自己配一段听不懂的人声，
-   客户听到的就是"声音不对"。
    🔴 背景人群的人声只写声层：overall_soundscape 里可以写"身后人群低沉的交谈声"这类非语言人声
-   （声源+质感），但不许给无台词的背景人物写"随字句张动""下颌随字句开合"这种跟字同步的嘴部描述 ——
-   那等于给背景另开一条人声轨道。
+   （声源+质感），但不许给无台词的背景人物写跟字同步的嘴部描述 —— 那等于给背景另开一条人声轨道。
    有可见人物但没有台词的镜头，必须正面交代嘴在做什么。
 18. 🔴 成片里不出现任何画面上的文字（招牌字、包装字、字幕、霓虹字、对话框）。
    用户脚本里的"心里说/心声/内心独白/旁白"一律走画外音（听见），不许改写成屏幕文字。

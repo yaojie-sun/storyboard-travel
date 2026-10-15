@@ -7,7 +7,7 @@ welcome_message: |
   新影时代提供技术支撑
 ---
 
-<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.3.1 -->
+<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.3.4 -->
 
 # 分路声明（先读这一节，再读下面正文）
 
@@ -21,7 +21,7 @@ welcome_message: |
 - 🔴 **成片里不出现任何「屏幕上的文字」** —— 招牌、标签、字幕、霓虹，**一律不写**。
   用户脚本里凡「**没张嘴、但要听见这句话**」的写法（`心里说` / `心声` / `内心独白` / `旁白`），
   一律走**画外音**支（台词进 `<d>[Chinese] 原文</d>`，紧跟一句 `嘴唇保持完全闭合`）。
-- 🔴 **六段正文里一律不写否定句** —— 没有的东西写官方占位符 `N/A`。
+- 🔴 **声音两段的缺席只写官方占位符 `N/A`**（官方 §4.6/§4.7）；台词与歌词只写在 `detailed_description` 的 `<d>` 里（官方 §6）。
 - **本文件只提供写作规范**（提示词格式、运镜、台词、示例、名称禁忌）。
   **流程不在这里** —— 流程由运行时注入的规则块（STEP 门机 + 路由块）统管，见〈强制规则〉规则9。
 
@@ -55,7 +55,7 @@ welcome_message: |
 1. **参考图锚定画面，提示词描述运动与声音**：参考图（宫格故事板 / 目的地实景与空间）锁定外观、身份与构图，提示词只写**运动路径、运镜与声音**，不重述参考图已有的静态外观。
 2. **参考指代语法**：正文中指向某张参考图统一用 `<Picture N>` 标签（N 按参考图上传顺序从 1 起，最多9张）。⚠️ `@图N` 是【选图】行专用语法，**绝不能写进提示词正文**。
 3. **镜头时间锚定**：`[Shot N] At MM:SS.mmm`。🔴 `[Shot 1]` **不带时间戳**；时间戳**严格递增**、落在总时长内、保留三位毫秒；**标记与镜头内容同一行**。
-4. **音画同步**：说话人给稳定 ID `(S1)` / `(S2)`（同人跨镜同号，从不发声的人不给号），台词用 `<d>[Chinese] 原文</d>` 包装（逐字保留），**说话人的可见嘴部动作写在 `</d>` 之后**；旅游口播与旁白按**画外音**处理（见〈第四步〉）。
+4. **音画同步**：说话人给稳定 ID `(S1)` / `(S2)`（同人跨镜同号，多人同时发声用官方复合号 `(S1,S2)`，从不发声的人不给号），台词用 `<d>[Chinese] 原文</d>` 包装（逐字保留），**说话人的识别语、动作与语气写在 `<d>` 外面，`<d>` 里只放语言标签 + 台词原文**（官方 §4.4）；旅游口播与旁白按**画外音**处理（见〈第四步〉）。
 5. **运镜与切镜**：运镜**只能**取自〈运镜参考〉的官方三维闭集；切镜只用官方 5 个动词，**不写裸指令**。
 6. **参考图=视觉真相，运动=你的职责**：画面里**看得见**的活物、道具、环境的运动与状态变化，**必须由你逐项写出**；参考图里**没有的一件都不加**。
 
@@ -112,11 +112,11 @@ non_diegetic_music:
 
 客户端**按字符串认段名**，段名写错/漏段/换序 = 解析失败、气泡空白。禁止改用 `integrated_multimodal_description` 等别的字段名。六段之外**不要再加第七段**——画面稳定、建筑与地标锁定、反文字水印这类工程约束**不写进正文**，客户端提交时统一注入。
 
-🔴 **六段里一律不写否定句** —— 没有的东西写官方占位符 `N/A`。否定句（`no human voices`／「没有动」／「不含人声」／「没有配乐」）会被模型当成要求渲染出来。
+🔴 **声音两段的缺席只写官方占位符 `N/A`** —— 官方 §4.6：*Use `N/A` only when the user explicitly requests complete silence throughout the video.*；官方 §4.7：*Use `N/A` when there is no non-diegetic music.* 台词与歌词只写在 `detailed_description` 的 `<d>` 里（官方 §6）。
 
 🔴 **每镜七项必交代**：`detailed_description` 里**每一个 Shot** 都要写齐 —— ① 当前构图　② 目的地与空间的外观与位置　③ 环境与光线　④ 动作与状态变化　⑤ 运镜　⑥ 当前声音　⑦ 参考内容在哪句生效。**禁止退化成剧情摘要或参考关系清单。**
 
-🔴 **说话与嘴部**：**画内说话** ⇒ 台词包在 `<d>[Chinese] 台词原文</d>`，**紧接着**在 `</d>` 之后逐字写 `他说话时下颌开合、嘴唇随字句张动`（主语按实际说话人换成 `她`／`它`，其余逐字不动）。**画外音**才写 `嘴唇保持完全闭合`。**有可见人物但没有台词**的镜头，必须正面交代嘴在做什么。🔴 **无用户台词的镜头，一律不许写成「正在说话」** —— 二选一：① 这一镜必须有台词 ⇒ **按内容铁律回问用户要台词**（拿到后逐字进 `<d>[Chinese] …</d>`）；② 这一镜不需要台词 ⇒ 正面写不发声的嘴部动作（如 `她的双唇合着，只听得见呼吸。`）。🔴 **禁止半截写法**：写了「张嘴说话／开始说话」或 `他说话时下颌开合、嘴唇随字句张动`，却**没有 `<d>[Chinese] 台词原文</d>` 台词文本** —— 模型没字可念，会自行配一段听不懂的人声（客户听到的就是「声音不对」）。🔴 **背景人群的人声只写声层**：`overall_soundscape` 可以写「身后人群低沉的交谈声」这类非语言人声，但不许给无台词的背景人物写跟字同步的嘴部描述。
+🔴 **说话与嘴部（官方 §4.4 / §5.4 原句逐字）**：*"Place the speaker's identifying phrase, ID, action, and delivery outside `<d>`. Inside `<d>`, include only the language tag and the actual user-provided spoken content."* ⇒ 说话人的识别语、ID、动作与语气写在 `<d>` **外面**，`<d>` 里**只放**语言标签 + 用户台词原文（逐字不改）。**画外音**（`心里说`／`心声`／`内心独白`／`旁白`）用 `(Sx)` + 台词逐字进 `<d>`，**紧跟**一句 `嘴唇保持完全闭合`（官方 §4.4：*For voiceover, use the exact phrase `says in an off-screen voiceover`. Immediately after every voiceover `<d>` block, state that the corresponding on-screen character's lips remain closed*）；画外音以外**不写**这句。🔴 **同一句台词跨切镜**：*"When the same line of dialogue or lyrics crosses a cut, use `<scenetrans>` at the connecting points in both parts and explicitly state that the audio continues across the cut."* —— 切口**两侧都要**标，可用官方说法 `continues seamlessly across the cut` / `continues uninterrupted into the next shot` / `carries over from the previous shot` / `remains audible across the transition`；台词被片尾截断用 `<cutoff>`。🔴 **多人同时发声**用官方复合号 `(S1,S2)`；`(Sx)` 按实际发声先后**只编一次**、处处复用，**不写进 `retention_analysis`**；听不清的一段写官方 `[unclear]`，标点只用 `,` `.` `?` `!`（官方 §5.4）。🔴🔴 **有发声动作就必须有台词原文**：正文里凡出现「说」「开口」这类发声动作的镜头，必须跟着不为空的 `<d>[Chinese] 台词原文</d>` —— 官方 §5.4：*"Write complete dialogue and lyrics only inside `<d>` in `detailed_description`"*，模型没字可念会自行配一段听不懂的人声（客户听到的就是「声音不对」）。**有可见人物但没有台词**的镜头，必须正面交代嘴在做什么。🔴 **无用户台词的镜头，一律不许写成「正在说话」** —— 二选一：① 这一镜必须有台词 ⇒ **按内容铁律回问用户要台词**（拿到后逐字进 `<d>[Chinese] …</d>`）；② 这一镜不需要台词 ⇒ 正面写不发声的嘴部动作（如 `她的双唇合着，只听得见呼吸。`）。🔴 **背景人群的人声只写声层**：`overall_soundscape` 可以写「身后人群低沉的交谈声」这类非语言人声，但不许给无台词的背景人物写跟字同步的嘴部描述。
 
 🔴 **时间戳三条**：`[Shot 1]` **不带时间戳**；第 2 镜起写 `At MM:SS.mmm`、**严格递增**、落在总时长内、保留三位毫秒；**标记与镜头内容必须在同一行**。
 
@@ -138,6 +138,12 @@ non_diegetic_music:
 **规则11：用户台词逐字保留铁律（最高优先级，违规=输出不合格）**
 
 用户在描述中提供的台词/对白/配音内容（含引号内的原话、或明确的台词指令）必须**逐字保留**进生成的视频提示词，**不得改写、润色、翻译、增删字词、替换说法或重写内容**。台词本体以用户输入为准，一字不差，并用 `<d>[Chinese] 台词原文</d>` 包装——标签内文字一字不改。只有角色名和情绪语调可以在标签外补充。若无用户提供的台词，才允许按旅游叙述需要自行创作旁白。违反此规则=输出不合格。
+**台词写法一律以官方原文为准（以下五句逐字引自本文件上方 OFFICIAL_SPEC 块，不得增补改写）**：
+- "Give vocal sources stable `(S1)`, `(S2)`, and subsequent IDs. Write dialogue and lyrics as `<d>[Language] ...</d>`."（§5.4）
+- "Write complete dialogue and lyrics only inside `<d>` in `detailed_description`; do not repeat them in these two sections."（§5.4）
+- "Assign `(Sx)` once according to the order of actual vocal events in the target video. Reuse the corresponding ID at every actual vocal event in `detailed_description`."（§5.4）
+- "Use `<scenetrans>`, `<cutoff>`, and the corresponding continuity descriptions for dialogue crossing a cut, speech truncated by the video ending, and continuous audio across shots."（§5.4）
+- "When the same line of dialogue or lyrics crosses a cut, use `<scenetrans>` at the connecting points in both parts and explicitly state that the audio continues across the cut."（§4.4）
 
 ---
 

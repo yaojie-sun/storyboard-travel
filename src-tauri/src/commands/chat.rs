@@ -342,6 +342,24 @@ async fn call_gateway_once(
     Ok((text, response_json))
 }
 
+/// 空响应要不要原样重发一次。
+///
+/// `stop_reason` / `output_tokens` 都取自网关透传的真实响应（`usage.output_tokens`
+/// 是上游报的 `completion_tokens`，不是估数）。判据只有一条：**模型到底产没产出 token**。
+///
+/// - `output_tokens > 0` 而正文为空 ⇒ 输出预算全烧在思考里（`max_tokens` 截断，或
+///   `end_turn` 自然收尾），重发一个新样本通常就能收敛 ⇒ **重发**。
+/// - `output_tokens == 0` 而正文为空 ⇒ 上游真回了空体 / 内容过滤，重发也是同一结果 ⇒ **不重发**。
+///
+/// `max_tokens` 单独兜一层：某些响应不带 `usage`，此时 `output_tokens` 读成 0，
+/// 但上游已明说预算耗尽，仍然值得重发（这是本函数出现之前的原行为，不能丢）。
+///
+/// 回归护栏见文末 `empty_response_retry` 测试模块 —— 2026-10-15 前这里只认 `max_tokens`，
+/// `end_turn` 一次都不重发，报错文案却写着「已自动重发过 1 次」。
+fn empty_response_is_retryable(stop_reason: &str, output_tokens: u64) -> bool {
+    stop_reason == "max_tokens" || output_tokens > 0
+}
+
 #[tauri::command]
 pub(crate) async fn chat_send_message(
     messages: Vec<ChatMessageDto>,
@@ -492,19 +510,26 @@ pub(crate) async fn chat_send_message(
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
     // 🔴 **空响应原样重发一次**（用户反馈：写手明明能出，却报
-    //    「写手这一轮没有返回内容（stop_reason=max_tokens）」）。
+    //    「写手这一轮没有返回内容（stop_reason=…）」）。
     //
     //    实测成因：这类空响应**不是上游真没内容**，而是输出预算被思考吃光 ——
-    //    2026-10-13 实测 `stop_reason=max_tokens` 且 `output_tokens` **正好等于**
-    //    `CHAT_MAX_TOKENS`、`content[0].text` 是空串。同一轮重发通常就能收敛。
-    //    这一轮对用户是**纯亏损**：已计费、产物为空、链条停在原地，用户只能重贴脚本
-    //    ⇒ 整条链从 STEP1 重跑（8 次调用）。所以这里直接重发，不把这个错推给用户手动重试。
+    //    正文一个字没落，`output_tokens` 却是实数。两种外壳：
+    //      · `stop_reason=max_tokens` —— 2026-10-13 实测 `output_tokens` **正好等于**
+    //        `CHAT_MAX_TOKENS`、`content[0].text` 是空串；
+    //      · `stop_reason=end_turn` —— 2026-10-15 实测 `output_tokens=2684 / 575` 而
+    //        `content=[{text:""}]`（思考完就自然收尾；网关不认上游的思考字段，被透传成空 text）。
+    //    两者同一轮重发通常都能收敛。这一轮对用户是**纯亏损**：已计费、产物为空、
+    //    链条停在原地，用户只能重贴脚本 ⇒ 整条链从 STEP1 重跑（8 次调用）。
+    //    所以这里直接重发，不把这个错推给用户手动重试。判据见
+    //    [`empty_response_is_retryable`]。
     //
     //    ⚠️ 重发**不推进链条、不落盘**：只有真拿到正文才会走下面的 `Ok(ChatResponse …)`，
     //       失败的那一轮前端什么也收不到（`Err`）⇒ 不会记 `stage`、不会续下一环。
     const MAX_ATTEMPTS: usize = 2;
     let mut text = String::new();
     let mut response_json: serde_json::Value = serde_json::Value::Null;
+    // 实际用掉的调用次数 —— 报错文案只能照着它说，不能再写死「已重发过 N 次」。
+    let mut attempts_used = 0usize;
     for attempt in 1..=MAX_ATTEMPTS {
         // 重发（attempt ≥ 2）改带 `prompt_retry`：**同一逻辑步骤的重发不该二次计费**。
         // 首步无标记、走 token 阶梯计费，照原标记重发会被再扣一次（这里就是要修的那次）；
@@ -538,6 +563,12 @@ pub(crate) async fn chat_send_message(
             .get("stop_reason")
             .and_then(|v| v.as_str())
             .unwrap_or("(未给)");
+        // 上游报的真实产出 token（网关把 `completion_tokens` 换算成 `output_tokens` 透传）。
+        // 空响应里它是**判类别的唯一依据**，见下面的重发门槛。
+        let output_tokens = response_json
+            .pointer("/usage/output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         info!(
             "[Chat] 响应完成 chat_id={} attempt={}/{} len={} stop_reason={} usage={}",
             chat_id,
@@ -551,13 +582,33 @@ pub(crate) async fn chat_send_message(
         if !text.is_empty() {
             break;
         }
-        // ⚠️ **只重试「预算耗尽」这一种**：内容过滤 / 上游 2xx 空体重发也是同一结果。
-        if stop_reason != "max_tokens" || attempt == MAX_ATTEMPTS {
+        // 🔴 **重发门槛 = 正文为空 且 模型确实产出过 token**（或上游明确报预算耗尽）。
+        //
+        // 两种空响应其实是**同一件事**：输出预算全烧在思考里，一个字正文都没落。
+        //   ① `stop_reason=max_tokens` —— 预算用满被截断。2026-10-13 实测 `output_tokens`
+        //      正好等于 `CHAT_MAX_TOKENS`，`content[0].text` 是空串。
+        //   ② `stop_reason=end_turn` 但 `output_tokens > 0` —— 思考完就自然收尾。
+        //      2026-10-15 实测两例：`output_tokens=2684 / 575` 而 `content=[{text:""}]`。
+        //      成因在网关：`gateway.py::build_anthropic_response` 只读 OpenAI 形状的
+        //      `choices[0].message.content`，**完全不认 `reasoning_content` 一类字段**，
+        //      于是「只出思考、没出正文」的响应被原样透传成空 text 块
+        //      （空 content 兜底见 `gateway.py:1171`）。
+        //
+        //      这一类原先是**被漏掉的**：老门槛是 `stop_reason != "max_tokens"` ⇒ `end_turn`
+        //      一次都不重发，而报错文案却写死「已经自动原样重发过 1 次」——**实际一次没发**。
+        //      门槛因此改成看 `output_tokens`。
+        //
+        // 不重发的只剩「真·空体 / 内容过滤」(`output_tokens == 0`)：那类重发也是同一结果，白花一次调用。
+        //
+        // ⚠️ 重发**不计费**：服务器 `billing_tag=prompt_retry` 是 0 积分
+        //    （`gateway.py:908` 字段说明 + `gateway.py:1315` 分支），对用户只多等一次往返。
+        let retryable = empty_response_is_retryable(stop_reason, output_tokens);
+        if !retryable || attempt == MAX_ATTEMPTS {
             break;
         }
         warn!(
-            "[Chat] 输出预算被思考吃光（attempt={}/{}），原样重发一次 chat_id={}",
-            attempt, MAX_ATTEMPTS, chat_id
+            "[Chat] 空响应（stop_reason={}，思考已耗 {} tokens，attempt={}/{}），原样重发一次 chat_id={}",
+            stop_reason, output_tokens, attempt, MAX_ATTEMPTS, chat_id
         );
     }
 
@@ -586,12 +637,22 @@ pub(crate) async fn chat_send_message(
             "[Chat] 响应文本为空 chat_id={} stop_reason={} usage={} raw={}",
             chat_id, stop_reason, usage, raw_head
         );
+        // 报错文案只按**实际发生的事**说：
+        //   `attempts_used == 1` ⇒ 这一轮没重发（`output_tokens == 0`，重发也是同一结果），
+        //   此时绝不能再写「已自动重发过 1 次」（老文案就是这句假话，2026-10-15 现场抓到的
+        //   两例 `stop_reason=end_turn` 日志里 `attempt=1/2` 之后直接报错，一次都没重发）。
+        // 顺带把 `usage` 带进文案 —— 用户按提示把报错贴回来时，`output_tokens` 是判类别的第一手线索。
+        let retried = attempts_used.saturating_sub(1);
+        let head = if retried > 0 {
+            format!("已经自动原样重发过 {} 次仍是空响应", retried)
+        } else {
+            "这一轮没有自动重发（模型没产出任何 token，重发也是同一结果）".to_string()
+        };
         return Err(format!(
-            "写手这一轮没有返回内容（stop_reason={}）。已经自动原样重发过 {} 次仍是空响应 —— \
+            "写手这一轮没有返回内容（stop_reason={}，本轮共发起 {} 次调用，用量 {}）。{} —— \
              这是网关侧的空响应，不是你的输入问题，手动再发一次通常即可；若反复出现，\
              请把这条报错原样发给我。",
-            stop_reason,
-            MAX_ATTEMPTS - 1
+            stop_reason, attempts_used, usage, head
         ));
     }
 
@@ -1472,3 +1533,37 @@ pub async fn persist_videogen_store(
 }
 
 
+
+#[cfg(test)]
+mod empty_response_retry {
+    use super::empty_response_is_retryable;
+
+    /// 2026-10-15 线上现场（`storyboard.log.2026-10-15` L9002 / L13640）：
+    /// `stop_reason=end_turn` + `content=[{text:""}]` + `output_tokens` 非零 ——
+    /// 思考吃光预算、正文一个字没落。**这一类必须重发**（本次修复的就是它）。
+    #[test]
+    fn end_turn_with_tokens_is_retryable() {
+        assert!(empty_response_is_retryable("end_turn", 2684));
+        assert!(empty_response_is_retryable("end_turn", 575));
+    }
+
+    /// 2026-10-13 现场：`output_tokens` 正好等于 `CHAT_MAX_TOKENS`、正文空串。
+    #[test]
+    fn max_tokens_is_retryable() {
+        assert!(empty_response_is_retryable("max_tokens", 16384));
+    }
+
+    /// 不带 `usage` 但上游已明确报预算耗尽 ⇒ 仍要重发（本函数之前的原行为）。
+    #[test]
+    fn max_tokens_without_usage_is_retryable() {
+        assert!(empty_response_is_retryable("max_tokens", 0));
+    }
+
+    /// 真·空体 / 内容过滤：一个字都没产出，重发也是同一结果，不该白花一次调用。
+    #[test]
+    fn truly_empty_body_is_not_retryable() {
+        assert!(!empty_response_is_retryable("end_turn", 0));
+        assert!(!empty_response_is_retryable("content_filter", 0));
+        assert!(!empty_response_is_retryable("(未给)", 0));
+    }
+}
