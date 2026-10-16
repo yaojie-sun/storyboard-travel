@@ -18,7 +18,9 @@
     "notice": "Notice",
     "recharge": "Recharge",
     "saving": "Saving...",
-    "dismiss": "Got it"
+    "dismiss": "Got it",
+    "networkDegraded": "Network unstable — you stay signed in, reconnecting in the background…",
+    "reconnecting": "Connecting to server…"
   },
   "theme": {
     "dark": "Dark",
@@ -612,6 +614,8 @@
       "done": "This passage is complete. Keep refining, or drop the prompt onto a node.",
       "continue": "Continue to the next step?",
       "next": "Next step",
+      "inspirationPick": "Which of the 3 ideas should I expand?",
+      "plan": "Idea {{n}}",
       "directNow": "Generate video directly"
     },
     "stageName": {
@@ -681,6 +685,9 @@
     "generating": "Generating video...",
     "queued": "In queue, please wait...",
     "queuedHint": "High queue volume, may take minutes. Please keep the window open.",
+    "localQueue": "Waiting for a free channel",
+    "queueAhead": "{{n}} ahead in the queue; starts automatically",
+    "queueTimeout": "Waited too long for a free channel and left the queue. Please try again.",
     "creditCost": "Cost: {{cost}} credits",
     "generate": "Generate Video (2K)",
     "download": "Download",

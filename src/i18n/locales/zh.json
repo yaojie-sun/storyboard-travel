@@ -18,7 +18,9 @@
     "notice": "提示",
     "recharge": "充值",
     "saving": "保存中...",
-    "dismiss": "知道了"
+    "dismiss": "知道了",
+    "networkDegraded": "网络不稳定，已保持登录并在后台自动重连…",
+    "reconnecting": "正在连接服务器…"
   },
   "theme": {
     "dark": "深色",
@@ -612,6 +614,8 @@
       "done": "这一段已经走完了。可以继续修，或者把提示词落到节点上。",
       "continue": "继续下一步吗？",
       "next": "下一步",
+      "inspirationPick": "上面这 3 个方案，展开哪一个？",
+      "plan": "方案 {{n}}",
       "directNow": "直接生成视频"
     },
     "stageName": {
@@ -681,6 +685,9 @@
     "generating": "正在生成视频...",
     "queued": "正在排队中，请耐心等待...",
     "queuedHint": "排队任务较多，可能需要几分钟到十几分钟，请勿关闭窗口",
+    "localQueue": "正在等待空闲通道",
+    "queueAhead": "前面还有 {{n}} 个任务，轮到后会自动开始",
+    "queueTimeout": "等待空闲通道的时间过长，已退出排队，请稍后重试",
     "creditCost": "本次消耗: {{cost}} 积分",
     "generate": "生成视频（2K）",
     "download": "下载",

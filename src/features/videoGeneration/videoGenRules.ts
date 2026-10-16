@@ -40,12 +40,12 @@ export interface VideoGenRules {
 }
 
 // 最小兜底规则 — 仅网络故障时使用。完整规则见服务端 video_gen_rules_minimax_h3.json
-const DEFAULT_PROMPT_RULE = '【核心指令】这是一段「参考图 → 视频」（全参考）的生成任务。正文必须严格遵循官方全参考六段式：段名逐字、次序固定、段名独占一行、尾随半角冒号、段间空行。subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:。主字段是 detailed_description（不是 integrated_multimodal_description）。客户端按字符串认段名，写错/漏段/换序 = 解析失败。六段之外不要再添加任何工程约束段——画面稳定、主体与场景锁定、反文字水印这类约束由本规则头统一注入，你不写。【时间线】参考图是 6 宫格故事板：宫格 1→2→3→4→5→6 是一条连续时间线，不是 6 张独立快照拼接的幻灯片。人物/场景/道具/光影跨宫格完全一致，动作从前一格自然延续到后一格，无跳跃、无重置、无时间倒流。【参考图是真相，运动是你的职责】参考图锁定外观、身份与构图；但参考图里看得见的活物、道具、环境，它们的运动与状态变化必须用文字逐项写出——写明才会动，不写它就不动。用「环境保持不变」这类概括话等于没写。参考图里没有的元素，一件都不许加。【运镜闭集】运镜只能取自：Zoom In / Zoom Out、Push In / Pull Out、Pan Left / Pan Right、Truck Left / Truck Right、Tilt Up / Tilt Down、Pedestal Up / Pedestal Down、Arc Shot、Tracking Shot、Static Shot、Shake Slightly / Shake Strongly、POV、Roll Clockwise / Roll Counterclockwise，另加幅度 with small amplitude / with large amplitude、速度 at slow speed / at fast speed（中等幅度与常速省略不写）。表以外的镜头动作一律不写。运镜写成一整句自然的镜头内动作，不要在句尾堆机位标签。【切镜】切镜只用 the camera cuts to / the shot cuts to / the shot transitions to / the shot changes to / the shot switches to，且与镜头内容同一行。不写 Cut to / Then / Begin with 这类裸指令。【时间戳】[Shot 1] 不带时间戳；第 2 镜起写 At MM:SS.mmm，严格递增、落在总时长内、保留三位毫秒；标记与内容必须在同一行。每个镜头时长不低于 1.5 秒，相邻镜头时间戳间隔 ≥1.5 秒，禁止一闪而过的碎镜头。单镜头内动作不超过 2-3 个。【两段音频】overall_soundscape 写环境音+物理声+非语言人声（1-4 句，声源+质感）；对白与画内声留在 detailed_description，这里不重复。non_diegetic_music 写仅观众可听的配乐。两段都必须正面写「有什么」，没有的写 N/A。【不写否定句】六段里一律不写否定句（「没有人声」「不含配乐」「没有动」）。本模型无负面分支，否定句会被当成要求渲染出来。缺席只有 N/A 一个写法。【说话与嘴部】说话人给稳定 ID (S1)/(S2)，同人跨镜同号，从不发声的不给号；(Sx) 不写进 retention_analysis。画内说话时，台词包在 <d>[Chinese] 台词原文</d> 里，并在 </d> 之后逐字写「他说话时下颌开合、嘴唇随字句张动」（主语按实际说话人换成她/它，其余逐字不动）。画外音（心里说/心声/内心独白/旁白）才写「嘴唇保持完全闭合」。有可见人物但没有台词的镜头，必须正面交代嘴在做什么。【retention 与正文同义】标注 fully_preserved 的内容，正文必须让它完全保留；正文要改动它，就改判 partially_preserved。两者打架 = 自相矛盾，重写那句。【物理规律·强制】所有运动符合真实物理：重力向下、物体自然下落、碰撞反弹、布料/头发/液体按物理运动；禁止反重力悬浮、物体凭空出现/消失、违反惯性瞬时变速。【色温】指定色温时严格遵循：暖光 3200K / 中性 4500K / 冷光 5600K。【物体状态锁定】物体被摧毁后只留碎片，不复活、不重置。【参考图引用标签】需要指定「某张参考图」时，用 <Picture N> 标签指代，N 按参考图上传顺序从 1 开始。禁止 @图N / [Image N] 写法。【台词标记】用户提供的台词必须逐字保留，用 <d>[Chinese] 台词原文</d> 包装，标签内文字一字不改。【人物真人质感】静止也有呼吸起伏/重心微移/自然眨眼/发丝微动，表情由眼神与细微张力传递（克制真实不夸张），动作有加减速与重心转移；禁止蜡像感/娃娃感/塑料皮肤/死鱼眼/固定微笑/机器人匀速/瞬间起停/卡通夸张表情。【禁止】禁止画面上的任何文字（招牌字/包装字/字幕/霓虹字/对话框/水印）；禁止分辨率/画幅/模型名。No text overlays, no watermarks, no subtitles, no captions.';
+const DEFAULT_PROMPT_RULE = '【语言】正文为中文；句中括注的官方英文词是执行指令，按括注执行。\n\n【参考图形态】参考图是 6 宫格故事板：宫格 1→2→3→4→5→6 是一条连续时间线，不是 6 张独立快照拼成的幻灯片。人物/场景/道具/光影跨宫格完全一致，动作从前一格自然延续到后一格。\n\n【参考图是真相】参考图锁定外观、身份与构图；参考图里没有的元素，一件都不许加。\n\n【禁止凭空人声】本任务入参只有参考图，不存在任何独立音频资产 ⇒ 一律不许出现 <Audio N>，不许加 audio reference / audio reuse。没有台词的镜头不许写成「有人在说台词」、不许给画面里的人挂 <d>；但环境音必须照官方 §4.6 正面写：官方逐字要求 overall_soundscape 汇总 ambient sound, physical action sounds, and non-verbal human sounds（如 wind, rain, traffic, footsteps, fabric movement, impacts, breathing, laughter, or panting）—— 嘈杂市场/餐馆的人群嗡杂、笑声、餐具碰撞、街市车流都属于这一档，必须写进 overall_soundscape；只有「用户明确要求全片静音」才写 N/A。不许把环境人声写成逐字台词、不许挂到具体人物身上做口型。\n\n【画外音】画外音只按正文里的官方英文句念，不许译成「以画外音说道」：says in an off-screen voiceover，同时 lips remain completely closed。\n\n【禁止】不许在画面里生成任何文字（招牌字/包装字/字幕/霓虹字/对话框/水印）；不许写分辨率、画幅、模型名。';
 
 const DEFAULT_RULES_NEGATIVE_PROMPT = 'chromatic aberration, motion blur excess, morphing, distortion, warping, flicker, unnatural physics, floating objects, anti-gravity, landmark distortion, landscape morphing, building warping, perspective distortion, color bleeding, plastic texture, CG look, 3D render, video game graphics, oversaturated colors, wrong scale, cloning artifacts, AI watermark, empty frame, static image, abrupt transition';
 
 const DEFAULT_RULES: VideoGenRules = {
-  version: '4',
+  version: '9',
   integration: {
     model: 'none',
     max_tokens: 0,
@@ -92,10 +92,10 @@ const DEFAULT_RULES: VideoGenRules = {
 
 // 直出兜底规则 —— 「直接生成视频」（videoGenNode）。完整规则见服务端 video_gen_rules_minimax_h3_direct.json
 // 与宫格版的唯一实质差异：参考图是若干张独立资产，**没有** 6 宫格时间线语义。
-const DEFAULT_PROMPT_RULE_DIRECT = '【核心指令】这是一段「参考图 → 视频」（全参考）的生成任务。正文必须严格遵循官方全参考六段式：段名逐字、次序固定、段名独占一行、尾随半角冒号、段间空行。subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:。主字段是 detailed_description（不是 integrated_multimodal_description）。客户端按字符串认段名，写错/漏段/换序 = 解析失败。六段之外不要再添加任何工程约束段——画面稳定、主体与场景锁定、反文字水印这类约束由本规则头统一注入，你不写。【参考图形态】本次参考图是若干张**相互独立**的素材（人物形象 / 产品 / 场景 / 风格），不是宫格故事板，它们之间**没有先后顺序、不构成时间线**。每张图各自锁定它承载的那部分外观与身份；镜头顺序、动作推进、时间线完全由你的正文建立，不要假设参考图之间存在「上一格 → 下一格」的延续关系。【参考图是真相，运动是你的职责】参考图锁定外观、身份与构图；但参考图里看得见的活物、道具、环境，它们的运动与状态变化必须用文字逐项写出——写明才会动，不写它就不动。用「环境保持不变」这类概括话等于没写。参考图里没有的元素，一件都不许加。【运镜闭集】运镜只能取自：Zoom In / Zoom Out、Push In / Pull Out、Pan Left / Pan Right、Truck Left / Truck Right、Tilt Up / Tilt Down、Pedestal Up / Pedestal Down、Arc Shot、Tracking Shot、Static Shot、Shake Slightly / Shake Strongly、POV、Roll Clockwise / Roll Counterclockwise，另加幅度 with small amplitude / with large amplitude、速度 at slow speed / at fast speed（中等幅度与常速省略不写）。表以外的镜头动作、表以外的镜头内光学操作，一律不写。运镜写成一整句自然的镜头内动作，不要在句尾堆机位标签。【切镜】切镜只用 the camera cuts to / the shot cuts to / the shot transitions to / the shot changes to / the shot switches to，且与镜头内容同一行。不写 Cut to / Then / Begin with 这类裸指令。【时间戳】[Shot 1] 不带时间戳；第 2 镜起写 At MM:SS.mmm，严格递增、落在总时长内、保留三位毫秒；镜头标记与镜头内容必须在同一行。每个镜头时长不低于 1.5 秒，相邻镜头时间戳间隔 ≥1.5 秒，禁止一闪而过的碎镜头。单镜头内动作不超过 2-3 个。【两段音频】overall_soundscape 写环境音+物理声+非语言人声（1-4 句，声源+质感）；对白与画内声留在 detailed_description，这里不重复。non_diegetic_music 写仅观众可听的配乐。两段都必须正面写「有什么」，没有的写 N/A。【不写否定句】六段里一律不写否定句（「没有人声」「不含配乐」「没有动」）。本模型无负面分支，否定句会被当成要求渲染出来。缺席只有 N/A 一个写法。【说话与嘴部】说话人给稳定 ID (S1)/(S2)，同人跨镜同号，从不发声的不给号；(Sx) 不写进 retention_analysis。画内说话时，台词包在 <d>[Chinese] 台词原文</d> 里，并在 </d> 之后逐字写「他说话时下颌开合、嘴唇随字句张动」（主语按实际说话人换成她/它，其余逐字不动）。画外音（心里说/心声/内心独白/旁白）才写「嘴唇保持完全闭合」。有可见人物但没有台词的镜头，必须正面交代嘴在做什么。【retention 与正文同义】retention_analysis 逐张交代每张参考图（及其上的主体）在本片的保留判定；标 fully_preserved 的内容正文必须让它完全保留，正文要改动它就改判 partially_preserved。两者打架 = 自相矛盾，重写那句。「完全保留」只锁外观与身份，不锁画面里天然在动的东西。【物理规律·强制】所有运动符合真实物理：重力向下、物体自然下落、碰撞反弹、布料/头发/液体按物理运动；禁止反重力悬浮、物体凭空出现/消失、违反惯性瞬时变速。【色温】指定色温时严格遵循：暖光 3200K / 中性 4500K / 冷光 5600K。【物体状态锁定】物体被摧毁后只留碎片，不复活、不重置。【人物与场景锁定·旅游专用】人物形象、服装与场景外观严格锁定于参考图，不漂移、不变形、不简化、不被 AI 重新设计。人物与环境始终是画面主角——每一帧都能看到主体或通过光影/构图暗示其存在。【人物真人质感】静止也有呼吸起伏/重心微移/自然眨眼/发丝微动，表情由眼神与细微张力传递（克制真实不夸张），动作有加减速与重心转移；禁止蜡像感/娃娃感/塑料皮肤/死鱼眼/固定微笑/机器人匀速/瞬间起停/卡通夸张表情。【参考图引用标签】需要指定「某张参考图」时，用 <Picture N> 标签指代，N 按参考图上传顺序从 1 开始（如 <Picture 1>）。禁止用 @图N、[Image N] 等其它写法。【台词标记】用户提供的台词/对白必须逐字保留，用 <d>[Chinese] 台词原文</d> 包装，标签内文字一字不改（不改写/不润色/不翻译/不增删字词），仅角色名与情绪语调可在标签外补充。【禁止】禁止画面上的任何文字（招牌字/包装字/字幕/霓虹字/对话框/水印）；禁止分辨率/画幅/模型名。No text overlays, no watermarks, no subtitles, no captions.';
+const DEFAULT_PROMPT_RULE_DIRECT = '【语言】正文为中文；句中括注的官方英文词是执行指令，按括注执行。\n\n【参考图形态】参考图是若干张相互独立的素材（人物形象 / 产品 / 场景 / 风格），不是宫格故事板，彼此没有先后顺序、不构成时间线。每张图各自锁定它承载的那部分外观与身份；镜头顺序、动作推进、时间线完全由正文建立，不要假设参考图之间存在「上一格 → 下一格」的延续关系。\n\n【参考图是真相】参考图锁定外观、身份与构图；参考图里没有的元素，一件都不许加。\n\n【禁止凭空人声】本任务入参只有参考图，不存在任何独立音频资产 ⇒ 一律不许出现 <Audio N>，不许加 audio reference / audio reuse。没有台词的镜头不许写成「有人在说台词」、不许给画面里的人挂 <d>；但环境音必须照官方 §4.6 正面写：官方逐字要求 overall_soundscape 汇总 ambient sound, physical action sounds, and non-verbal human sounds（如 wind, rain, traffic, footsteps, fabric movement, impacts, breathing, laughter, or panting）—— 嘈杂市场/餐馆的人群嗡杂、笑声、餐具碰撞、街市车流都属于这一档，必须写进 overall_soundscape；只有「用户明确要求全片静音」才写 N/A。不许把环境人声写成逐字台词、不许挂到具体人物身上做口型。\n\n【画外音】画外音只按正文里的官方英文句念，不许译成「以画外音说道」：says in an off-screen voiceover，同时 lips remain completely closed。\n\n【禁止】不许在画面里生成任何文字（招牌字/包装字/字幕/霓虹字/对话框/水印）；不许写分辨率、画幅、模型名。';
 
 const DEFAULT_RULES_DIRECT: VideoGenRules = {
-  version: '4',
+  version: '9',
   integration: {
     model: 'none',
     max_tokens: 0,
@@ -149,7 +149,23 @@ const DEFAULT_RULES_DIRECT: VideoGenRules = {
 export type VideoGenRuleMode = 'grid' | 'direct';
 
 /** 按 `${model||'default'}|${mode}` 分键缓存 —— 单值缓存会让切模型/切 mode 串规则 */
-const rulesCache = new Map<string, VideoGenRules>();
+/**
+ * 规则头的进程内缓存有效期。
+ *
+ * 🔴 2026-10-16 两次生产事故都栽在这里：缓存原先**没有 TTL**，一个进程只取一次，
+ *   ⇒ 服务端热更后，**开着的客户端永远拿不到新头**，用户必须重启客户端才行。
+ *   最惨的一次：客户端还揣着 v6 头（5355 字），加上正文合计 7848 字，
+ *   直接撞上视频模型 `Params [Prompt], should be in [1, 7000]` 提交失败 ——
+ *   而线上早已是短得多的新版头。查了服务端 access log 才确认是**客户端没换头**。
+ * 5 分钟：热点路径最多每 5 分钟多一次 HTTP 请求，对交互无可感影响。
+ */
+const RULES_TTL_MS = 5 * 60 * 1000;
+
+interface RulesCacheEntry {
+  rules: VideoGenRules;
+  at: number;
+}
+const rulesCache = new Map<string, RulesCacheEntry>();
 const inflight = new Map<string, Promise<VideoGenRules>>();
 
 function cacheKey(model: string | undefined, mode: VideoGenRuleMode): string {
@@ -162,7 +178,7 @@ export async function fetchVideoGenRules(
 ): Promise<VideoGenRules> {
   const key = cacheKey(model, mode);
   const hit = rulesCache.get(key);
-  if (hit) return hit;
+  if (hit && Date.now() - hit.at < RULES_TTL_MS) return hit.rules;
   const pending = inflight.get(key);
   if (pending) return pending;
 
@@ -178,14 +194,18 @@ export async function fetchVideoGenRules(
         parsed.prompt_rule = parsed.r2v_prompt_rule;
       }
       if (parsed?.version && parsed.constraints) {
-        rulesCache.set(key, parsed);
+        rulesCache.set(key, { rules: parsed, at: Date.now() });
         return parsed;
       }
       throw new Error('Invalid rules from server');
     } catch (e) {
       console.warn(`[videoGenRules] Server fetch failed (${key}), using fallback:`, e);
+      // 🔴 兜底**不再永久驻留**：曾经一次网络抖动就让整个进程再也拿不到线上头。
+      // 优先沿用上次成功取到的规则头（那也远比内置兜底接近线上）；
+      // 沿用时不刷新时间戳 ⇒ 下个 TTL 窗口还会重试。只有从没成功取到过时才用内置兜底。
+      if (hit) return hit.rules;
       const fallback = mode === 'direct' ? DEFAULT_RULES_DIRECT : DEFAULT_RULES;
-      rulesCache.set(key, fallback);
+      rulesCache.set(key, { rules: fallback, at: Date.now() });
       return fallback;
     } finally {
       inflight.delete(key);
@@ -197,7 +217,7 @@ export async function fetchVideoGenRules(
 }
 
 export function getCachedRules(model?: string, mode: VideoGenRuleMode = 'grid'): VideoGenRules | null {
-  return rulesCache.get(cacheKey(model, mode)) ?? null;
+  return rulesCache.get(cacheKey(model, mode))?.rules ?? null;
 }
 
 export function clearRulesCache(): void {

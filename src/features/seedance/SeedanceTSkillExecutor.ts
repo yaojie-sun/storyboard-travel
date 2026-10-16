@@ -1,5 +1,5 @@
 import { checkSkillAccess } from '../../utils/skillAccessHelper';
-import { bananaGetCurrentUser, isBananaLoggedIn } from '../../commands/ai';
+import { bananaGetCurrentUser, isBananaLoggedIn, isAuthRejectedError } from '../../commands/ai';
 
 /**
  * Seedance-T 技能执行器
@@ -41,7 +41,14 @@ export class SeedanceTSkillExecutor {
       return true;
     } catch (error) {
       console.error('[Seedance-T Skill] 检查权限时发生错误:', error);
-      return false;
+      const msg = error instanceof Error ? error.message : String(error);
+      if (isAuthRejectedError(msg)) {
+        return false;
+      }
+      // 🔴 网络类错误**不要**报成「剩余次数为0，请充值」—— 那是误伤付费用户。
+      // 放行本次调用，真没次数/真未授权会由服务端的计费环节拦下。
+      console.warn('[Seedance-T Skill] 服务器不可达，放行本次调用（由服务端计费环节把关）');
+      return true;
     }
   }
 

@@ -9,7 +9,7 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useAssetStore } from '@/stores/assetStore';
 import { resolveImageDisplayUrl, imageUrlToDataUrl } from '@/features/canvas/application/imageData';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
-import { bananaSubmitVideoJob, bananaPollVideoJob, bananaCheckCredits, bananaReportUsage, bananaRefundCredits } from '@/commands/ai';
+import { bananaSubmitVideoJob, bananaPollVideoJob, bananaCheckCredits, bananaReportUsage, bananaRefundCredits, bananaVideoQueueStatus, bananaCancelQueuedVideoJob } from '@/commands/ai';
 import { enhanceVideo } from '@/commands/enhance';
 import { RechargeDialog } from '@/components/RechargeDialog';
 import { UiModal, UiChipButton } from '@/components/ui';
@@ -26,6 +26,103 @@ import {
   type VideoDuration,
   type VideoResolution,
 } from './videoPricing';
+
+/**
+ * 视频模型对 prompt 的硬上限：`Params [Prompt], should be in [1, 7000]`。
+ * 超限 = 直接 RetCode 220 提交失败（任务不建），所以拼装后必须兜住。
+ * 留 100 字余量。
+ */
+const VIDEO_PROMPT_MAX_CHARS = 6900;
+
+/**
+ * 超限时规则头的**块丢弃顺序**（先丢最不影响的）。
+ *
+ * 规则头由若干 `【…】` 块组成，`【】` 之前的引子块名字为空串。超限时整块丢弃，
+ * **绝不句中腰斩** —— 旧实现是 `slice(0, budget)`，一刀切在中间，丢掉的恰好是排在
+ * 后面的块，等于把最需要约束的部分删干净、留下最泛的部分。
+ *
+ * 规则头已瘦身（v9：只留只有视频模型这一层才需要知道的接线说明，写作规范全部回
+ * SKILL.md / writer_rules），当前头 762 字（宫格）/ 803 字（直出），正文额度约 6090 字，
+ * 正常不会触发丢弃。
+ * 顺序依据（越靠前越可丢）：
+ *   ① 【画外音】—— 官方英文触发句本来就由写手逐字写进正文，这块是双保险
+ *   ② 【参考图是真相】—— 表述最泛
+ *   ③ 【参考图形态】—— 表述较具体，往后挪
+ *   ④ 【禁止】—— 画面文字类负面词已逐项并入 `negative_prompt`
+ * 保底不丢：【语言】【禁止凭空人声】（后者是「模型自配听不懂人声」的病根）
+ */
+const RULE_DROP_ORDER = ['画外音', '参考图是真相', '参考图形态', '禁止'];
+
+/** 按 `【…】` 把规则头切成块；`【】` 之前的引子归为名字为空串的一块 */
+function splitRuleBlocks(rule: string): { name: string; text: string }[] {
+  return rule
+    .split(/(?=【)/)
+    .filter((p) => p.length > 0)
+    .map((text) => {
+      const m = /^【([^】]*)】/.exec(text);
+      return { name: m ? m[1] : '', text };
+    });
+}
+
+/**
+ * 规则头 + 正文拼装，保证不越过服务端硬限（`Params [Prompt], should be in [1, 7000]`）。
+ * 规则头只是「保险」，六段正文才是正片 —— 超限时只动规则头，**绝不裁用户正文**。
+ */
+function assembleVideoPrompt(rule: string, body: string): string {
+  if (!rule) return body;
+
+  const budget = VIDEO_PROMPT_MAX_CHARS - body.length - 2;
+  if (budget <= 0) {
+    // 正文本身就把额度吃光了：规则头全长也比截断强不了，直接省掉并留痕
+    console.warn(`[VideoGenDialog] 正文 ${body.length} 字已超出视频模型上限，省略规则头`);
+    return body;
+  }
+  if (rule.length <= budget) return `${rule}\n\n${body}`;
+
+  let blocks = splitRuleBlocks(rule);
+  const total = () => blocks.reduce((n, b) => n + b.text.length, 0);
+
+  for (const name of RULE_DROP_ORDER) {
+    if (total() <= budget) break;
+    const before = blocks.length;
+    blocks = blocks.filter((b) => b.name !== name);
+    if (blocks.length < before) {
+      console.warn(`[VideoGenDialog] 规则头超预算 ${budget} 字，已丢弃【${name}】块`);
+    }
+  }
+
+  let effectiveRule = blocks.map((b) => b.text).join('');
+  if (effectiveRule.length > budget) {
+    // 丢到没得可丢还超 ⇒ 才硬截断（正常不该走到这里）
+    console.warn(
+      `[VideoGenDialog] 规则头丢块后仍超预算 ${budget} 字（现 ${effectiveRule.length}），已硬截断`,
+    );
+    effectiveRule = effectiveRule.slice(0, budget);
+  }
+  return effectiveRule ? `${effectiveRule}\n\n${body}` : body;
+}
+
+interface ReferenceImage {
+  id: string;
+  url: string;
+  rawUrl: string;
+}
+
+interface ReferenceVoice {
+  id: string;
+  url: string;
+  rawUrl: string;
+  fileName: string;
+}
+
+/**
+ * 音色参考入口开关。
+ * 当前线路（minimax/mod.rs）只读 duration_seconds / quality，reference_voice 被静默丢弃，
+ * 上传了也不影响成片 —— 所以入口下线、不再让用户白传。
+ * 🔴 只关 UI：referenceVoice state、saveConfig 回填、hydrateVideoGenStore 链路一律保持原样，
+ *    历史配置里已存的音色参考照常读回、照常写回（§12.4 用户数据保护）。
+ */
+const VOICE_REF_UI_ENABLED = false;
 
 interface ReferenceImage {
   id: string;
@@ -70,6 +167,14 @@ function translateVideoError(errorMsg: string): { title: string; detail: string 
   // 本地操作（超分等）的错误直接透传，不走云端错误翻译
   if (msg.startsWith('[LOCAL]')) {
     return { title: '本地处理失败', detail: msg.slice(7).trim() };
+  }
+  // —— 本机并发排队（必须排在关键词扫描之前）——
+  // 文案里刻意不含 安全/参数/额度/限流/超时/网络 等词，否则会被下面的规则抢走。
+  if (msg.startsWith('QUEUE_FULL:')) {
+    return { title: '同时生成的任务较多', detail: msg.slice('QUEUE_FULL:'.length).trim() };
+  }
+  if (msg.startsWith('QUEUE_TIMEOUT:')) {
+    return { title: '排队等待结束', detail: msg.slice('QUEUE_TIMEOUT:'.length).trim() };
   }
   const lower = msg.toLowerCase();
 
@@ -556,13 +661,19 @@ function VideoGenDialogInner({
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
-  const [generationPhase, setGenerationPhase] = useState<'queued' | 'generating' | null>(null);
+  // 'localQueue' = 本机 KEY 池排队（与上游的 'queued' 语义不同：这里是**还没扣费**）
+  const [generationPhase, setGenerationPhase] = useState<'queued' | 'generating' | 'localQueue' | null>(null);
+  /** 本机排队时排在自己前面的数量（仅展示） */
+  const [queueAhead, setQueueAhead] = useState(0);
   const [isLocalEnhancing, setIsLocalEnhancing] = useState(false);
   const [localEnhanceProgress, setLocalEnhanceProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const submitParamsRef = useRef<{ aspectRatio: string; duration: number; videoModel: string; refUrls: string[]; negativePrompt?: string } | null>(null);
   const retryCountRef = useRef(0);
+  /** 本机排队凭据：非空表示「正在排队、还没拿到槽位、也没扣费」 */
+  const queueTokenRef = useRef<string | null>(null);
+  const executeGenerateRef = useRef<((queueToken?: string) => Promise<void>) | null>(null);
   const [showPromptPicker, setShowPromptPicker] = useState(false);
   // @图 picker 已移除：分镜提示词不可手动修改
   const showPromptPickerRef = useRef(false);
@@ -709,6 +820,69 @@ function VideoGenDialogInner({
     }
   }, [prompt, aspectRatio, duration, referenceImages, saveConfig, addToHistory, t]);
 
+  // ── 本机 KEY 池排队：轮询凭据状态，轮到自己才重发提交 ──
+  //
+  // 为什么不在后端命令里等着：关掉小窗/关主窗口（进程 exit）时没有任何回调能保证执行，
+  // 长 await 排队会变成「钱扣了、任务跑了、前端已经不在了」。所以排队阶段**不扣费**，
+  // 由前端主动轮询；一停（关窗、崩溃、进程退出）租约 12 秒到期，什么都没占。
+  const startQueueWait = useCallback(async (token: string) => {
+    const QUEUE_POLL_INTERVAL = 3000;
+    // 排队自带上限（MAX_POLL_MS 只管「已提交后」的轮询，管不到排队阶段）
+    const MAX_QUEUE_MS = 30 * 60 * 1000;
+    const startTime = Date.now();
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
+
+    const abandon = (message: string) => {
+      queueTokenRef.current = null;
+      setGenerationPhase(null);
+      setQueueAhead(0);
+      setIsGenerating(false);
+      setError(message);
+    };
+
+    try {
+      while (true) {
+        if (controller.signal.aborted) return;
+        await new Promise((r) => setTimeout(r, QUEUE_POLL_INTERVAL));
+        if (controller.signal.aborted) return;
+
+        let st;
+        try {
+          st = await bananaVideoQueueStatus(token);
+        } catch (e) {
+          // 网络抖动：继续轮询（真正放弃由租约过期后的 gone 兜底）
+          console.warn('[VideoGenDialog] queue status failed:', e);
+          continue;
+        }
+        if (controller.signal.aborted) return;
+
+        if (st.state === 'ready') {
+          // 轮到自己了 → 用同一个凭据重发提交；只有这一次会真正占槽 + 扣费
+          setQueueAhead(0);
+          setGenerationPhase('generating');
+          await executeGenerateRef.current?.(token);
+          return;
+        }
+        if (st.state === 'gone') {
+          abandon(t('videoGen.queueTimeout', '排队已失效，请重新点击生成'));
+          return;
+        }
+        setQueueAhead(st.ahead ?? 0);
+
+        if (Date.now() - startTime > MAX_QUEUE_MS) {
+          bananaCancelQueuedVideoJob(token).catch(() => {});
+          abandon(t('videoGen.queueTimeout', '排队等待超时，请稍后重试'));
+          return;
+        }
+      }
+    } finally {
+      if (pollAbortRef.current === controller) {
+        pollAbortRef.current = null;
+      }
+    }
+  }, [t]);
+
   // 重进页面时：有 pendingTaskId 但无 videoUrl → 自动续接
   useEffect(() => {
     const pid = savedConfig?.pendingTaskId;
@@ -740,6 +914,14 @@ function VideoGenDialogInner({
       if (pollAbortRef.current) {
         pollAbortRef.current.abort();
         pollAbortRef.current = null;
+      }
+      // 排队中关小窗：主动交还排队凭据（**未扣费**，纯释放）。
+      // 已经有 taskId 时 queueTokenRef 已被清空 ⇒ 绝不会动正在跑的任务，
+      // 守住「关小窗不杀作业」的既有契约。
+      const qt = queueTokenRef.current;
+      if (qt) {
+        queueTokenRef.current = null;
+        bananaCancelQueuedVideoJob(qt).catch(() => {});
       }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -895,7 +1077,7 @@ function VideoGenDialogInner({
     setShowConfirmDialog(true);
   }, [prompt, referenceImages, duration, t]);
 
-  const executeGenerate = useCallback(async () => {
+  const executeGenerate = useCallback(async (queueToken?: string) => {
     setShowConfirmDialog(false);
     setError(null);
 
@@ -930,10 +1112,8 @@ function VideoGenDialogInner({
       const shotType = rules.shot_type;
 
       // 规则头尾句（代码层 100% 可靠追加，AI 无法遗忘）
-      finalPrompt = promptRule
-        ? `${promptRule}\n\n${userContent}`
-        : userContent;
-      console.log(`[VideoGenDialog] MiniMax H3, mode:`, mode, 'refs:', referenceImages.length, 'hasRule:', !!promptRule, 'hasNegPrompt:', !!negativePrompt, 'guidanceScale:', guidanceScale, 'shotType:', shotType, 'promptLen:', finalPrompt.length);
+      finalPrompt = assembleVideoPrompt(promptRule, userContent);
+      console.log(`[VideoGenDialog] MiniMax H3, mode:`, mode, 'refs:', referenceImages.length, 'hasRule:', !!promptRule, 'hasNegPrompt:', !!negativePrompt, 'guidanceScale:', guidanceScale, 'shotType:', shotType, 'promptLen:', finalPrompt.length, 'ruleLen:', promptRule.length, 'bodyLen:', userContent.length);
 
       // 4. 准备参考图 — 直接用 base64
       const imageInput: string[] = [];
@@ -984,7 +1164,19 @@ function VideoGenDialogInner({
         guidanceScale,
         shotType,
         model: videoModel,
+        // 排队重发时带上同一个凭据（后端据此复用排队位、并防止同一个凭据重复扣费）
+        queueToken,
       });
+
+      // 本机 KEY 池没有空位 → 排队（**此时未扣费**），交给 startQueueWait 轮询
+      if (result.queued && result.queueToken) {
+        queueTokenRef.current = result.queueToken;
+        setQueueAhead(result.queueAhead ?? 0);
+        setGenerationPhase('localQueue');
+        setIsGenerating(true);
+        startQueueWait(result.queueToken);
+        return;
+      }
 
       if (result.success) {
         const deducted = result.creditsDeducted ?? 0;
@@ -1036,6 +1228,9 @@ function VideoGenDialogInner({
           setIsGenerating(false);
         } else if (result.taskId) {
           // 异步任务，存储 taskId 开始轮询
+          // 凭据交还给后端了：清空排队引用，卸载清理就不会再去取消（保证不干扰在跑的任务）
+          queueTokenRef.current = null;
+          setQueueAhead(0);
           setPendingTaskId(result.taskId);
           if (nodeIdRef.current) {
             saveConfig(nodeIdRef.current, {
@@ -1050,10 +1245,15 @@ function VideoGenDialogInner({
           startPolling(result.taskId, false, deducted, videoModel);
         } else {
           setIsGenerating(false);
+          queueTokenRef.current = null;
+          setGenerationPhase(null);
           setError(t('videoGen.unknownError', '未知错误'));
         }
       } else if (result.error) {
         setIsGenerating(false);
+        queueTokenRef.current = null;
+        setGenerationPhase(null);
+        setQueueAhead(0);
         if (result.error.startsWith('INSUFFICIENT_CREDITS')) {
           setInsufficientRequired(result.requiredCredits ?? computeVideoCost(duration, false));
           setInsufficientCurrent(result.currentCredits ?? 0);
@@ -1063,14 +1263,21 @@ function VideoGenDialogInner({
         }
       } else {
         setIsGenerating(false);
+        queueTokenRef.current = null;
+        setGenerationPhase(null);
         setError(t('videoGen.unknownError', '未知错误'));
       }
     } catch (e: any) {
       setIsGenerating(false);
+      queueTokenRef.current = null;
+      setGenerationPhase(null);
       setError(e?.message || e?.toString() || t('videoGen.unknownError', '未知错误'));
     }
     // 注意：不在 finally 中 setIsGenerating(false)，轮询函数会在完成/失败时设置
-  }, [prompt, aspectRatio, duration, videoModel, referenceImages, t, saveConfig, addToHistory, startPolling, mode]);
+  }, [prompt, aspectRatio, duration, videoModel, referenceImages, t, saveConfig, addToHistory, startPolling, startQueueWait, mode]);
+
+  // 供 startQueueWait 回调（避免 useCallback 之间的循环依赖/失效闭包）
+  executeGenerateRef.current = executeGenerate;
 
   // 对话框关闭时强制落盘，防止防抖窗口内数据丢失
   useEffect(() => {
@@ -1191,6 +1398,7 @@ function VideoGenDialogInner({
         isGenerating={isGenerating}
         isResuming={isResuming}
         generationPhase={generationPhase}
+        queueAhead={queueAhead}
         jobStartedAt={jobStartedAt}
         videoUrl={videoUrl}
         errorTitle={videoErr?.title ?? null}
@@ -1413,48 +1621,50 @@ function VideoGenDialogInner({
                 )}
               </div>
 
-              {/* 音色参考上传 */}
-              <div className="mt-4">
-                <label className="mb-1.5 block text-xs font-medium text-text-muted">
-                  {t('videoGen.voiceRef', '音质参考（可选）')}
-                </label>
-                {referenceVoice ? (
-                  <div className="flex items-center gap-2 rounded-lg border border-[rgba(255,255,255,0.1)] bg-bg-dark px-3 py-2">
-                    <span className="flex-1 truncate text-xs text-text-dark">{referenceVoice.fileName}</span>
-                    <button type="button" onClick={() => setReferenceVoice(null)} className="text-text-muted hover:text-red-400">
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const input = document.createElement('input');
-                      input.type = 'file';
-                      input.accept = 'audio/*';
-                      input.onchange = async (e) => {
-                        const file = (e.target as HTMLInputElement).files?.[0];
-                        if (!file) return;
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                          setReferenceVoice({
-                            id: `voice-${Date.now()}`,
-                            rawUrl: reader.result as string,
-                            url: reader.result as string,
-                            fileName: file.name,
-                          });
+              {/* 音色参考上传 —— 当前线路丢弃该参数，入口暂时下线（见 VOICE_REF_UI_ENABLED） */}
+              {VOICE_REF_UI_ENABLED && (
+                <div className="mt-4">
+                  <label className="mb-1.5 block text-xs font-medium text-text-muted">
+                    {t('videoGen.voiceRef', '音质参考（可选）')}
+                  </label>
+                  {referenceVoice ? (
+                    <div className="flex items-center gap-2 rounded-lg border border-[rgba(255,255,255,0.1)] bg-bg-dark px-3 py-2">
+                      <span className="flex-1 truncate text-xs text-text-dark">{referenceVoice.fileName}</span>
+                      <button type="button" onClick={() => setReferenceVoice(null)} className="text-text-muted hover:text-red-400">
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = 'audio/*';
+                        input.onchange = async (e) => {
+                          const file = (e.target as HTMLInputElement).files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            setReferenceVoice({
+                              id: `voice-${Date.now()}`,
+                              rawUrl: reader.result as string,
+                              url: reader.result as string,
+                              fileName: file.name,
+                            });
+                          };
+                          reader.readAsDataURL(file);
                         };
-                        reader.readAsDataURL(file);
-                      };
-                      input.click();
-                    }}
-                    className="flex h-9 items-center gap-1.5 rounded-lg border border-dashed border-[rgba(255,255,255,0.15)] bg-bg-dark px-3 text-xs text-text-muted transition-colors hover:border-purple-400/40 hover:text-purple-300"
-                  >
-                    <Upload className="h-4 w-4" />
-                    {t('videoGen.uploadVoice', '上传音质参考')}
-                  </button>
-                )}
-              </div>
+                        input.click();
+                      }}
+                      className="flex h-9 items-center gap-1.5 rounded-lg border border-dashed border-[rgba(255,255,255,0.15)] bg-bg-dark px-3 text-xs text-text-muted transition-colors hover:border-purple-400/40 hover:text-purple-300"
+                    >
+                      <Upload className="h-4 w-4" />
+                      {t('videoGen.uploadVoice', '上传音质参考')}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
           </div>
@@ -1508,12 +1718,14 @@ function VideoGenDialogInner({
                 <p className="text-sm font-medium text-text-dark">
                   {isResuming
                     ? t('videoGen.resuming', '正在恢复之前的视频生成任务...')
+                    : generationPhase === 'localQueue'
+                      ? t('videoGen.localQueue', '正在等待空闲通道...')
                       : generationPhase === 'queued'
                         ? t('videoGen.queued', '正在排队中，请耐心等待...')
                         : t('videoGen.generating', '正在生成视频...')}
                 </p>
                 <span className="inline-flex items-center gap-1 text-xs text-text-muted">
-                  {isResuming ? '小鸭正在处理中，请耐心等待...' : generationPhase === 'queued' ? t('videoGen.queuedHint', '排队任务较多，可能需要几分钟到十几分钟，请勿关闭窗口') : '预计需要 30–60 秒'}
+                  {isResuming ? '小鸭正在处理中，请耐心等待...' : generationPhase === 'localQueue' ? t('videoGen.queueAhead', { n: queueAhead, defaultValue: '前面还有 {{n}} 个任务，轮到后会自动开始' }) : generationPhase === 'queued' ? t('videoGen.queuedHint', '排队任务较多，可能需要几分钟到十几分钟，请勿关闭窗口') : '预计需要 30–60 秒'}
                   <span className="inline-flex items-center">
                     <span className="mx-0.5 h-1 w-1 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '0ms' }} />
                     <span className="mx-0.5 h-1 w-1 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '150ms' }} />
@@ -1694,7 +1906,7 @@ function VideoGenDialogInner({
             </UiChipButton>
             <UiChipButton
               className="h-8 px-3 text-xs border-purple-400/60 bg-purple-500/20 text-purple-200"
-              onClick={executeGenerate}
+              onClick={() => executeGenerate()}
             >
               {t('videoGen.confirmGenerate', '确认生成')}
             </UiChipButton>

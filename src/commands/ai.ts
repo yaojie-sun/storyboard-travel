@@ -704,17 +704,83 @@ async function handleInsufficientCredits(): Promise<void> {
 /**
  * 检查是否已登录Banana API
  */
+/**
+ * 服务端「明确否认身份」判定（**白名单**）。
+ *
+ * 🔴 只有命中这里的特征才算「登录已失效」；**其余一切失败（超时、连接被重置、DNS 失败、
+ * 网关 5xx、TLS 失败、响应体读一半断掉、未知错误）一律按网络类处理** ——
+ * 保持登录态、不要弹登录框。
+ *
+ * 与 Rust 侧 `banana_api::looks_like_auth_rejection` 是同一份白名单，改一侧必须同改另一侧。
+ */
+export function isAuthRejectedError(message: string): boolean {
+  const m = (message || '').toLowerCase();
+  return (
+    m.includes('401') ||
+    m.includes('403') ||
+    m.includes('unauthorized') ||
+    m.includes('invalid token') ||
+    m.includes('invalid_token') ||
+    m.includes('invalid api key') ||
+    m.includes('token expired') ||
+    m.includes('token is invalid') ||
+    m.includes('令牌无效') ||
+    m.includes('令牌已失效') ||
+    m.includes('未授权') ||
+    m.includes('设备令牌未找到')
+  );
+}
+
+/** 登录态探针的三态结果。 */
+export type LoginProbe = 'logged_in' | 'logged_out' | 'unreachable';
+
+/**
+ * 探一次登录态。**不会因为网络抖动就认定用户没登录。**
+ *
+ * - `logged_in`  ：服务端确认身份有效
+ * - `logged_out` ：服务端**明确否认**身份（401/403/token 无效），或本地压根没有令牌
+ * - `unreachable`：网络不可达 / 未知错误 ⇒ **保持现状**，后台重试即可
+ */
+export async function probeLoginState(): Promise<LoginProbe> {
+  if (!isTauri()) {
+    return 'logged_out';
+  }
+  try {
+    await bananaGetCurrentUser();
+    return 'logged_in';
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return isAuthRejectedError(msg) ? 'logged_out' : 'unreachable';
+  }
+}
+
+/**
+ * 上一次确认过的登录态，供「网络不可达」时沿用。
+ * 初始为 `true`：没探过之前不主动登出，避免误踢正在使用的付费用户。
+ */
+let lastKnownLoggedIn = true;
+
 export async function isBananaLoggedIn(): Promise<boolean> {
   if (!isTauri()) {
     return false;
   }
 
-  try {
-    await bananaGetCurrentUser();
+  const state = await probeLoginState();
+  if (state === 'logged_in') {
+    lastKnownLoggedIn = true;
     return true;
-  } catch (error) {
+  }
+  if (state === 'logged_out') {
+    lastKnownLoggedIn = false;
     return false;
   }
+  // unreachable：网络问题 ≠ 登录失效 ⇒ 沿用上一次已知状态
+  return lastKnownLoggedIn;
+}
+
+/** 供登出时复位记忆，避免下一个账号沿用上一个账号的状态。 */
+export function resetLastKnownLoginState(): void {
+  lastKnownLoggedIn = true;
 }
 
 /**
@@ -827,9 +893,18 @@ export async function checkSkillPermission(): Promise<{ allowed: boolean; messag
     };
   } catch (error) {
     console.error('[Skill Permission] 检查权限失败:', error);
+    const msg = error instanceof Error ? error.message : String(error);
+    if (isAuthRejectedError(msg)) {
+      return {
+        allowed: false,
+        message: '请先登录小鸭中台账号',
+        credits: 0
+      };
+    }
+    // 网络类错误：**不要**报成「未登录 / 没次数」，如实说是网络问题
     return {
       allowed: false,
-      message: '权限检查失败，请检查网络连接或重新登录',
+      message: '网络不稳定，暂时无法校验权限，请稍后重试',
       credits: 0
     };
   }
@@ -896,6 +971,8 @@ export interface VideoGenParams {
   negativePrompt?: string;
   guidanceScale?: number;
   shotType?: string;
+  /** 排队凭据：首调用为空，被判排队后由前端带着同一个 token 重发（凭证式排队） */
+  queueToken?: string;
 }
 
 export interface VideoGenResult {
@@ -906,6 +983,15 @@ export interface VideoGenResult {
   error?: string;
   requiredCredits?: number;
   currentCredits?: number;
+  /** 需要排队（此时**未扣费**），拿 queueToken 去轮询状态 */
+  queued?: boolean;
+  status?: string;
+  queueToken?: string;
+  /** 排在自己前面的数量 */
+  queueAhead?: number;
+  /** 总并发容量 = KEY 数 × 每 KEY 并发 */
+  capacity?: number;
+  inFlight?: number;
 }
 
 export async function bananaSubmitVideoJob(params: VideoGenParams): Promise<VideoGenResult> {
@@ -921,11 +1007,32 @@ export async function bananaSubmitVideoJob(params: VideoGenParams): Promise<Vide
     negativePrompt: params.negativePrompt || null,
     guidanceScale: params.guidanceScale ?? null,
     shotType: params.shotType || null,
+    queueToken: params.queueToken || null,
   });
 }
 
+export interface VideoQueueStatus {
+  /** ready = 轮到自己了，可以重发提交；waiting = 继续等；gone = 租约过期/已取消 */
+  state: 'ready' | 'waiting' | 'gone';
+  ahead: number;
+  inFlight?: number;
+  capacity?: number;
+  keyCount?: number;
+  waiting?: number;
+}
+
+/** 查询排队凭据状态（同时续租；12 秒不续即视为放弃，未扣费） */
+export async function bananaVideoQueueStatus(queueToken: string): Promise<VideoQueueStatus> {
+  return invoke<VideoQueueStatus>('banana_video_queue_status', { queueToken });
+}
+
+/** 取消排队（未扣费，无副作用） */
+export async function bananaCancelQueuedVideoJob(queueToken: string): Promise<{ cancelled: boolean }> {
+  return invoke<{ cancelled: boolean }>('banana_cancel_queued_video_job', { queueToken });
+}
+
 export interface VideoPollResult {
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'retry';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'retry' | 'unknown_key';
   videoUrl?: string;
   error?: string;
   creditsRefunded?: boolean;

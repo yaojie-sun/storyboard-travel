@@ -358,8 +358,13 @@ impl MiniMaxProvider {
         task_id: &str,
     ) -> Result<ProviderTaskPollResult, AIError> {
         let endpoint = format!("{}{}/{}", BASE_URL, QUERY_PATH, task_id);
-        let key_prefix = if api_key.len() > 20 { &api_key[..20] } else { api_key };
-        info!("[MiniMax H3 Poll] url={}, key={}...", endpoint, key_prefix);
+        // ⚠️ 绝不打密钥本身（多 KEY 池之后每 3 秒一次轮询会把密钥写满日志）。
+        // 只打「用哪个 KEY」的指纹前缀，够定位、不可逆。
+        info!(
+            "[MiniMax H3 Poll] url={}, key_fp={}",
+            endpoint,
+            &crate::commands::video_key_pool::fingerprint(api_key)[..8]
+        );
 
         let response = self
             .client

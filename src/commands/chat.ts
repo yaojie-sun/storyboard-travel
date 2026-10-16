@@ -30,8 +30,27 @@ export async function loadChatConversations(projectId: string): Promise<string> 
   return await invoke<string>('load_chat_conversations', { projectId });
 }
 
-export async function migrateChatStorage(): Promise<string> {
-  return await invoke<string>('migrate_chat_storage');
+/**
+ * 迁移旧版单文件 `chat_conversations.json` → 按项目分文件。
+ *
+ * `fallbackProjectId` 传**当前打开的项目**：反查不到归属的对话会并入它，
+ * 而不是倒进没人读的 `chat/global.json`（2026-10-16 数据事故根因）。
+ * 未打开项目时不传 —— 后端会**拒绝迁移并保留源文件**，下次再试。
+ */
+export async function migrateChatStorage(fallbackProjectId?: string): Promise<string> {
+  return await invoke<string>('migrate_chat_storage', {
+    fallbackProjectId: fallbackProjectId ?? null,
+  });
+}
+
+/**
+ * 一次性回捞：把历史上被错误写进 `chat/global.json` 的对话重新分发回各自项目文件。
+ * **只增不减**（先备份 + 并集合并），不删 `global.json` —— 它是那批对话的最后一份备份。
+ */
+export async function recoverStrandedChat(fallbackProjectId?: string): Promise<string> {
+  return await invoke<string>('recover_stranded_chat', {
+    fallbackProjectId: fallbackProjectId ?? null,
+  });
 }
 
 /**

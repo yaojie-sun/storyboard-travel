@@ -51,8 +51,11 @@ function formatElapsed(ms: number): string {
 export interface VideoGenDockProps {
   isGenerating: boolean;
   isResuming: boolean;
-  /** 与弹窗内预览区同一套语义（`VideoGenDialogInner` 的 `generationPhase`）。 */
-  generationPhase: 'queued' | 'generating' | null;
+  /** 与弹窗内预览区同一套语义（`VideoGenDialogInner` 的 `generationPhase`）。
+   *  `'localQueue'` = 本机通道排队（前面还有几个任务），此时**尚未扣费**。 */
+  generationPhase: 'queued' | 'generating' | 'localQueue' | null;
+  /** 本机排队时排在前面的数量（仅 `'localQueue'` 用得上）。 */
+  queueAhead?: number;
   /** 本次轮询开始的时刻；`null` 表示当前没有在跑的作业。 */
   jobStartedAt: number | null;
   videoUrl: string | null;
@@ -82,6 +85,7 @@ export function VideoGenDock({
   isGenerating,
   isResuming,
   generationPhase,
+  queueAhead = 0,
   jobStartedAt,
   videoUrl,
   errorTitle,
@@ -106,9 +110,12 @@ export function VideoGenDock({
 
   const phaseText = useMemo(() => {
     if (isResuming) return t('videoGen.resuming');
+    if (generationPhase === 'localQueue') {
+      return `${t('videoGen.localQueue')} · ${t('videoGen.queueAhead', { n: queueAhead })}`;
+    }
     if (generationPhase === 'queued') return t('videoGen.queued');
     return t('videoGen.generating');
-  }, [isResuming, generationPhase, t]);
+  }, [isResuming, generationPhase, queueAhead, t]);
 
   const elapsed = isGenerating && jobStartedAt ? formatElapsed(now - jobStartedAt) : null;
   const done = !isGenerating && !errorTitle && !!videoUrl;

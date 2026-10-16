@@ -11,18 +11,19 @@ export const VIDEO_DURATION_OPTIONS: VideoDuration[] = [4, 6, 8, 10, 12, 15];
 export const VIDEO_RESOLUTION_OPTIONS: VideoResolution[] = ['720P'];
 
 /**
- * 视频生成定价：0.3 元/秒。
- * 线上 1 积分 = 0.1 元（服务器 `system_configs.credits_per_yuan` = 10）⇒ **3 积分/秒**，
- * 即 15 秒 = 45 积分。分辨率不影响价格（只有 720P 一档）。
+ * 视频生成定价：**4 积分/秒 = 0.4 元/秒**（2026-10-16 产品决策）。
+ * 线上 1 积分 = 0.1 元（服务器 `system_configs.credits_per_yuan` = 10）⇒ 15 秒 = 60 积分。
+ * 分辨率不影响价格（只有 720P 一档）。
+ * 🔴 除专业版外，所有版本的扣费规则一致（本条即基准）。
  * ⚠️ 改这里必须同改 `src-tauri/src/commands/banana_api.rs` 的 `base_credits`（真正送去扣费的金额）。
  */
 export const VIDEO_PRICING: Record<VideoDuration, number> = {
-  4: 12,
-  6: 18,
-  8: 24,
-  10: 30,
-  12: 36,
-  15: 45,
+  4: 16,
+  6: 24,
+  8: 32,
+  10: 40,
+  12: 48,
+  15: 60,
 };
 
 export function computeVideoCost(duration: VideoDuration, hasVideoInput: boolean): number {

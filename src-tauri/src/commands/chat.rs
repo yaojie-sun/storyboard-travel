@@ -1052,14 +1052,178 @@ pub(crate) fn backup_corrupt_chat_file(app: AppHandle, project_id: String) -> Re
     Ok(bak.to_string_lossy().to_string())
 }
 
+/// 读一个 chat 文件 → 对话数组。不存在 / 坏档一律当空，**绝不抛**（fail open）。
+fn read_chat_conversations(path: &std::path::Path) -> Vec<serde_json::Value> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// 给**没有 `id`** 的旧对话算一个确定性的内容指纹，当临时 id 用。
+///
+/// 要求「确定性」而不是随机 uuid：迁移与回捞可能各跑一次，同一份内容必须算出同一个
+/// 指纹，否则并集合并会把同一条对话复制成两份。同理，两份文件里的同一条对话也会被正确去重。
+/// ⚠️ 只用于补 id，不参与业务判断；不同的 Rust 版本可能给出不同结果（同一版本内稳定）。
+fn conv_content_fingerprint(conv: &serde_json::Value) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(conv).unwrap_or_default().hash(&mut h);
+    format!("legacy-{:016x}", h.finish())
+}
+
+/// 按 `id` 做**并集**合并：同一 id 保留消息更多的一份，条数相同取 `updatedAt` 更晚的。
+///
+/// 🔴 与 Rust `sync::merge_chat_json`、前端 `mergeConversations` **同口径**（三处同一条规则）。
+/// 🔴 只做并集、**从不丢弃任一侧独有的对话** —— 这个函数存在的唯一理由，就是
+///    「写回项目文件时不能把用户已有对话盖掉」（§12.4）。
+fn merge_conversation_lists(
+    base: Vec<serde_json::Value>,
+    incoming: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let mut order: Vec<String> = Vec::new();
+    let mut map: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+
+    for mut conv in base.into_iter().chain(incoming) {
+        // 🔴 绝不能因为「没有 id」就跳过 —— 那等于把这条对话丢掉（§12.4）。
+        //    旧版数据里存在无 id 的对话；给它补一个**内容指纹**当 id：
+        //    确定性 ⇒ 同一份内容重复合并不会产生副本，写回后前端也有了稳定标识。
+        let id = match conv
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            Some(s) => s.to_string(),
+            None => {
+                let generated = conv_content_fingerprint(&conv);
+                if let Some(obj) = conv.as_object_mut() {
+                    obj.insert("id".to_string(), serde_json::Value::String(generated.clone()));
+                }
+                generated
+            }
+        };
+        match map.get(&id) {
+            None => {
+                order.push(id.clone());
+                map.insert(id, conv);
+            }
+            Some(existing) => {
+                let n_old = existing
+                    .get("messages")
+                    .and_then(|m| m.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                let n_new = conv
+                    .get("messages")
+                    .and_then(|m| m.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                let ts_old = existing.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(0);
+                let ts_new = conv.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(0);
+                if n_new > n_old || (n_new == n_old && ts_new > ts_old) {
+                    map.insert(id, conv);
+                }
+            }
+        }
+    }
+
+    order.into_iter().filter_map(|id| map.remove(&id)).collect()
+}
+
+/// **先备份、再并集合并、写回** —— 本次事故修复的核心工具。
+///
+/// 🔴 备份失败就**放弃写入**：宁可这次没合并成，也不能在没备份的情况下覆盖用户数据（§12.4）。
+/// 🔴 旧实现是裸 `std::fs::write`，会把该文件里已经存在的对话**整体盖掉** —— 那是第二条丢失路径。
+fn merge_into_chat_file(
+    path: &std::path::Path,
+    incoming: Vec<serde_json::Value>,
+) -> Result<usize, String> {
+    if incoming.is_empty() {
+        return Ok(0);
+    }
+
+    let base = if path.exists() {
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "chat.json".to_string());
+
+        // ① 先备份 —— 备份失败就放弃写入（§12.4）
+        let bak = path.with_file_name(format!("{}.bak", name));
+        if let Err(e) = std::fs::copy(path, &bak) {
+            return Err(format!("备份 {} 失败，已放弃写入: {}", name, e));
+        }
+
+        // ② 再读回**做并集的基准**。读不出来 / 解析不了 ⇒ **拒绝写入**，原文件与备份都留着。
+        //    这里不能用 fail-open 的 `read_chat_conversations`：那会当空数组处理，
+        //    等于把读不动的原文件直接覆盖掉。宁可这次没合并成，也不能冒覆盖的风险。
+        match std::fs::read_to_string(path)
+            .map_err(|e| format!("读取 {} 失败（已备份到 {:?}），放弃写入: {}", name, bak, e))
+            .and_then(|s| {
+                serde_json::from_str::<Vec<serde_json::Value>>(&s)
+                    .map_err(|e| format!("解析 {} 失败（已备份到 {:?}），放弃写入以保护原文件: {}", name, bak, e))
+            }) {
+            Ok(v) => v,
+            Err(e) => return Err(e),
+        }
+    } else {
+        Vec::new()
+    };
+
+    let merged = merge_conversation_lists(base, incoming);
+    let json = serde_json::to_string_pretty(&merged).unwrap_or_else(|_| "[]".to_string());
+    std::fs::write(path, json).map_err(|e| format!("写入 {} 失败: {}", path.display(), e))?;
+    Ok(merged.len())
+}
+
+/// 从 `projects.db` 建 `episodeId → projectId` 映射表。打不开 / 没有表 → 空表（fail open）。
+fn load_episode_project_map(
+    db_path: &std::path::Path,
+) -> std::collections::HashMap<String, String> {
+    if !db_path.exists() {
+        return std::collections::HashMap::new();
+    }
+    match rusqlite::Connection::open(db_path) {
+        Ok(conn) => {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(mut stmt) = conn.prepare("SELECT id, project_id FROM episodes") {
+                if let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }) {
+                    for row in rows.flatten() {
+                        map.insert(row.0, row.1);
+                    }
+                }
+            }
+            map
+        }
+        Err(e) => {
+            warn!("[Chat migration] 无法打开数据库查询 episode 映射: {}", e);
+            std::collections::HashMap::new()
+        }
+    }
+}
+
 /// 迁移旧版单文件 chat_conversations.json → 新版 per-project chat/*.json
 /// 安全策略：
 ///   1. 不改动旧文件（先备份再操作）
 ///   2. 优先用 conversation.projectId，没有则从 episodeId → episodes 表反查 project_id
-///   3. 无法确定归属的放入 global.json
-///   4. 迁移完成后旧文件重命名为 .bak，可手动恢复
+///   3. 无法确定归属的**并入用户当前项目**（`fallback_project_id`），而不是倒进
+///      `chat/global.json` —— 见下面 `recover_stranded_chat` 的事故说明
+///   4. 迁移完成后旧文件重命名为 `.migrated`，可手动恢复
+///   5. 写入项目文件一律**先备份、再并集合并**，绝不覆盖既有对话
+///
+/// 🔴 2026-10-16 生产事故（本函数旧实现）：反查不到项目的对话被统一写进
+///    `chat/global.json`，而**全应用没有任何一处读它** ——
+///    `resolve_chat_path` 只在 `project_id` 为空时返回它，而前端 `hydrate` 在 `pid` 为空时
+///    直接 return（`chatStore.ts`）⇒ 「迁移成功」= 用户对话永久消失。
+///    ⇒ 现在：**映射表为空且没有兜底项目时直接拒绝迁移**（保留源文件，下次再试）。
 #[tauri::command]
-pub(crate) fn migrate_chat_storage(app: AppHandle) -> Result<String, String> {
+pub(crate) fn migrate_chat_storage(
+    app: AppHandle,
+    fallback_project_id: Option<String>,
+) -> Result<String, String> {
     let user_dir = crate::sync::get_user_dir(&app)?;
     let old_path = user_dir.join("chat_conversations.json");
 
@@ -1091,38 +1255,20 @@ pub(crate) fn migrate_chat_storage(app: AppHandle) -> Result<String, String> {
     }
 
     // 从 SQLite 构建 episodeId → projectId 的映射表
-    let ep_to_project: std::collections::HashMap<String, String> = {
-        let db_path = user_dir.join("projects.db");
-        if db_path.exists() {
-            match rusqlite::Connection::open(&db_path) {
-                Ok(conn) => {
-                    let mut map = std::collections::HashMap::new();
-                    if let Ok(mut stmt) = conn.prepare("SELECT id, project_id FROM episodes") {
-                        if let Ok(rows) = stmt.query_map([], |row| {
-                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                        }) {
-                            for row in rows.flatten() {
-                                map.insert(row.0, row.1);
-                            }
-                        }
-                    }
-                    tracing::info!("[Chat migration] episode→project 映射: {} 条", map.len());
-                    map
-                }
-                Err(e) => {
-                    tracing::warn!("[Chat migration] 无法打开数据库查询 episode 映射: {}", e);
-                    std::collections::HashMap::new()
-                }
-            }
-        } else {
-            std::collections::HashMap::new()
-        }
-    };
+    let ep_to_project = load_episode_project_map(&user_dir.join("projects.db"));
+    tracing::info!(
+        "[Chat migration] episode→project 映射: {} 条",
+        ep_to_project.len()
+    );
 
-    // 分配 projectId：优先用已有字段，其次从 episodeId 反查，最后归入 global
+    // 分配 projectId：优先用已有字段，其次从 episodeId 反查，最后并入**用户当前项目**
+    // （`fallback_project_id`）—— 绝不再倒进没人读的 `global.json`。
+    let fallback = fallback_project_id.filter(|s| !s.is_empty());
+    let total_count = conversations.len();
+
     let mut by_project: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
-    let mut global_count = 0u32;
+    let mut fallback_count = 0u32;
     let mut matched_count = 0u32;
 
     for mut conv in conversations {
@@ -1130,18 +1276,20 @@ pub(crate) fn migrate_chat_storage(app: AppHandle) -> Result<String, String> {
         let existing_pid = conv
             .get("projectId")
             .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
 
         let pid = if let Some(p) = existing_pid {
-            p.to_string()
+            p
         } else {
             // 2) 没有 projectId → 从 episodeId 反查
             let ep_id = conv
                 .get("episodeId")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty());
-            if let Some(ep) = ep_id {
-                if let Some(proj_id) = ep_to_project.get(ep) {
+            match ep_id.and_then(|ep| ep_to_project.get(ep)) {
+                Some(proj_id) => {
+                    matched_count += 1;
                     // 补全 projectId 字段，写回 conversation
                     if let Some(obj) = conv.as_object_mut() {
                         obj.insert(
@@ -1149,15 +1297,31 @@ pub(crate) fn migrate_chat_storage(app: AppHandle) -> Result<String, String> {
                             serde_json::Value::String(proj_id.clone()),
                         );
                     }
-                    matched_count += 1;
                     proj_id.clone()
-                } else {
-                    global_count += 1;
-                    "global".to_string()
                 }
-            } else {
-                global_count += 1;
-                "global".to_string()
+                // 3) 反查不到 → 并入用户当前项目
+                None => match &fallback {
+                    Some(p) => {
+                        fallback_count += 1;
+                        if let Some(obj) = conv.as_object_mut() {
+                            obj.insert(
+                                "projectId".to_string(),
+                                serde_json::Value::String(p.clone()),
+                            );
+                        }
+                        p.clone()
+                    }
+                    // 连当前项目都没有（还没打开任何项目）⇒ **拒绝迁移**，源文件原样保留。
+                    // 🔴 历史上这里会把整批对话倒进 `global.json` —— 那个文件全应用没有
+                    //    任何一处读它，等于用户对话永久消失。宁可先不迁，下次再试。
+                    None => {
+                        warn!(
+                            "[Chat migration] {} 条对话无法归属且无兜底项目 ⇒ 本次跳过（源文件保留，下次再试）",
+                            total_count
+                        );
+                        return Ok("skipped_no_project_mapping".to_string());
+                    }
+                },
             }
         };
 
@@ -1165,20 +1329,13 @@ pub(crate) fn migrate_chat_storage(app: AppHandle) -> Result<String, String> {
     }
 
     let chat_dir = resolve_chat_dir(&app)?;
-    let mut written = 0u32;
+    let mut written = 0usize;
 
     for (pid, convs) in &by_project {
-        let filename = if pid == "global" {
-            "global.json".to_string()
-        } else {
-            format!("{}.json", pid)
-        };
+        let filename = format!("{}.json", pid);
         let path = chat_dir.join(&filename);
-        let json = serde_json::to_string_pretty(convs)
-            .unwrap_or_else(|_| "[]".to_string());
-        std::fs::write(&path, &json)
-            .map_err(|e| format!("写入 {} 失败: {}", filename, e))?;
-        written += convs.len() as u32;
+        // 🔴 先备份、再**并集**合并 —— 绝不覆盖该文件里已有的对话（旧实现是裸 `fs::write`）
+        written += merge_into_chat_file(&path, convs.clone())?;
     }
 
     // 迁移成功 → 重命名旧文件标记为已迁移
@@ -1186,14 +1343,115 @@ pub(crate) fn migrate_chat_storage(app: AppHandle) -> Result<String, String> {
     std::fs::rename(&old_path, &migrated_path).ok();
 
     let msg = format!(
-        "迁移完成：{} 条对话 → {} 个项目文件（{} 条从 episode 反查匹配，{} 条归入 global）。旧文件备份在 {:?}",
+        "迁移完成：{} 条对话 → {} 个项目文件（{} 条从 episode 反查匹配，{} 条并入当前项目）。旧文件备份在 {:?}",
         written,
         by_project.len(),
         matched_count,
-        global_count,
+        fallback_count,
         bak
     );
     tracing::info!("[Chat migration] {}", msg);
+    Ok(msg)
+}
+
+/// **一次性回捞**：把历史上被错误倒进 `chat/global.json` 的对话重新分发回各自项目文件。
+///
+/// 🔴 背景（2026-10-16 生产事故）：`migrate_chat_storage` 的旧实现把**反查不到项目**的对话
+///    统统一股脑写进 `chat/global.json`，而那个文件**全应用没有任何一处读它**
+///    （`resolve_chat_path` 只在 `project_id` 为空时返回它，而前端 `hydrate` 在 `pid` 为空时
+///    直接 `return`）⇒ 那批对话永久看不见，源文件同时被改名 `.migrated`。
+///    ⇒ 本命令把它们按 `episodeId` 重新归位：**先备份、并集合并、绝不覆盖**。
+///
+/// 🔴 **不删也不改名 `global.json`** —— 它本身就是那批对话的最后一份备份（§12.4）。
+///    靠同目录下的 `.stranded_recovered_v1` 记号保证只回捞一次（合并本身也是幂等的）。
+#[tauri::command]
+pub(crate) fn recover_stranded_chat(
+    app: AppHandle,
+    fallback_project_id: Option<String>,
+) -> Result<String, String> {
+    let user_dir = crate::sync::get_user_dir(&app)?;
+    let chat_dir = resolve_chat_dir(&app)?;
+    let global_path = chat_dir.join("global.json");
+
+    if !global_path.exists() {
+        return Ok("no_stranded".to_string());
+    }
+    let stranded = read_chat_conversations(&global_path);
+    if stranded.is_empty() {
+        return Ok("no_stranded".to_string());
+    }
+
+    let marker = chat_dir.join(".stranded_recovered_v1");
+    if marker.exists() {
+        return Ok("already_recovered".to_string());
+    }
+
+    let ep_to_project = load_episode_project_map(&user_dir.join("projects.db"));
+    let fallback = fallback_project_id.filter(|s| !s.is_empty());
+    let total = stranded.len();
+
+    let mut by_project: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    let mut unmatched: Vec<serde_json::Value> = Vec::new();
+
+    for conv in stranded {
+        let pid = conv
+            .get("projectId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                conv.get("episodeId")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .and_then(|ep| ep_to_project.get(ep))
+                    .cloned()
+            });
+        match pid {
+            Some(p) => by_project.entry(p).or_default().push(conv),
+            None => unmatched.push(conv),
+        }
+    }
+
+    // 仍归不了位的：并入用户当前项目 —— 比留在没人读的 global.json 里强
+    let mut note = String::new();
+    if !unmatched.is_empty() {
+        match &fallback {
+            Some(p) => {
+                note = format!("，其中 {} 条无归属、已并入当前项目", unmatched.len());
+                let bucket = by_project.entry(p.clone()).or_default();
+                for mut conv in unmatched {
+                    if let Some(obj) = conv.as_object_mut() {
+                        obj.insert("projectId".to_string(), serde_json::Value::String(p.clone()));
+                    }
+                    bucket.push(conv);
+                }
+            }
+            None => {
+                note = format!("，仍有 {} 条无法归位（尚未打开项目），保留在 global.json", unmatched.len());
+            }
+        }
+    }
+
+    let mut written = 0usize;
+    for (pid, convs) in &by_project {
+        let path = chat_dir.join(format!("{}.json", pid));
+        written += merge_into_chat_file(&path, convs.clone())?;
+    }
+
+    // 全都没能归位（没有兜底项目）⇒ 不写记号，下次打开项目时再试一遍
+    if !by_project.is_empty() {
+        let _ = std::fs::write(&marker, written.to_string());
+    }
+
+    let msg = format!(
+        "回捞完成：global.json 共 {} 条 → {} 个项目文件（写入 {} 条）{}",
+        total,
+        by_project.len(),
+        written,
+        note
+    );
+    tracing::info!("[Chat recovery] {}", msg);
     Ok(msg)
 }
 

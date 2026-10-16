@@ -34,6 +34,34 @@ static BAIDU_ACCESS_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::
 static BAIDU_SECRET_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 static KIE_KEY: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 
+/// 「服务端明确否认身份」判定（**白名单**）。
+///
+/// 🔴 只有命中这里的特征才允许清令牌 / 登出 / 弹登录框；**其余一切失败（超时、连接被重置、
+/// DNS 失败、网关 5xx、TLS 失败、响应体读取中断、未知错误）一律按网络类处理** ——
+/// 保持登录态、后台重试，不打扰用户。
+///
+/// 历史事故：这里曾经是「黑名单」——只把 `timeout/connection/dns/resolve/refused/reset/unreachable`
+/// 当网络故障，**其余一律当成认证失败弹登录框**。于是服务器 502/503、读响应体中断、
+/// `error sending request`、`os error 10054` 全都会把正在用的付费用户踢出登录。
+///
+/// 注意：与 [`looks_like_auth_error`] 语义不同 —— 那个服务于视频 KEY 池的「KEY 不对」判定，
+/// 含 `api key` 这类过宽特征，**不要合并**。
+fn looks_like_auth_rejection(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("401")
+        || m.contains("403")
+        || m.contains("unauthorized")
+        || m.contains("invalid token")
+        || m.contains("invalid_token")
+        || m.contains("invalid api key")
+        || m.contains("token expired")
+        || m.contains("token is invalid")
+        || m.contains("令牌无效")
+        || m.contains("令牌已失效")
+        || m.contains("未授权")
+        || m.contains("设备令牌未找到")
+}
+
 macro_rules! secret_getter {
     ($name:ident, $static_ref:ident) => {
         pub fn $name() -> Option<String> {
@@ -837,6 +865,9 @@ pub async fn banana_logout(app: AppHandle) -> Result<(), String> {
 
     // 清除当前用户 ID（每个用户有独立子目录，无需清空数据）
     crate::sync::clear_current_user_id();
+
+    // 清空视频 KEY 池：防止下一个账号登录前用上一个账号的排队/在飞记录
+    crate::commands::video_key_pool::reset();
 
     // 清除同步管理器状态
     {
@@ -1755,12 +1786,18 @@ pub async fn banana_save_device_token(app: AppHandle, token: String) -> Result<b
             Ok(true)
         }
         Err(e) => {
-            warn!("用户提供的令牌无效: {}", e);
-            // Clear the invalid token from memory, keep on disk for diagnosis
-            {
-                let token_store = get_device_token_store();
-                let mut guard = token_store.lock().await;
-                *guard = None;
+            if looks_like_auth_rejection(&e) {
+                warn!("用户提供的令牌无效: {}", e);
+                // 服务端明确否认 ⇒ 清掉内存里这个无效令牌（磁盘保留，便于诊断/替换）
+                {
+                    let token_store = get_device_token_store();
+                    let mut guard = token_store.lock().await;
+                    *guard = None;
+                }
+            } else {
+                // 网络类 / 未知错误：令牌**可能完全有效**，只是这一刻验证不了。
+                // 保留内存与磁盘令牌 —— 网络恢复后用户能直接进入，不必重新登录。
+                warn!("令牌验证未完成（网络故障，已保留令牌）: {}", e);
             }
             Err(format!("令牌验证失败: {}", e))
         }
@@ -1858,42 +1895,39 @@ pub async fn banana_initialize(app: AppHandle) -> Result<bool, String> {
             }
             Err(e) => {
                 warn!("设备令牌验证失败: {}", e);
-                let err_msg = e.to_lowercase();
 
-                // 区分网络故障和真实认证失败
-                let is_network = err_msg.contains("timeout")
-                    || err_msg.contains("connection")
-                    || err_msg.contains("dns")
-                    || err_msg.contains("resolve")
-                    || err_msg.contains("refused")
-                    || err_msg.contains("reset")
-                    || err_msg.contains("unreachable");
-
-                {
-                    let mut token_guard = token_store.lock().await;
-                    *token_guard = None;
-                }
-
-                let app_clone = app.clone();
-                if is_network {
-                    tokio::spawn(async move {
-                        let _ = app_clone.emit("network-down", "分镜大师无法连接服务器，已暂时退出登录。请检查网络后重试。");
-                        info!("已发射network-down事件（网络故障）");
-                    });
-                } else {
+                if looks_like_auth_rejection(&e) {
+                    // 🔴 服务端明确否认身份 —— 这才允许清令牌 + 要求重新登录。
+                    {
+                        let mut token_guard = token_store.lock().await;
+                        *token_guard = None;
+                    }
+                    let app_clone = app.clone();
                     tokio::spawn(async move {
                         let _ = app_clone.emit("login-required", ());
                         info!("已发射login-required事件（认证失败）");
                     });
+                    info!("令牌被服务端拒绝，已清除内存令牌；返回 false");
+                    // 落在函数末尾的 Ok(false)：本地会话确实失效，前端弹登录框
+                } else {
+                    // 网络类 / 未知错误：**不动内存令牌**，保持本地会话可用。
+                    // 只提示网络不稳定，**不联动登出** —— 前端保持登录态并后台退避重试。
+                    let app_clone = app.clone();
+                    tokio::spawn(async move {
+                        let _ = app_clone.emit("network-down", ());
+                        info!("已发射network-down事件（网络不稳定，保持登录态）");
+                    });
+                    info!("服务器不可达，保留内存令牌；本地有令牌 ⇒ 按已初始化返回 true");
+                    return Ok(true);
                 }
-
-                // 返回false，但保留本地令牌，下次启动时再尝试验证
-                info!("令牌验证失败，但保留本地令牌供下次使用");
             }
         }
     }
 
-    info!("未找到有效的设备令牌，需要用户登录");
+    // 走到这里有且只有两种可能：① 本地没有设备令牌（新用户）；
+    // ② 有令牌但被服务端明确否认（上面 Err 分支里已清内存令牌并 emit login-required）。
+    // 网络类失败不会走到这里 —— 那种情况在上面 `return Ok(true)` 保持本地会话。
+    info!("无可用设备令牌（无本地令牌或令牌已被服务端拒绝），需要用户登录");
     Ok(false)
 }
 
@@ -2003,7 +2037,8 @@ pub async fn banana_get_active_api_configs(app: AppHandle) -> Result<Vec<ApiConf
         Ok(configs) => Ok(configs),
         Err(e) => {
             // 仅在 Tauri 命令层发射 login-required（用户主动操作时）
-            if e.contains("401") {
+            // 白名单判定：只有服务端明确否认身份才算；网络类/5xx 一律不弹登录框。
+            if looks_like_auth_rejection(&e) {
                 let app_clone = app.clone();
                 tokio::spawn(async move {
                     let _ = app_clone.emit("login-required", ());
@@ -2082,6 +2117,41 @@ pub async fn banana_update_local_api_keys(
 
     let registry = crate::commands::ai::get_registry();
 
+    // ── 视频 KEY 池预扫描 ───────────────────────────────────────────────
+    // 过去这里是「逐行覆盖」⇒ 只有最后一条 compshare_video 活着（1 KEY = 3 并发，加不了机器）。
+    // 现在把同类型的所有行攒成池，多 KEY 轮询 + 排队；加 KEY 只需在后台加数据，客户端不用发版。
+    // 详见 commands/video_key_pool.rs 模块文档。
+    let mut video_keys: Vec<String> = Vec::new();
+    let mut video_per_key: Option<usize> = None;
+    for config in &api_configs {
+        if !config.is_active || config.api_key.is_empty() {
+            continue;
+        }
+        match config.api_type.as_str() {
+            "compshare_video" | "COMPSHARE_VIDEO" | "minimax_h3" | "MINIMAX_H3"
+            | "minimax_video" | "MINIMAX_VIDEO" | "compshare" | "COMPSHARE" => {
+                video_keys.extend(crate::commands::video_key_pool::parse_key_list(&config.api_key));
+            }
+            // 可选：每 KEY 并发数（不配则默认 3）
+            "compshare_video_concurrency" | "COMPSHARE_VIDEO_CONCURRENCY" => {
+                video_per_key = crate::commands::video_key_pool::parse_concurrency(&config.api_key);
+                if video_per_key.is_none() {
+                    warn!("[VideoPool] compshare_video_concurrency 值非法，回退默认并发数");
+                }
+            }
+            _ => {}
+        }
+    }
+    if !video_keys.is_empty() {
+        // 空输入时 replace_keys 内部不动（保住「服务端偶发返回部分配置」时的可用性）
+        crate::commands::video_key_pool::replace_keys(video_keys, video_per_key);
+        let snap = crate::commands::video_key_pool::snapshot();
+        info!(
+            "[VideoPool] keys={} capacity={} per_key={}",
+            snap.key_count, snap.capacity, snap.per_key
+        );
+    }
+
     for config in api_configs {
         if !config.is_active || config.api_key.is_empty() {
             continue;
@@ -2108,6 +2178,9 @@ pub async fn banana_update_local_api_keys(
             },
             // 优云智算 compshare 视频生成密钥（MiniMax H3 直连）。
             // 服务端 api_type 可能以多种写法下发，这里做多别名匹配，避免因字符串不一致导致密钥为空。
+            //
+            // ⚠️ 视频路径已改走 KEY 池（上面的预扫描 + video_key_pool），这里只保留「最后一个」
+            //    作为兜底单 KEY（池为空时用），不再承担多 KEY 分发。
             "compshare_video" | "COMPSHARE_VIDEO" | "minimax_h3" | "MINIMAX_H3"
             | "minimax_video" | "MINIMAX_VIDEO" | "compshare" | "COMPSHARE" => {
                 info!("存储 compshare 视频生成密钥 (MiniMax H3): {}", config.id);
@@ -2582,6 +2655,8 @@ pub async fn banana_submit_video_job(
     negative_prompt: Option<String>,
     guidance_scale: Option<f64>,
     shot_type: Option<String>,
+    // 排队凭据：第一次调用为空（后端生成），被判定需要排队后由前端带着同一个 token 重发。
+    queue_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let model_name = model.unwrap_or_else(|| "minimax/minimax-h3".to_string());
     info!("提交短视频生成任务: model={}, duration={}s, aspect={}, images={}, video={}",
@@ -2596,17 +2671,17 @@ pub async fn banana_submit_video_job(
     };
 
     // 2. 计算所需积分（与前端 videoPricing.ts 保持同步）
-    //    2026-10-13 起只有 720P 一档（1080P 已下线），故 match 只按时长。
-    //    计费口径：0.3 元/秒；1 积分 = 0.1 元 ⇒ 3 积分/秒（15 秒 = 45 积分）。
+    //    2026-10-16 产品决策：4 积分/秒 = 0.4 元/秒（1 积分 = 0.1 元），15 秒 = 60 积分。
+    //    除专业版外所有版本口径一致；只有 720P 一档，分辨率不参与计价，故 match 只按时长。
     let base_credits = match duration_seconds {
-        4 => 12,
-        6 => 18,
-        8 => 24,
-        10 => 30,
-        12 => 36,
-        15 => 45,
-        // 兜底与上表同口径（3 积分/秒），避免出现「未知时长按旧价」的意外扣费
-        other => other * 3,
+        4 => 16,
+        6 => 24,
+        8 => 32,
+        10 => 40,
+        12 => 48,
+        15 => 60,
+        // 兜底与上表同口径（按秒线性），避免出现「未知时长按旧价」的意外扣费
+        other => other * 4,
     };
     let has_video = video_input.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
     let total_credits = (base_credits as f64 * (if has_video { 1.5 } else { 1.0 })).ceil() as u32;
@@ -2630,6 +2705,13 @@ pub async fn banana_submit_video_job(
     let is_pixverse = model_name.starts_with("pixverse/");
     let is_minimax = model_name.starts_with("minimax/");
 
+    // 视频 KEY 池的取槽状态（只有 minimax 分支会填）。
+    // slot_guard：占槽守卫，提交失败/提前返回时由 Drop 释放（同步完成分支故意不 disarm）。
+    // slot_fp / slot_token：提交成功后用来绑定 task→token 并落盘指纹。
+    let mut slot_guard: Option<crate::commands::video_key_pool::SlotGuard> = None;
+    let mut slot_fp: Option<String> = None;
+    let mut slot_token: Option<String> = None;
+
     let provider: std::sync::Arc<dyn crate::ai::AIProvider> = if is_pixverse {
         let api_key = get_baidu_video_key()
             .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?;
@@ -2637,11 +2719,68 @@ pub async fn banana_submit_video_job(
         p.set_api_key(api_key).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
         p
     } else if is_minimax {
-        let api_key = get_compshare_video_key()
-            .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?;
-        let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(crate::ai::providers::minimax::MiniMaxProvider::new());
-        p.set_api_key(api_key).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
-        p
+        // 多 KEY 轮询 + 凭证式排队（设计见 commands/video_key_pool.rs 模块文档）。
+        // ⚠️ 取槽必须在余额检查（上面第 3 步）之后：排队期间积分用光的用户应当直接拿到
+        //    INSUFFICIENT_CREDITS，而不是占着槽位等扣费失败。
+        let now = std::time::Instant::now();
+        let token = queue_token
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        match crate::commands::video_key_pool::try_acquire(&token, now) {
+            crate::commands::video_key_pool::Acquire::Granted { key, index, capacity, in_flight } => {
+                info!(
+                    "[VideoPool] 取槽成功 key_index={} in_flight={}/{}",
+                    index, in_flight, capacity
+                );
+                let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(crate::ai::providers::minimax::MiniMaxProvider::new());
+                p.set_api_key(key.clone()).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
+                slot_fp = Some(crate::commands::video_key_pool::fingerprint(&key));
+                slot_guard = Some(crate::commands::video_key_pool::SlotGuard::new(token.clone()));
+                slot_token = Some(token);
+                p
+            }
+            crate::commands::video_key_pool::Acquire::Waiting { ahead, capacity, in_flight } => {
+                // 不扣费、不占槽：立刻把凭据交回前端，由前端轮询状态后续租并重发。
+                info!(
+                    "[VideoPool] 无可用槽位，进入排队: ahead={} in_flight={}/{}",
+                    ahead, in_flight, capacity
+                );
+                return Ok(serde_json::json!({
+                    "success": true,
+                    "status": "queued",
+                    "queued": true,
+                    "queueToken": token,
+                    "queueAhead": ahead,
+                    "capacity": capacity,
+                    "inFlight": in_flight,
+                    "creditsDeducted": 0
+                }));
+            }
+            crate::commands::video_key_pool::Acquire::Full { capacity, in_flight } => {
+                warn!("[VideoPool] 排队已满: in_flight={}/{}", in_flight, capacity);
+                return Ok(serde_json::json!({
+                    "success": false,
+                    "error": format!(
+                        "QUEUE_FULL: 当前同时生成的任务过多（{} 路，上限 {} 路），请稍后再试",
+                        in_flight, capacity
+                    )
+                }));
+            }
+            crate::commands::video_key_pool::Acquire::Terminal => {
+                return Ok(serde_json::json!({
+                    "success": false,
+                    "error": "该任务已经提交过了，请重新点击生成"
+                }));
+            }
+            crate::commands::video_key_pool::Acquire::NoKeys => {
+                // 池为空（配置同步尚未跑到）→ 退回单 KEY 老路径，行为与改造前一致
+                let api_key = get_compshare_video_key()
+                    .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?;
+                let p: std::sync::Arc<dyn crate::ai::AIProvider> = std::sync::Arc::new(crate::ai::providers::minimax::MiniMaxProvider::new());
+                p.set_api_key(api_key).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
+                p
+            }
+        }
     } else {
         return Ok(serde_json::json!({
             "success": false,
@@ -2730,14 +2869,32 @@ pub async fn banana_submit_video_job(
     match provider.submit_task(generate_req.clone()).await {
         Ok(crate::ai::ProviderTaskSubmission::Queued(handle)) => {
             info!("视频任务已提交: task_id={}", handle.task_id);
+            // 槽位交给轮询释放：把 task → 凭据 绑定好，再解除守卫（否则返回时守卫会立刻释放）
+            if let Some(token) = slot_token.as_deref() {
+                let now = std::time::Instant::now();
+                crate::commands::video_key_pool::bind_task(token, &handle.task_id, now);
+                if let Some(g) = slot_guard.as_mut() {
+                    g.disarm();
+                }
+                // 落盘「任务 → KEY 指纹」（只存单向哈希，不存 KEY）：跨重启后轮询仍能用同一个 KEY
+                if let Some(fp) = slot_fp.clone() {
+                    let app_for_fp = app.clone();
+                    let tid = handle.task_id.clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::commands::video_key_pool::record_task_key(&app_for_fp, &tid, &fp).await;
+                    });
+                }
+            }
             return Ok(serde_json::json!({
                 "success": true,
+                "status": "submitted",
                 "taskId": handle.task_id,
                 "creditsDeducted": total_credits
             }));
         }
         Ok(crate::ai::ProviderTaskSubmission::Succeeded(url)) => {
             info!("视频生成同步完成: {}", url);
+            // 同步完成：没有 task 可供后续释放，故意**不** disarm —— 让守卫掉下来释放槽位。
             return Ok(serde_json::json!({
                 "success": true,
                 "videoUrl": url,
@@ -2747,7 +2904,14 @@ pub async fn banana_submit_video_job(
         Err(e) => {
             let err_msg = e.to_string();
             warn!("视频任务提交失败: {}", err_msg);
-            // 提交失败，退费（退实际扣除的积分）
+            // 上游限流：该 KEY 冷却 60 秒（不自动重提交，避免历史重复扣费事故）
+            if err_msg.contains("429") || err_msg.to_lowercase().contains("rate") {
+                if let Some(fp) = slot_fp.as_deref() {
+                    crate::commands::video_key_pool::mark_429_by_fp(fp, std::time::Instant::now());
+                    info!("[VideoPool] 该 KEY 进入 60 秒冷却");
+                }
+            }
+            // 提交失败，退费（退实际扣除的积分）。守卫在函数返回时自动释放槽位。
             let refund_model = model_name.clone();
             let refunded = refund_generation_credit(&app, total_credits, format!("video_submit_fail:{}", refund_model)).await;
             let refund_msg = match &refunded {
@@ -2763,6 +2927,49 @@ pub async fn banana_submit_video_job(
     }
 }
 
+/// 「KEY 不对」类错误识别（认证/权限）。
+///
+/// 多 KEY 池之后，用错 KEY 查任务会表现为 404 / invalid api key —— 那**不是**任务失败，
+/// 不能计入 `VIDEO_POLL_ERROR_COUNT`，否则 5 拍后会把正在正常跑的任务退费掉。
+fn looks_like_auth_error(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("invalid api key")
+        || m.contains("api key")
+        || m.contains("unauthorized")
+        || m.contains("no permission")
+        || m.contains("401")
+        || m.contains("403")
+}
+
+/// 查询排队凭据状态（凭证式排队的权威通道）。
+///
+/// 前端每 3 秒调用一次：既拿状态，也顺带**续租**排队条目（12 秒不续即视为放弃）。
+#[tauri::command]
+pub async fn banana_video_queue_status(queue_token: String) -> Result<serde_json::Value, String> {
+    let now = std::time::Instant::now();
+    let (state, ahead) = match crate::commands::video_key_pool::status(&queue_token, now) {
+        crate::commands::video_key_pool::Status::Ready => ("ready", 0usize),
+        crate::commands::video_key_pool::Status::Waiting { ahead, .. } => ("waiting", ahead),
+        crate::commands::video_key_pool::Status::Gone => ("gone", 0usize),
+    };
+    let snap = crate::commands::video_key_pool::snapshot();
+    Ok(serde_json::json!({
+        "state": state,
+        "ahead": ahead,
+        "inFlight": snap.in_flight,
+        "capacity": snap.capacity,
+        "keyCount": snap.key_count,
+        "waiting": snap.waiting,
+    }))
+}
+
+/// 取消排队（用户主动放弃 / 关闭小窗时调用）。**未扣费，无副作用**。
+#[tauri::command]
+pub async fn banana_cancel_queued_video_job(queue_token: String) -> Result<serde_json::Value, String> {
+    let cancelled = crate::commands::video_key_pool::cancel(&queue_token, std::time::Instant::now());
+    Ok(serde_json::json!({ "cancelled": cancelled }))
+}
+
 /// 轮询视频生成任务状态（用于断点续接）
 #[tauri::command]
 pub async fn banana_poll_video_job(
@@ -2776,6 +2983,9 @@ pub async fn banana_poll_video_job(
     let is_pixverse = model_name.starts_with("pixverse/");
     let is_minimax = model_name.starts_with("minimax/");
 
+    // 实际用于查询的 KEY（minimax 分支填）：让 provider 明确用这一个，而不是它内部的全局 KEY
+    let mut poll_key: Option<String> = None;
+
     let provider: Box<dyn AIProvider + Send> = if is_pixverse {
         let api_key = get_baidu_video_key()
             .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?;
@@ -2783,10 +2993,27 @@ pub async fn banana_poll_video_job(
         p.set_api_key(api_key).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
         Box::new(p)
     } else if is_minimax {
-        let api_key = get_compshare_video_key()
-            .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?;
+        // 🔴 必须用**提交时那个 KEY** 来查：多 KEY 池之后，「当前全局 KEY」不再等于
+        //    「建这个任务的 KEY」，拿别的 KEY 查可能被判成任务不存在 ⇒ 误退费。
+        //    内存没有（重启后）就查指纹文件，仍然没有才退回单 KEY 兜底。
+        let mut api_key = crate::commands::video_key_pool::resolve_key_for_task(&task_id);
+        if api_key.is_none() {
+            if let Some(fp) = crate::commands::video_key_pool::load_task_fp(&app, &task_id).await {
+                api_key = crate::commands::video_key_pool::key_by_fingerprint(
+                    &fp,
+                    &task_id,
+                    std::time::Instant::now(),
+                );
+            }
+        }
+        let api_key = match api_key {
+            Some(k) => k,
+            None => get_compshare_video_key()
+                .ok_or_else(|| "视频生成密钥未配置，请联系管理员".to_string())?,
+        };
         let p = crate::ai::providers::minimax::MiniMaxProvider::new();
-        p.set_api_key(api_key).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
+        p.set_api_key(api_key.clone()).await.map_err(|e| format!("设置视频生成密钥失败: {}", e))?;
+        poll_key = Some(api_key);
         Box::new(p)
     } else {
         return Ok(serde_json::json!({
@@ -2797,12 +3024,25 @@ pub async fn banana_poll_video_job(
 
     let metadata = if is_pixverse {
         get_baidu_video_key().map(|key| serde_json::json!({ "api_key": key }))
+    } else if is_minimax {
+        // 与上面解析出的 KEY 保持同一个（照 pixverse 既有的 metadata 形状）
+        poll_key.clone().map(|key| serde_json::json!({ "api_key": key }))
     } else {
         None
     };
     let handle = crate::ai::ProviderTaskHandle {
         task_id: task_id.clone(),
         metadata,
+    };
+
+    // 终态时释放槽位 + 清掉指纹记录（任务已结束，没有继续占用并发/记录的必要）
+    let finish_slot = || {
+        crate::commands::video_key_pool::release_task(&task_id, std::time::Instant::now());
+        let app_for_fp = app.clone();
+        let tid = task_id.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::commands::video_key_pool::forget_task_key(&app_for_fp, &tid).await;
+        });
     };
 
     match provider.poll_task(handle).await {
@@ -2813,6 +3053,7 @@ pub async fn banana_poll_video_job(
                 counts.remove(&task_id);
             }
             info!("视频任务完成: {}", url);
+            finish_slot();
             Ok(serde_json::json!({
                 "status": "succeeded",
                 "videoUrl": url
@@ -2825,8 +3066,12 @@ pub async fn banana_poll_video_job(
                 counts.remove(&task_id);
             }
             warn!("视频任务失败: {}", msg);
+            finish_slot();
             // 429 限流 → 不退费，通知用户稍后手动重试
             if msg.contains("429") || msg.to_lowercase().contains("rate") {
+                if let Some(key) = poll_key.as_deref() {
+                    crate::commands::video_key_pool::mark_429_by_key(key, std::time::Instant::now());
+                }
                 return Ok(serde_json::json!({
                     "status": "failed",
                     "error": format!("上游服务限流，请稍后手动重试: {}", msg),
@@ -2868,6 +3113,7 @@ pub async fn banana_poll_video_job(
                 let mut counts = VIDEO_POLL_ERROR_COUNT.lock().await;
                 counts.remove(&task_id);
             }
+            crate::commands::video_key_pool::heartbeat(&task_id, std::time::Instant::now());
             Ok(serde_json::json!({ "status": "queued" }))
         }
         Ok(crate::ai::ProviderTaskPollResult::Running) => {
@@ -2876,11 +3122,24 @@ pub async fn banana_poll_video_job(
                 let mut counts = VIDEO_POLL_ERROR_COUNT.lock().await;
                 counts.remove(&task_id);
             }
+            // 心跳：告诉 KEY 池这个槽位还活着，别被 INFLIGHT_TTL 回收
+            crate::commands::video_key_pool::heartbeat(&task_id, std::time::Instant::now());
             Ok(serde_json::json!({ "status": "running" }))
         }
         Err(e) => {
             let err_msg = e.to_string();
             warn!("视频任务轮询临时错误: {}", err_msg);
+
+            // ⚠️ 「KEY 不对」类错误不能计入连续错误计数：多 KEY 池之后，跨重启/跨 KEY 查询
+            //    会出现系统性 404，若计入 5 拍就会把**其实正在正常跑**的任务退费掉。
+            if looks_like_auth_error(&err_msg) {
+                warn!("[VideoPool] 轮询疑似密钥不匹配，保留槽位与积分，不计入错误阈值");
+                return Ok(serde_json::json!({
+                    "status": "unknown_key",
+                    "error": err_msg,
+                    "creditsRetained": true
+                }));
+            }
 
             let mut counts = VIDEO_POLL_ERROR_COUNT.lock().await;
             let count = counts.entry(task_id.clone()).and_modify(|c| *c += 1).or_insert(1);
@@ -2889,6 +3148,7 @@ pub async fn banana_poll_video_job(
             if current >= 5 {
                 counts.remove(&task_id);
                 drop(counts);
+                finish_slot();
 
                 let already_refunded = {
                     let set = REFUNDED_TASK_IDS.lock().await;

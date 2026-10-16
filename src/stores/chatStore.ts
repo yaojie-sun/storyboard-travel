@@ -4,6 +4,7 @@ import {
   saveChatConversations,
   loadChatConversations,
   migrateChatStorage,
+  recoverStrandedChat,
   backupCorruptChatFile,
   type ChatMessageDto,
   type ChatResponse,
@@ -15,6 +16,7 @@ import { buildProjectChatContext } from '@/features/chat/projectContext';
 import {
   parseStageAnchor,
   autoNextAnchor,
+  isInspirationTrigger,
   resolveUnitPlan,
   type StageId,
   type ChainMode,
@@ -794,14 +796,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // ⇒ 已 hydrated、但一份对话都没读 ⇒ **面板永久空白**（Local 2026-09-25 的根因）。
     if (!pid) return;
 
-    // 0) 尝试迁移旧版单文件存储（仅一次）
+    // 0) 尝试迁移旧版单文件存储（后端只跑一次）
+    //    🔴 必须带上 `pid` 做兜底项目：反查不到归属的对话并入当前项目，
+    //    而不是倒进没人读的 `chat/global.json`（2026-10-16 数据事故根因）。
     try {
-      const result = await migrateChatStorage();
+      const result = await migrateChatStorage(pid);
       if (result !== 'no_old_file') {
         console.log('[ChatStore] 迁移旧聊天数据:', result);
       }
     } catch (e) {
       console.warn('[ChatStore] 迁移旧聊天数据失败（可忽略）:', e);
+    }
+
+    // 0.1) 一次性回捞历史事故中被写进 `chat/global.json` 的对话（后端幂等，只跑一次）
+    try {
+      const recovered = await recoverStrandedChat(pid);
+      if (recovered !== 'no_stranded' && recovered !== 'already_recovered') {
+        console.log('[ChatStore] 回捞历史对话:', recovered);
+      }
+    } catch (e) {
+      console.warn('[ChatStore] 回捞历史对话失败（可忽略）:', e);
     }
 
     // 1) 从项目专属文件加载
@@ -1174,8 +1188,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       //    而那个范围只能从**刚落盘**的镜头表（`updatedMessages`，含这一步的产物）算出来。
       //    这里传的是 `updatedMessages` 而**不是** `get().conversations` —— 后者还没包含
       //    刚才这条回复（它在下面那个 `set` 里才写进去）。
+      // 🔴 **灵感轮不续链**。用户点 `💡爆款灵感` 发出去的那句没有锚点 ⇒ `askedStage`
+      //    落到 `STEP0` ⇒ 照旧会一路串到 `STEP6`：写手会**替用户把方案挑掉**，
+      //    刚出的 3 个方案下面直接压着一份出片提示词，而「展开哪个方案」这一步没了。
+      //    ⇒ 灵感那轮把选择权交回用户（方案卡，见 `stageCards.inspirationCard`）。
+      //
+      //    ⚠️ 判据与 `ChatPanel` 的 `chainContinues`（`!isInspirationReply`）**必须同口径**：
+      //      一边续一边不续，卡片要么被吞掉、要么闪一帧就被下一轮替换。
+      //    ⚠️ 用户点「方案 N」发出的是**锚点**，`isInspirationTrigger` 对它返回 `false`
+      //       ⇒ 从这一步起照旧自动串链（与 SKILL 里「选完进入标准工作流程」一致）。
       const nextAnchor =
-        chained.autoChain && askedStage
+        chained.autoChain && askedStage && !isInspirationTrigger(content)
           ? autoNextAnchor(
               askedStage,
               chained.autoChainMode,

@@ -1148,9 +1148,37 @@ fn collect_valid_ids_from_db(db_path: &Path) -> Result<(HashSet<String>, HashSet
         Ok(removed)
     }
 
+    /// 判定一次对话是否**有值得保留的内容**。有任何一条消息带正文或 promptBlocks，就永不删除。
+    ///
+    /// 🔴 2026-10-16 生产事故：旧判据**只看 `promptBlocks`**。但历史对话、以及写手在
+    ///    **过程步**里吐出的回复，常常**只有 `content` 正文、没有 promptBlocks**
+    ///    ⇒ 被当成"孤儿"物理删除，用户升级后整条对话消失。
+    ///    现在放宽为：任一条消息有非空正文 **或** 有非空 promptBlocks，即视为有内容。
+    fn conversation_has_content(conv: &serde_json::Value) -> bool {
+        conv.get("messages")
+            .and_then(|v| v.as_array())
+            .map(|msgs| {
+                msgs.iter().any(|m| {
+                    let has_blocks = m
+                        .get("promptBlocks")
+                        .and_then(|pb| pb.as_array())
+                        .map(|arr| !arr.is_empty())
+                        .unwrap_or(false);
+                    if has_blocks {
+                        return true;
+                    }
+                    m.get("content")
+                        .and_then(|c| c.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    }
+
     /// 清理 chat/*.json 中引用不存在 episode 的对话（物理隔离格式，每个项目一个文件）
     /// 保留没有 episodeId 的对话（全局对话）
-    /// **保护规则**：有 promptBlocks 的对话永不删除（防止付费内容丢失）
+    /// **保护规则**：只要对话里有任何正文/promptBlocks 就永不删除（防止付费内容丢失）
     fn cleanup_chat_orphans(chat_path: &Path, valid_episode_ids: &HashSet<String>) -> Result<usize, String> {
         let content = std::fs::read_to_string(chat_path).map_err(|e| format!("read chat: {e}"))?;
         let mut conversations: Vec<serde_json::Value> =
@@ -1163,20 +1191,8 @@ fn collect_valid_ids_from_db(db_path: &Path) -> Result<(HashSet<String>, HashSet
                     if valid_episode_ids.contains(ep_id) {
                         return true; // episode 存在，保留
                     }
-                    // episode 不存在 → 检查是否有 promptBlocks（用户生成的内容）
-                    let has_prompt_blocks = conv
-                        .get("messages")
-                        .and_then(|v| v.as_array())
-                        .map(|msgs| {
-                            msgs.iter().any(|m| {
-                                m.get("promptBlocks")
-                                    .and_then(|pb| pb.as_array())
-                                    .map(|arr| !arr.is_empty())
-                                    .unwrap_or(false)
-                            })
-                        })
-                        .unwrap_or(false);
-                    has_prompt_blocks // 有生成内容的对话保留
+                    // episode 不存在 → 只要对话里有实际内容就保留
+                    conversation_has_content(conv)
                 }
                 _ => true, // 无 episodeId → 全局对话，保留
             }
@@ -1242,20 +1258,12 @@ fn collect_valid_ids_from_db(db_path: &Path) -> Result<(HashSet<String>, HashSet
             }
         }
 
-        // 兼容清理旧版单文件 chat_conversations.json
-        let old_chat_path = user_dir.join("chat_conversations.json");
-        if old_chat_path.exists() {
-            let bak = old_chat_path.with_extension("json.bak");
-            if let Err(e) = std::fs::copy(&old_chat_path, &bak) {
-                tracing::warn!("[sync] cleanup: backup old chat to {:?} failed: {e}", bak);
-            } else {
-                match cleanup_chat_orphans(&old_chat_path, &valid_episode_ids) {
-                    Ok(n) if n > 0 => tracing::info!("[sync] cleanup: removed {} orphans from old chat_conversations.json, backup at {:?}", n, bak),
-                    Ok(_) => { let _ = std::fs::remove_file(&bak); }
-                    Err(e) => tracing::warn!("[sync] cleanup: old chat_conversations.json failed: {e}"),
-                }
-            }
-        }
+        // 🔴 2026-10-16 生产事故：这里原本还会**就地削掉**遗留单文件
+        //    `chat_conversations.json`（`cleanup_chat_orphans` 直接写回同路径）。
+        //    而登录同步发生在 `migrate_chat_storage` **之前** ⇒ 旧版用户的对话还没被迁移，
+        //    就先在同步里被物理删除，源文件已毁、`.bak` 也随之被清掉，无从恢复。
+        //    ⇒ 该文件的去留**只由 `migrate_chat_storage` 决定**（先备份 → 并集合并 → 改名 .migrated），
+        //      这里绝不再碰它。
     }
 
 impl SyncManager {

@@ -26,6 +26,7 @@ import { AccountActivationDialog } from './components/AccountActivationDialog';
 import { RestartReminderDialog } from './components/RestartReminderDialog';
 import { syncResolveConflicts, syncPull } from './commands/ai';
 import { hydrateVideoGenStore, useVideoGenStore } from './features/videoGeneration/videoGenStore';
+import { clearRulesCache } from './features/videoGeneration/videoGenRules';
 import {
   bananaInitialize,
   bananaCheckCredits,
@@ -33,9 +34,12 @@ import {
   bananaUpdateLocalApiKeys,
   clearAllApiKeys,
   bananaLogout,
-  isBananaLoggedIn,
+  probeLoginState,
+  isAuthRejectedError,
+  resetLastKnownLoginState,
   bananaGetCurrentUser,
 } from '@/commands/ai';
+import { NetworkStatusBanner, ReconnectingPanel } from './components/NetworkStatusBanner';
 import {
   subscribeOpenGlobalErrorDialog,
   type GlobalErrorDialogDetail,
@@ -85,6 +89,8 @@ function App() {
   const [syncConflicts, setSyncConflicts] = useState<ProjectNameConflict[]>([]);
   const [showAccountActivation, setShowAccountActivation] = useState(false);
   const [showRestartDialog, setShowRestartDialog] = useState(false);
+  // 网络降级：服务器暂时不可达（**不等于**登录失效）。为 true 时保持登录态、出提示条并后台重连。
+  const [networkDegraded, setNetworkDegraded] = useState(false);
 
   const isHydrated = useProjectStore((state) => state.isHydrated);
   const hydrate = useProjectStore((state) => state.hydrate);
@@ -205,12 +211,12 @@ function App() {
       setUserInfo(null);
     };
 
-    const handleNetworkDown = (event: CustomEvent<string>) => {
-      const msg = event.detail || '分镜大师无法连接服务器，已暂时退出登录。请检查网络后重试。';
-      console.log('收到network-down事件:', msg);
-      setAuthStatus('logged_out');
-      setUserInfo(null);
-      setGlobalError({ title: '网络故障', message: msg, details: '' });
+    // 服务器暂时不可达：**保持登录态**，只出降级提示条，交给重连定时器。
+    // 🔴 历史事故点：这里曾经 `setAuthStatus('logged_out')` + 清 userInfo ——
+    // 一次网络抖动就把正在付费的用户踢出登录，已按「网络抖动 ≠ 登录失效」改掉。
+    const handleNetworkDown = () => {
+      console.log('收到network-down事件：服务器暂时不可达，保持登录态并自动重连');
+      setNetworkDegraded(true);
     };
 
     // 添加处理信用刷新的事件
@@ -230,11 +236,20 @@ function App() {
     // 添加处理技能访问权限检查的事件
     const handleSkillAccessCheck = async (event: CustomEvent<{ resolve: (value: boolean) => void }>) => {
       try {
-        // 检查用户登录状态和剩余次数
-        const isLoggedIn = await isBananaLoggedIn();
+        // 三态探针：只有服务端明确否认身份才算未登录；网络不可达不拦人
+        const state = await probeLoginState();
 
-        if (!isLoggedIn) {
-          // 如果未登录，触发登录对话框并返回false
+        if (state === 'unreachable') {
+          // 网络不可达 ⇒ **放行**。扣费在服务端把关（真没次数会被服务端拦下），
+          // 前端不该因为一次网络抖动就把正在付费的用户挡在门外。
+          console.warn('技能访问检查：服务器不可达，放行本次操作并进入网络降级');
+          setNetworkDegraded(true);
+          event.detail.resolve(true);
+          return;
+        }
+
+        if (state === 'logged_out') {
+          // 服务端明确否认身份（或无本地令牌），触发登录对话框并返回false
           setAuthStatus('logged_out');
           setShowLoginDialog(true);
           event.detail.resolve(false);
@@ -264,7 +279,16 @@ function App() {
         event.detail.resolve(true);
       } catch (error) {
         console.error('技能访问权限检查失败:', error);
-        event.detail.resolve(false);
+        const msg = error instanceof Error ? error.message : String(error);
+        if (isAuthRejectedError(msg)) {
+          setAuthStatus('logged_out');
+          setShowLoginDialog(true);
+          event.detail.resolve(false);
+        } else {
+          // 网络类错误：放行 + 降级提示，**不弹登录框**
+          setNetworkDegraded(true);
+          event.detail.resolve(true);
+        }
       }
     };
 
@@ -292,6 +316,26 @@ function App() {
     };
   }, []);
 
+  // 登录态落地：正常登录与「网络恢复后重连成功」都走这一段，避免两处逻辑漂移
+  const applyLoggedInSession = useCallback((info: BananaUserInfo) => {
+    setAuthStatus('logged_in');
+    setShowLoginDialog(false);
+    setUserInfo(info);
+    setNetworkDegraded(false);
+
+    // 设置当前用户 ID（用于 localStorage 数据隔离校验）
+    useChatStore.getState().setCurrentUserId(String(info.user_id));
+
+    // hydrate() 在初始化完成前已调用失败（CURRENT_USER_ID 为空），
+    // 此时 CURRENT_USER_ID 已在 bananaInitialize 中设置，可以重新加载
+    void useProjectStore.getState().forceRehydrate();
+    void useChatStore.getState().forceRehydrate();
+    void hydrateVideoGenStore();
+
+    // 导出本地设置到 Rust 侧（供退出时自动 push 到云端）
+    initSyncOnLogin();
+  }, []);
+
   // 启动时信用检查、API密钥更新和技能更新检查
   useEffect(() => {
     const initializeAppCreditsAndKeys = async () => {
@@ -305,21 +349,7 @@ function App() {
             const userInfo = await bananaGetCurrentUser();
 
             // 用户信息获取成功，说明登录有效
-            setAuthStatus('logged_in');
-            setShowLoginDialog(false);
-            setUserInfo(userInfo);
-
-            // 设置当前用户 ID（用于 localStorage 数据隔离校验）
-            useChatStore.getState().setCurrentUserId(String(userInfo.user_id));
-
-            // hydrate() 在初始化完成前已调用失败（CURRENT_USER_ID 为空），
-            // 此时 CURRENT_USER_ID 已在 bananaInitialize 中设置，可以重新加载
-            void useProjectStore.getState().forceRehydrate();
-            void useChatStore.getState().forceRehydrate();
-            void hydrateVideoGenStore();
-
-            // 导出本地设置到 Rust 侧（供退出时自动 push 到云端）
-            initSyncOnLogin();
+            applyLoggedInSession(userInfo);
 
             // 2. 检查用户信用
             const credits = await bananaCheckCredits();
@@ -387,14 +417,24 @@ function App() {
               setShowPaymentDialog(true);
             }
           } catch (userError) {
-            // 获取用户信息失败，说明虽然初始化了但登录状态无效
-            console.warn('登录状态验证失败，用户需要重新登录:', userError);
-            setAuthStatus('logged_out');
-            setShowLoginDialog(true);
-            setUserInfo(null);
+            const msg = userError instanceof Error ? userError.message : String(userError);
+            if (isAuthRejectedError(msg)) {
+              // 服务端明确否认身份 ⇒ 这才要求重新登录
+              console.warn('登录状态验证失败（认证被拒），用户需要重新登录:', userError);
+              setAuthStatus('logged_out');
+              setShowLoginDialog(true);
+              setUserInfo(null);
+            } else {
+              // 🔴 网络不可达 ⇒ **不登出**。本地有令牌就保持会话，出降级提示条 + 后台重连。
+              console.warn('登录状态验证失败（服务器不可达），保持登录态并自动重连:', userError);
+              setNetworkDegraded(true);
+              setAuthStatus('checking');
+              setShowLoginDialog(false);
+            }
           }
         } else {
-          // 未初始化：新用户默认显示登录/注册对话框
+          // 未初始化：本地没有设备令牌（新用户），或令牌已被服务端拒绝 ⇒ 显示登录/注册对话框。
+          // 注意「服务器不可达但本地有令牌」由 Rust 侧返回 true，不会走到这里。
           setAuthStatus('logged_out');
           setShowLoginDialog(true);
           setShowTokenActivation(false);
@@ -402,11 +442,18 @@ function App() {
         }
       } catch (error) {
         console.error('启动初始化失败:', error);
-        // 初始化失败：显示登录对话框
-        setAuthStatus('logged_out');
-        setShowLoginDialog(true);
-        setShowTokenActivation(false);
-        setUserInfo(null);
+        const msg = error instanceof Error ? error.message : String(error);
+        if (isAuthRejectedError(msg)) {
+          setAuthStatus('logged_out');
+          setShowLoginDialog(true);
+          setShowTokenActivation(false);
+          setUserInfo(null);
+        } else {
+          // 网络类/未知错误：保持登录态，降级提示 + 后台重连
+          setNetworkDegraded(true);
+          setAuthStatus('checking');
+          setShowLoginDialog(false);
+        }
       }
     };
 
@@ -431,6 +478,12 @@ function App() {
   }, [tokenActivationKey]);
 
   // 定期检查登录状态（每60秒检查一次）
+  //
+  // 🔴 历史事故点：这里曾经是「探不动就登出」—— `isBananaLoggedIn()` 抛错也走
+  // `setAuthStatus('logged_out')` + 清 userInfo（原注释「检查失败也认为用户已登出」），
+  // 于是**一次网络抖动就会在 60 秒内把用户踢出登录**。
+  // 现在的口径：只有服务端**明确否认身份**才登出；网络不可达 ⇒ 保持登录 + 出降级提示条，
+  // 由重连定时器自动恢复。
   useEffect(() => {
     if (authStatus !== 'logged_in') {
       // 如果当前不是登录状态，不进行定期检查
@@ -441,23 +494,25 @@ function App() {
     let intervalId: number | null = null;
 
     const checkLoginStatus = async () => {
-      try {
-        const loggedIn = await isBananaLoggedIn();
-        if (!loggedIn) {
-          console.log('定期检查：用户已登出，显示登录对话框');
-          // 用户已登出，更新状态并显示登录对话框
-          setAuthStatus('logged_out');
-          setShowLoginDialog(true);
-          // 清除用户信息
-          setUserInfo(null);
-        }
-      } catch (error) {
-        console.error('定期检查登录状态失败:', error);
-        // 检查失败也认为用户已登出
-        setAuthStatus('logged_out');
-        setShowLoginDialog(true);
-        setUserInfo(null);
+      const state = await probeLoginState(); // 内部已吞异常，不会抛
+
+      if (state === 'logged_in') {
+        setNetworkDegraded(false);
+        return;
       }
+
+      if (state === 'unreachable') {
+        // 网络问题 ≠ 登录失效：保持登录态，只出提示条
+        console.warn('定期检查：服务器不可达，保持登录态并等待自动重连');
+        setNetworkDegraded(true);
+        return;
+      }
+
+      // state === 'logged_out'：服务端明确否认身份 ⇒ 这才登出
+      console.log('定期检查：服务端已明确否认身份，显示登录对话框');
+      setAuthStatus('logged_out');
+      setShowLoginDialog(true);
+      setUserInfo(null);
     };
 
     // 立即执行一次检查
@@ -472,6 +527,57 @@ function App() {
       }
     };
   }, [authStatus]);
+
+  // 网络降级时的自动重连：指数退避，连上就自动回到登录态，**全程不要求重新输密码**。
+  // 只有重连过程中服务端「明确否认身份」才转为要求重新登录。
+  useEffect(() => {
+    if (!networkDegraded) {
+      return;
+    }
+
+    let cancelled = false;
+    let attempt = 0;
+    let timer: number | null = null;
+
+    const tryReconnect = async () => {
+      if (cancelled) return;
+      attempt += 1;
+      try {
+        const initialized = await bananaInitialize();
+        if (initialized && !cancelled) {
+          const info = await bananaGetCurrentUser();
+          if (cancelled) return;
+          applyLoggedInSession(info);
+          console.log('[Network] 已重新连上服务器，自动恢复登录态');
+          return;
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (isAuthRejectedError(msg)) {
+          if (cancelled) return;
+          console.warn('[Network] 重连时被服务端明确拒绝，转为要求重新登录');
+          setNetworkDegraded(false);
+          setAuthStatus('logged_out');
+          setShowLoginDialog(true);
+          setUserInfo(null);
+          return;
+        }
+        // 仍是网络类错误 ⇒ 继续退避重试
+      }
+      if (cancelled) return;
+      const delay = Math.min(30000, 1000 * 2 ** Math.min(attempt - 1, 5));
+      timer = window.setTimeout(() => { void tryReconnect(); }, delay);
+    };
+
+    void tryReconnect();
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [networkDegraded, applyLoggedInSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -564,6 +670,8 @@ function App() {
         return;
       }
       if (result.hasUpdate && result.latestVersion && result.downloadUrl) {
+        // 服务端有新版 ⇒ 规则头很可能也刚热更过：丢掉本地缓存，别让用户继续用旧头。
+        clearRulesCache();
         setUpdateInfo({
           latestVersion: result.latestVersion,
           currentVersion: result.currentVersion ?? '',
@@ -601,6 +709,8 @@ function App() {
     void useProjectStore.getState().forceRehydrate();
     void useChatStore.getState().forceRehydrate();
     void hydrateVideoGenStore();
+    // 换账号是一个会话边界：规则头按新账号重新取一次（缓存原本活到进程结束）。
+    clearRulesCache();
 
     // 如果服务端返回需要激活（新用户 API 配置未就绪），弹出重启提醒窗口
     if (needsActivation) {
@@ -771,6 +881,9 @@ function App() {
       setUserInfo(null);
       setShowLoginDialog(true);
       setShowSettings(false);
+      // 复位网络降级标志与登录态记忆，避免下一个账号沿用上一个账号的状态
+      setNetworkDegraded(false);
+      resetLastKnownLoginState();
     }
   };
 
@@ -828,7 +941,9 @@ function App() {
             <div className="absolute inset-0 bg-bg-dark/95 backdrop-blur-sm" />
             {/* 令牌激活或登录对话框居中 */}
             <div className="relative z-10">
-              {showTokenActivation ? (
+              {networkDegraded && authStatus === 'checking' ? (
+                <ReconnectingPanel />
+              ) : showTokenActivation ? (
                 <TokenActivationDialog
                   isOpen={true}
                   onActivated={handleTokenActivated}
@@ -852,6 +967,7 @@ function App() {
     return (
       <ReactFlowProvider>
         <div className="w-full h-full flex flex-col bg-bg-dark">
+          <NetworkStatusBanner degraded={networkDegraded} />
           {/* 加载覆盖层 */}
           <div className="absolute inset-0 bg-bg-dark/80 backdrop-blur-sm z-40 flex items-center justify-center">
             <div className="text-text-muted text-sm">正在加载项目数据...</div>
@@ -955,12 +1071,16 @@ function App() {
           <div className="absolute inset-0 bg-bg-dark/95 backdrop-blur-sm" />
           {/* 登录对话框居中 */}
           <div className="relative z-10">
-            <LoginDialog
-              isOpen={true}
-              onClose={handleLoginClose}
-              onLoginSuccess={handleLoginSuccess}
-              onSwitchToToken={handleSwitchToToken}
-            />
+            {networkDegraded && authStatus === 'checking' ? (
+              <ReconnectingPanel />
+            ) : (
+              <LoginDialog
+                isOpen={true}
+                onClose={handleLoginClose}
+                onLoginSuccess={handleLoginSuccess}
+                onSwitchToToken={handleSwitchToToken}
+              />
+            )}
           </div>
           {/* 仍然渲染全局错误对话框，以防需要显示错误 */}
           <GlobalErrorDialog
@@ -980,6 +1100,7 @@ function App() {
   return (
     <ReactFlowProvider>
       <div className="w-full h-full flex flex-col bg-bg-dark">
+        <NetworkStatusBanner degraded={networkDegraded} />
         <TitleBar
           onSettingsClick={() => {
             setSettingsInitialCategory('general');

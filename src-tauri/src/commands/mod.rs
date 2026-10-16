@@ -11,6 +11,7 @@ pub mod system;
 pub mod sync;
 pub mod update;
 pub mod usage_report;
+pub mod video_key_pool;
 
 pub use ai::*;
 pub use banana_api::*;

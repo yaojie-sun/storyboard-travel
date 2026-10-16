@@ -12,9 +12,13 @@ import { ChatInput } from './ChatInput';
 import {
   autoNextAnchor,
   cardForStage,
+  inspirationCard,
+  isInspirationTrigger,
   isProcessStage,
   isStageAnchorMessage,
+  looksLikeInspirationReply,
   resolveUnitPlan,
+  type StageCardDef,
 } from './stageCards';
 
 const PANEL_MIN_WIDTH = 300;
@@ -108,6 +112,31 @@ export function ChatPanel({ isOpen, onToggle }: ChatPanelProps) {
     () => resolveUnitPlan(activeConversation?.messages),
     [activeConversation?.messages],
   );
+
+  // 灵感路（`💡爆款灵感`）的回执 —— 这几条要挂「展开哪个方案」的卡，
+  // 而**不能**按它们身上的 `stage` 查表：`chatStore` 记的是「我们问的那一步」，
+  // 灵感那句没有锚点 ⇒ 恒落到 `STEP0` ⇒ 查出来的是「对，写项目简报」，牛头不对马嘴。
+  //
+  // 🔴 与 `unitPlan` 同规矩：会话整条扫一遍算好，**不能放进逐条消息的渲染里**（那是 O(n²)）。
+  // 🔴 判据是**两侧的交集**（用户按触发词要了灵感 **且** 这一轮真出了 `方案 X`），
+  //    见 `looksLikeInspirationReply` —— 只看用户输入会把「脚本里带『灵感』两个字」误判成灵感轮。
+  const inspirationReplyIds = useMemo(() => {
+    const ids = new Set<string>();
+    let asked = false;
+    for (const msg of activeConversation?.messages ?? []) {
+      if (msg.role === 'user') {
+        asked = isInspirationTrigger(msg.content);
+        continue;
+      }
+      if (msg.role === 'assistant' && asked && looksLikeInspirationReply(msg.content)) {
+        ids.add(msg.id);
+      }
+      // ⚠️ 无论命中与否都清掉：一次灵感输入只换一条回执，不清的话它后面
+      //    **每一条**回复都会被挂上方案卡。
+      asked = false;
+    }
+    return ids;
+  }, [activeConversation?.messages]);
 
   // 🔴 可见列表与高亮 id 失配时自愈。
   //    高亮由 `switchToProject` 挑（`chatStore.ts`），列表由上面这个 memo 按
@@ -653,7 +682,13 @@ export function ChatPanel({ isOpen, onToggle }: ChatPanelProps) {
             //    🔴 **这里只换气泡、不能提前 `return`** —— 下面那段选项卡逻辑还得走：
             //       `STEP5.5` 正是过程步的**最后一格**，那张「宫格 / 直出 / 重跑自检」
             //       三选一的卡就挂在它身上（提前 return 会把卡一起吞掉）。
-            const isProcess = msg.role === 'assistant' && isProcessStage(msg.stage);
+            // 🔴 **灵感回执不算过程步**：它的产物（3 个方案）本来就是要给用户看的，
+            //    而它挂的 `stage` 恒是 `STEP0`（理由见上面 `inspirationReplyIds`）
+            //    —— 不豁免的话它会被缩成一行「需求复述」，用户连刚拿到的三个方案都读不到。
+            const isInspirationReply =
+              msg.role === 'assistant' && inspirationReplyIds.has(msg.id);
+            const isProcess =
+              msg.role === 'assistant' && !isInspirationReply && isProcessStage(msg.stage);
             const bubble = isProcess ? (
               <StageProcessLine key={msg.id} content={msg.content} stage={msg.stage} />
             ) : (
@@ -703,8 +738,11 @@ export function ChatPanel({ isOpen, onToggle }: ChatPanelProps) {
             //    渲染了也只存在一帧（下一帧锚点就被自动发出去），用户看到的是「闪一下」。
             //    链路停在 `STEP6`、用户点了停止（`autoChain` 转 false）、或这一步不在主链上时，
             //    选择权才交回用户 —— 那时卡片照常出现。
+            //    灵感轮**不算**：`chatStore` 对灵感那条输入**不续链**（否则会替用户把
+            //    方案挑掉、一路冲到 `STEP6`），这里必须与它同口径，否则卡片会被判成
+            //    「下一步马上自动发」而整张吞掉。
             const chainContinues =
-              autoChain && msg.stage
+              !isInspirationReply && autoChain && msg.stage
                 ? autoNextAnchor(msg.stage, autoChainMode) !== null
                 : false;
 
@@ -715,9 +753,20 @@ export function ChatPanel({ isOpen, onToggle }: ChatPanelProps) {
             //    从这里查 `STAGE_CARDS` 得到该屏的选项，每个选项自带一行锚点。
             //    「写手该输出什么」住在 B 层（`writer_rules/step_shapes.md`），**不在这里**。
             const showCard =
-              !isStreaming && msg.role === 'assistant' && Boolean(msg.stage) && !chainContinues;
+              !isStreaming &&
+              msg.role === 'assistant' &&
+              (isInspirationReply || Boolean(msg.stage)) &&
+              !chainContinues;
             //    `unitPlan` 只有 `STEP6` 用得上（「出下一单元」）；其余步骤忽略它。
-            const card = showCard && msg.stage ? cardForStage(msg.stage, unitPlan) : null;
+            // 🔴 **灵感那一屏不走查表**：它身上的 `STEP0` 是「没有锚点 ⇒ 落到起点」的兜底值，
+            //    查出来的是「对，写项目简报」（= 已经选好料、开始写简报），
+            //    而此刻用户要做的恰恰是**先挑一个创意**。⇒ 换成方案卡，
+            //    锚点仍是 `【阶段】STEP0` + 一行「我选方案 N。」（见 `inspirationCard`）。
+            let card: StageCardDef | null = null;
+            if (showCard) {
+              if (isInspirationReply) card = inspirationCard();
+              else if (msg.stage) card = cardForStage(msg.stage, unitPlan);
+            }
             const cardHasOptions = Boolean(card && card.options.length > 0);
 
             if (!showActions && !cardHasOptions) return bubble;
