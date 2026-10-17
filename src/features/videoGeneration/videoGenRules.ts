@@ -40,12 +40,12 @@ export interface VideoGenRules {
 }
 
 // 最小兜底规则 — 仅网络故障时使用。完整规则见服务端 video_gen_rules_minimax_h3.json
-const DEFAULT_PROMPT_RULE = '【语言】正文为中文；句中括注的官方英文词是执行指令，按括注执行。\n\n【参考图形态】参考图是 6 宫格故事板：宫格 1→2→3→4→5→6 是一条连续时间线，不是 6 张独立快照拼成的幻灯片。人物/场景/道具/光影跨宫格完全一致，动作从前一格自然延续到后一格。\n\n【参考图是真相】参考图锁定外观、身份与构图；参考图里没有的元素，一件都不许加。\n\n【禁止凭空人声】本任务入参只有参考图，不存在任何独立音频资产 ⇒ 一律不许出现 <Audio N>，不许加 audio reference / audio reuse。没有台词的镜头不许写成「有人在说台词」、不许给画面里的人挂 <d>；但环境音必须照官方 §4.6 正面写：官方逐字要求 overall_soundscape 汇总 ambient sound, physical action sounds, and non-verbal human sounds（如 wind, rain, traffic, footsteps, fabric movement, impacts, breathing, laughter, or panting）—— 嘈杂市场/餐馆的人群嗡杂、笑声、餐具碰撞、街市车流都属于这一档，必须写进 overall_soundscape；只有「用户明确要求全片静音」才写 N/A。不许把环境人声写成逐字台词、不许挂到具体人物身上做口型。\n\n【画外音】画外音只按正文里的官方英文句念，不许译成「以画外音说道」：says in an off-screen voiceover，同时 lips remain completely closed。\n\n【禁止】不许在画面里生成任何文字（招牌字/包装字/字幕/霓虹字/对话框/水印）；不许写分辨率、画幅、模型名。';
+const DEFAULT_PROMPT_RULE = '【语言】正文为中文；句中括注的官方英文词是执行指令，按括注执行。\n\n【参考图形态】参考图是 6 宫格故事板：宫格 1→2→3→4→5→6 是一条连续时间线，不是 6 张独立快照拼成的幻灯片。人物/场景/道具/光影跨宫格完全一致，动作从前一格自然延续到后一格。本形态的主参考图只有这一张故事板：正文里的 <Picture N> 一律按官方 §2.2 作为这张故事板的镜头规划参考（storyboard reference）来理解，不要因为编号大于 1 就去寻找另一张参考图。\n\n【参考图是真相】参考图锁定外观与身份，但不是负面清单 —— 官方 §4.2 明确：目标视频里新增的动作/背景/情节都不算参考保真度损失。不许新增的只有用户脚本里没有的场面/人物/地点/故事走向。\n\n【禁止凭空人声】本任务入参只有参考图，不存在任何独立音频资产 ⇒ 一律不许出现 <Audio N>，不许加 audio reference / audio reuse。没有台词的镜头不许写成「有人在说台词」、不许给画面里的人挂 <d>；但环境音必须照官方 §4.6 正面写：官方逐字要求 overall_soundscape 汇总 ambient sound, physical action sounds, and non-verbal human sounds（如 wind, rain, traffic, footsteps, fabric movement, impacts, breathing, laughter, or panting）—— 嘈杂市场/餐馆的人群嗡杂、笑声、餐具碰撞、街市车流都属于这一档，必须写进 overall_soundscape；只有「用户明确要求全片静音」才写 N/A。不许把环境人声写成逐字台词、不许挂到具体人物身上做口型。\n\n【画外音】画外音只按正文里的官方英文句念，不许译成「以画外音说道」：says in an off-screen voiceover，同时 lips remain completely closed。\n\n【文字】画面里/参考图上确实可见的文字（招牌/标签/霓虹/包装字/参考图原有文字与Logo）按官方 §4.5 放进英文双引号逐字保留、不翻译；只禁止凭空新增字幕/水印/随机字母。不许写分辨率、画幅、模型名。';
 
-const DEFAULT_RULES_NEGATIVE_PROMPT = 'chromatic aberration, motion blur excess, morphing, distortion, warping, flicker, unnatural physics, floating objects, anti-gravity, landmark distortion, landscape morphing, building warping, perspective distortion, color bleeding, plastic texture, CG look, 3D render, video game graphics, oversaturated colors, wrong scale, cloning artifacts, AI watermark, empty frame, static image, abrupt transition';
+const DEFAULT_RULES_NEGATIVE_PROMPT = 'chromatic aberration, motion blur excess, morphing, distortion, warping, flicker, unnatural physics, floating objects, anti-gravity, landmark distortion, landscape morphing, building warping, perspective distortion, color bleeding, plastic texture, CG look, 3D render, video game graphics, oversaturated colors, wrong scale, cloning artifacts, AI watermark, empty frame, static image, abrupt transition, gibberish text, random invented lettering, invented speech bubbles, AI-generated watermark overlay, AI-generated subtitles, hallucinated on-screen captions, distorted existing lettering, misspelled existing signage text';
 
 const DEFAULT_RULES: VideoGenRules = {
-  version: '9',
+  version: '10',
   integration: {
     model: 'none',
     max_tokens: 0,
@@ -61,18 +61,17 @@ const DEFAULT_RULES: VideoGenRules = {
     facing_lock: '人物朝向由参考图锚定，摄像机运动不改变人物朝向。',
     axis_lock: '摄像机保持在轴线同侧，不越轴。',
     motion_catalog: 'Zoom In / Zoom Out | Push In / Pull Out | Pan Left / Pan Right | Truck Left / Truck Right | Tilt Up / Tilt Down | Pedestal Up / Pedestal Down | Arc Shot | Tracking Shot | Static Shot | Shake Slightly / Shake Strongly | POV | Roll Clockwise / Roll Counterclockwise（幅度 with small/large amplitude，速度 at slow/fast speed，中等幅度与常速省略）',
-    shot_continuity: '六格→一个连续视频。镜头运动均匀串联，每个镜头时长≥1.5秒，禁止一闪而过的碎镜头。场景/道具/光影跨格一致。画面与人物一致时用运镜连贯过渡、禁止硬切；仅场景发生实质变化时才用官方切镜动词切镜。[Shot 1] 不带时间戳，第 2 镜起 At MM:SS.mmm 严格递增。',
+    shot_continuity: '六格→一个连续视频。镜头运动均匀串联，场景/道具/光影跨格一致。官方 §4.2 逐字：If only the distance or a slight angle needs to change, prefer camera motion ⇒ 只是距离或轻微角度要变时优先用运镜；用户明确要求时 cross-dissolve / fade / wipe 也可以用。官方对镜头时长、每镜动作数没有任何量化规定。[Shot 1] 不带时间戳，第 2 镜起 At MM:SS.mmm 严格递增。',
     hard_constraints: [
       '视频提示词正文恒为六段式，段名逐字、次序固定、段名独占一行、尾随半角冒号、段间空行；主字段 detailed_description',
       '六段之外不再添加任何工程约束段（画面稳定/主体与场景锁定/反文字水印由规则头统一注入）',
       '六段内不写否定句；缺席只有 N/A 一个写法',
       '宫格1-6是连续时间线，顺序不变，不添加/不删减/不修改画面内容',
-      '参考图里看得见的活物/道具/环境，其运动与状态变化必须逐项写出；参考图里没有的一件不加',
+      '参考图里看得见的活物/道具/环境，其运动与状态变化必须逐项写出；禁止新增的理由只有一条：用户脚本里没有的场面/人物/地点/故事走向一个字都不加（官方 §4.2：参考图不是负面清单）',
       'retention_analysis 的判定必须与 detailed_description 的正文同义，不许打架',
       '运镜只用官方三维闭集（12 类 motion type × 幅度 × 速度），表外镜头动作与镜头内光学操作一律不写',
       '切镜只用 the camera cuts to / the shot cuts to / the shot transitions to / the shot changes to / the shot switches to，且与镜头内容同一行',
       '[Shot 1] 不带时间戳；第 2 镜起 At MM:SS.mmm 严格递增、落在总时长内；标记与内容同一行',
-      '每个镜头时长≥1.5秒，相邻镜头时间戳间隔≥1.5秒，禁止一闪而过的碎镜头',
       'overall_soundscape 与 non_diegetic_music 两段正面写「有什么」，没有的写 N/A',
       '画内说话在 </d> 之后逐字写「他说话时下颌开合、嘴唇随字句张动」；画外音才写「嘴唇保持完全闭合」；有可见人物无台词必须正面交代嘴在做什么',
       '色温严格按指定值',
@@ -81,7 +80,7 @@ const DEFAULT_RULES: VideoGenRules = {
       '人物形象/服装/场景外观严格锁死参考图，禁止AI自行重新设计、简化或改写',
       '指代参考图统一用 <Picture N>（N 自 1 起），禁止 @图N / [Image N] 写法',
       '台词用 <d>[Chinese] 原文</d> 包装，标签内一字不改，仅可在标签外补充角色名与情绪语调',
-      '成片里不出现任何画面上的文字（招牌字/包装字/字幕/霓虹字/对话框/水印）',
+      '画面里/参考图上确实可见的文字（招牌/标签/霓虹/包装字/参考图原有文字与Logo）按官方 §4.5 放进英文双引号逐字保留、不翻译；只禁止凭空新增字幕/水印/随机字母',
       'No text overlays, no watermarks, no subtitles, no captions.',
       'Human realism: breathing, weight shift, natural blinking, live eyes — never frozen, never doll-like, never plastic.',
       'Scene realism: real locations, natural ambient light and weather, believable depth and scale — never plastic, never CG, never 3D render.',
@@ -92,10 +91,10 @@ const DEFAULT_RULES: VideoGenRules = {
 
 // 直出兜底规则 —— 「直接生成视频」（videoGenNode）。完整规则见服务端 video_gen_rules_minimax_h3_direct.json
 // 与宫格版的唯一实质差异：参考图是若干张独立资产，**没有** 6 宫格时间线语义。
-const DEFAULT_PROMPT_RULE_DIRECT = '【语言】正文为中文；句中括注的官方英文词是执行指令，按括注执行。\n\n【参考图形态】参考图是若干张相互独立的素材（人物形象 / 产品 / 场景 / 风格），不是宫格故事板，彼此没有先后顺序、不构成时间线。每张图各自锁定它承载的那部分外观与身份；镜头顺序、动作推进、时间线完全由正文建立，不要假设参考图之间存在「上一格 → 下一格」的延续关系。\n\n【参考图是真相】参考图锁定外观、身份与构图；参考图里没有的元素，一件都不许加。\n\n【禁止凭空人声】本任务入参只有参考图，不存在任何独立音频资产 ⇒ 一律不许出现 <Audio N>，不许加 audio reference / audio reuse。没有台词的镜头不许写成「有人在说台词」、不许给画面里的人挂 <d>；但环境音必须照官方 §4.6 正面写：官方逐字要求 overall_soundscape 汇总 ambient sound, physical action sounds, and non-verbal human sounds（如 wind, rain, traffic, footsteps, fabric movement, impacts, breathing, laughter, or panting）—— 嘈杂市场/餐馆的人群嗡杂、笑声、餐具碰撞、街市车流都属于这一档，必须写进 overall_soundscape；只有「用户明确要求全片静音」才写 N/A。不许把环境人声写成逐字台词、不许挂到具体人物身上做口型。\n\n【画外音】画外音只按正文里的官方英文句念，不许译成「以画外音说道」：says in an off-screen voiceover，同时 lips remain completely closed。\n\n【禁止】不许在画面里生成任何文字（招牌字/包装字/字幕/霓虹字/对话框/水印）；不许写分辨率、画幅、模型名。';
+const DEFAULT_PROMPT_RULE_DIRECT = '【语言】正文为中文；句中括注的官方英文词是执行指令，按括注执行。\n\n【参考图形态】参考图是若干张相互独立的素材（人物形象 / 产品 / 场景 / 风格），不是宫格故事板，彼此没有先后顺序、不构成时间线。每张图各自锁定它承载的那部分外观与身份；镜头顺序、动作推进、时间线完全由正文建立，不要假设参考图之间存在「上一格 → 下一格」的延续关系。\n\n【参考图是真相】参考图锁定外观与身份，但不是负面清单 —— 官方 §4.2 明确：目标视频里新增的动作/背景/情节都不算参考保真度损失。不许新增的只有用户脚本里没有的场面/人物/地点/故事走向。\n\n【禁止凭空人声】本任务入参只有参考图，不存在任何独立音频资产 ⇒ 一律不许出现 <Audio N>，不许加 audio reference / audio reuse。没有台词的镜头不许写成「有人在说台词」、不许给画面里的人挂 <d>；但环境音必须照官方 §4.6 正面写：官方逐字要求 overall_soundscape 汇总 ambient sound, physical action sounds, and non-verbal human sounds（如 wind, rain, traffic, footsteps, fabric movement, impacts, breathing, laughter, or panting）—— 嘈杂市场/餐馆的人群嗡杂、笑声、餐具碰撞、街市车流都属于这一档，必须写进 overall_soundscape；只有「用户明确要求全片静音」才写 N/A。不许把环境人声写成逐字台词、不许挂到具体人物身上做口型。\n\n【画外音】画外音只按正文里的官方英文句念，不许译成「以画外音说道」：says in an off-screen voiceover，同时 lips remain completely closed。\n\n【文字】画面里/参考图上确实可见的文字（招牌/标签/霓虹/包装字/参考图原有文字与Logo）按官方 §4.5 放进英文双引号逐字保留、不翻译；只禁止凭空新增字幕/水印/随机字母。不许写分辨率、画幅、模型名。';
 
 const DEFAULT_RULES_DIRECT: VideoGenRules = {
-  version: '9',
+  version: '10',
   integration: {
     model: 'none',
     max_tokens: 0,
@@ -111,18 +110,17 @@ const DEFAULT_RULES_DIRECT: VideoGenRules = {
     facing_lock: '人物朝向由参考图锚定，摄像机运动不改变人物朝向。',
     axis_lock: '摄像机保持在轴线同侧，不越轴。',
     motion_catalog: 'Zoom In / Zoom Out | Push In / Pull Out | Pan Left / Pan Right | Truck Left / Truck Right | Tilt Up / Tilt Down | Pedestal Up / Pedestal Down | Arc Shot | Tracking Shot | Static Shot | Shake Slightly / Shake Strongly | POV | Roll Clockwise / Roll Counterclockwise（幅度 with small/large amplitude，速度 at slow/fast speed，中等幅度与常速省略）',
-    shot_continuity: '镜头顺序与动作推进由正文建立，参考图之间不存在「上一格→下一格」的延续关系。镜头运动均匀串联，每个镜头时长≥1.5秒，禁止一闪而过的碎镜头。同一主体跨镜外观/服装/光影一致。[Shot 1] 不带时间戳，第 2 镜起 At MM:SS.mmm 严格递增。',
+    shot_continuity: '镜头顺序与动作推进由正文建立，参考图之间不存在「上一格→下一格」的延续关系。镜头运动均匀串联，同一主体跨镜外观/服装/光影一致。官方 §4.2 逐字：If only the distance or a slight angle needs to change, prefer camera motion ⇒ 只是距离或轻微角度要变时优先用运镜；用户明确要求时 cross-dissolve / fade / wipe 也可以用。官方对镜头时长、每镜动作数没有任何量化规定。[Shot 1] 不带时间戳，第 2 镜起 At MM:SS.mmm 严格递增。',
     hard_constraints: [
       '视频提示词正文恒为六段式，段名逐字、次序固定、段名独占一行、尾随半角冒号、段间空行；主字段 detailed_description',
       '六段之外不再添加任何工程约束段（画面稳定/主体与场景锁定/反文字水印由规则头统一注入）',
       '六段内不写否定句；缺席只有 N/A 一个写法',
       '参考图是若干张相互独立的素材，不假设它们之间存在宫格或时间线顺序',
-      '参考图里看得见的活物/道具/环境，其运动与状态变化必须逐项写出；参考图里没有的一件不加',
+      '参考图里看得见的活物/道具/环境，其运动与状态变化必须逐项写出；禁止新增的理由只有一条：用户脚本里没有的场面/人物/地点/故事走向一个字都不加（官方 §4.2：参考图不是负面清单）',
       'retention_analysis 的判定必须与 detailed_description 的正文同义，不许打架',
       '运镜只用官方三维闭集（12 类 motion type × 幅度 × 速度），表外镜头动作与镜头内光学操作一律不写',
       '切镜只用 the camera cuts to / the shot cuts to / the shot transitions to / the shot changes to / the shot switches to，且与镜头内容同一行',
       '[Shot 1] 不带时间戳；第 2 镜起 At MM:SS.mmm 严格递增、落在总时长内；标记与内容同一行',
-      '每个镜头时长≥1.5秒，相邻镜头时间戳间隔≥1.5秒，禁止一闪而过的碎镜头',
       'overall_soundscape 与 non_diegetic_music 两段正面写「有什么」，没有的写 N/A',
       '画内说话在 </d> 之后逐字写「他说话时下颌开合、嘴唇随字句张动」；画外音才写「嘴唇保持完全闭合」；有可见人物无台词必须正面交代嘴在做什么',
       '色温严格按指定值',
@@ -131,7 +129,7 @@ const DEFAULT_RULES_DIRECT: VideoGenRules = {
       '人物形象/服装/场景外观严格锁死参考图，禁止AI自行重新设计、简化或改写',
       '指代参考图统一用 <Picture N>（N 自 1 起），禁止 @图N / [Image N] 写法',
       '台词用 <d>[Chinese] 原文</d> 包装，标签内一字不改，仅可在标签外补充角色名与情绪语调',
-      '成片里不出现任何画面上的文字（招牌字/包装字/字幕/霓虹字/对话框/水印）',
+      '画面里/参考图上确实可见的文字（招牌/标签/霓虹/包装字/参考图原有文字与Logo）按官方 §4.5 放进英文双引号逐字保留、不翻译；只禁止凭空新增字幕/水印/随机字母',
       'No text overlays, no watermarks, no subtitles, no captions.',
       'Human realism: breathing, weight shift, natural blinking, live eyes — never frozen, never doll-like, never plastic.',
       'Scene realism: real locations, natural ambient light and weather, believable depth and scale — never plastic, never CG, never 3D render.',

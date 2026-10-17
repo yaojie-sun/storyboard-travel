@@ -134,10 +134,14 @@ export async function fetchGridPromptRules(): Promise<GridPromptRules> {
 
 // ---- shot scale detection ----
 
+// 顺序敏感：具体档位必须排在宽泛档位之前（否则「中远景」会被 中景/远景 抢先命中）。
+// 前 5 条对应官方的 5 个景别字面量，正文里写「中文档位（官方英文）」两种写法都要能认出来。
 const SHOT_KEYWORDS: Array<{ re: RegExp; label: string }> = [
-  { re: /extreme[-\s]?close[-\s]?up|ecu|extreme close/i, label: 'Extreme close-up' },
-  { re: /close[-\s]?up|特写|近景/i, label: 'Close-up' },
+  { re: /extreme[-\s]?close[-\s]?up|ecu|extreme close|大特写/i, label: 'Extreme close-up' },
   { re: /medium[-\s]?close[-\s]?up|mcu|中近景/i, label: 'Medium close-up' },
+  { re: /close[-\s]?up|特写/i, label: 'Close-up' },
+  { re: /close\s*shot|近景/i, label: 'Close shot' },
+  { re: /medium[-\s]?wide\s*shot|中远景/i, label: 'Medium-wide shot' },
   { re: /medium[-\s]?shot|中景/i, label: 'Medium shot' },
   { re: /medium[-\s]?full|中全景/i, label: 'Medium full shot' },
   { re: /full[-\s]?shot|全景|远景/i, label: 'Full shot' },
@@ -161,10 +165,10 @@ export function detectShotScale(description: string): string | null {
 // ---- facing direction detection ----
 
 const FACING_PATTERNS: Array<{ re: RegExp; label: string }> = [
-  { re: /front[-\s]?facing|facing (the )?camera|正面|面对镜头|朝向镜头/i, label: 'front-facing' },
+  { re: /front[-\s]?facing|facing (the )?camera|正面|面对镜头|朝向镜头|面朝镜头|正对镜头/i, label: 'front-facing' },
   { re: /back[-\s]?facing|背面|背对镜头|背对|背向/i, label: 'back-facing' },
-  { re: /facing left|looking left|面向左|朝左|向左看|左侧面/i, label: 'facing left' },
-  { re: /facing right|looking right|面向右|朝右|向右看|右侧面/i, label: 'facing right' },
+  { re: /facing left|looking left|面向左|朝左|向左看|左侧面|面朝画面左|面朝左/i, label: 'facing left' },
+  { re: /facing right|looking right|面向右|朝右|向右看|右侧面|面朝画面右|面朝右/i, label: 'facing right' },
   { re: /three[-\s]?quarter|3\/4|四分之三/i, label: 'three-quarter view' },
   { re: /profile|侧脸|侧面|侧身/i, label: 'profile view' },
   { re: /turning|转身|回头|转过头/i, label: 'turning' },
@@ -415,6 +419,8 @@ function stripMotionAndSound(description: string): string {
   result = result.replace(/慢动作捕捉[^，。；]*[，。；\s]*/g, '');
   result = result.replace(/快速摇镜[^，。；]*[，。；\s]*/g, '');
   result = result.replace(/FPV[^，。；]*[，。；\s]*/g, '');
+  // 「镜头 + 副词 + 动作」——必须容忍副词，否则「镜头缓慢推近（Push In at slow speed）」整段漏网
+  result = result.replace(/镜头(?:缓慢|快速|平稳|急速|极慢|匀速)?[围绕旋转推近拉远摇移升降跟拍俯仰晃动][^，。；]*[，。；\s]*/g, '');
   result = result.replace(/镜头[围绕环绕旋转推近拉远摇移升降跟拍俯仰晃动][^，。；]*[，。；\s]*/g, '');
   result = result.replace(/硬切转场[，。；\s]*/g, '');
   result = result.replace(/平稳摇镜[，。；\s]*/g, '');
@@ -433,6 +439,15 @@ function stripMotionAndSound(description: string): string {
 
   // Remove lingering English camera terms
   result = result.replace(/\b(dolly|pan|tilt|tracking|handheld|whip\s*pan|crane|orbit|zoom|FPV|drone)\b[^,.;]*[,.;\s]*/gi, '');
+
+  // 正文新写法是「中文动作 + 括注官方英文」（如 `镜头缓慢推近（Push In at slow speed）`）。
+  // 中文部分已被上面的规则吃掉，这里把紧跟在后面的官方英文括注一并清掉 ——
+  // 宫格图是静态帧，不该带运镜/切镜指令。景别括注（a medium shot 等）保留。
+  result = result.replace(
+    /[（(]\s*(?:Zoom\s+(?:In|Out)|Push\s+In|Pull\s+Out|Pan\s+(?:Left|Right)|Truck\s+(?:Left|Right)|Tilt\s+(?:Up|Down)|Pedestal\s+(?:Up|Down)|Arc\s+Shot|Tracking\s+Shot|Static\s+Shot|Shake\s+(?:Slightly|Strongly)|POV|Roll\s+(?:Clockwise|Counterclockwise)|the\s+(?:camera|shot)\s+(?:cuts|transitions|changes|switches)\s+to)(?:[^）)]*)?[）)][，。；\s]*/gi,
+    ''
+  );
+  result = result.replace(/\b(?:with\s+(?:small|large)\s+amplitude|at\s+(?:slow|fast)\s+speed)\b[^,.;）)]*[，。；\s]*/gi, '');
 
   // Clean up
   result = result.replace(/[，。；\s]{2,}/g, '，');

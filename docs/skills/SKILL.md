@@ -7,7 +7,7 @@ welcome_message: |
   新影时代提供技术支撑
 ---
 
-<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.3.6 -->
+<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.3.7 -->
 
 # 分路声明（先读这一节，再读下面正文）
 
@@ -87,7 +87,7 @@ welcome_message: |
 | 段名 | `subject_definitions:` / `summary:` / `retention_analysis:` / `detailed_description:` / `overall_soundscape:` / `non_diegetic_music:` |
 | 画外音触发句 | `says in an off-screen voiceover` + `while his/her/its lips remain completely closed.`（主体上加 `off-screen` = 违规，见〈说话与嘴部〉） |
 | 运镜闭集 | 类型 `Push In` / `Pan Left` / `Arc Shot` …、幅度 `with small amplitude` / `with large amplitude`、速度 `at slow speed` / `at fast speed` |
-| 景别 | `a wide shot` / `a full shot` / `a medium shot` / `a medium close-up` / `a close-up` / `an extreme close-up` |
+| 景别 | **官方原文里确实出现过的 5 个档位**：`a medium-wide shot` / `a medium shot` / `a close shot` / `a close-up` / `an extreme close-up` |
 | 切镜动词 | `the camera cuts to` / `the shot cuts to` / `the shot transitions to` / `the shot changes to` / `the shot switches to` |
 | 镜头锚点 | `[Shot N]` / `At MM:SS.mmm` |
 | 台词与标签 | `<d>[Language] 台词原文</d>`、`<Subject N> (Sx)`（说话人两件套）、`<Picture N>` / `<Subject N>`、`<scenetrans>` / `<cutoff>` / `[unclear]` |
@@ -98,9 +98,15 @@ welcome_message: |
 - **令牌型**（段名、`[Shot N]`、`At MM:SS.mmm`、`<Picture N>` / `<Subject N>`、`(Sx)`、`off-screen`（只在主体本人不在画框内时用）、
   `<d>[Language] …</d>`、`<scenetrans>` / `<cutoff>` / `[unclear]`、`N/A`、retention 标记、
   `[reference generation]`、画外音触发句与双唇闭合句）—— **直接原样写在中文句子里**，前后不用加括号。
-- **短语型闭集**（运镜类型／幅度／速度、景别、切镜 5 动词、光影定性词）—— 写成
-  「**中文描述 + 括注官方英文**」：`镜头缓慢推近（Push In at slow speed）`、`全景（a full shot）`、
-  `切到（the shot cuts to）`、`暖金色柔光（warm golden-hour sunlight）`。
+- **短语型闭集**（运镜类型／幅度／速度、景别、切镜 5 动词）—— 写成
+  「**中文描述 + 括注官方英文**」：`镜头缓慢推近（Push In at slow speed）`、`中景（a medium shot）`、
+  `切到（the shot cuts to）`。
+  🔴 **括注的必须是官方原文里确实出现过的英文**。官方原文里**没有**的英文
+  （`a wide shot` / `a full shot` / `a medium close-up` / `an extreme wide shot` /
+  `warm golden-hour sunlight` 之类）**一律不许当官方字面量括注** —— 那是自造。
+- 🔴 **光影不做英文括注**：官方**没有光影词表**，只有 §5.1 的一句定性
+  （`soft lighting` 与 `a slightly desaturated color palette`）和 §7 范例的 `warm indoor lighting`。
+  ⇒ 光影**只写定性中文**，不括注英文，**不写色温数值**，也不写「暖光／冷光／烛火光」这类档位名。
 
 🔴 **全文禁止出现 `<Audio N>`**：本产品入参**只有参考图**，不存在独立音频资产。官方 §2.4 / §2.5 说得很明确 —— `<Audio N>` 只对应「独立音频资产或被启用的同步音轨」，*"An ordinary reference video does not create `<Audio N>` merely because the file contains sound."* ⇒ `subject_definitions` / `summary` / `retention_analysis` / 正文**一律不许出现 `<Audio N>`**，`summary` 的任务类型也**不许**加 `+ audio reference`；给旁白凭空造一个 `<Audio N>` 声线参照，模型就会自己配一段听不懂的人声 —— **这就是客户听到的「旁白不对」**。
 
@@ -171,7 +177,9 @@ non_diegetic_music:
 ⇒ **六段正文合计 ≤ 6900 − 当前规则头字数 − 2**。6900 是客户端的安全线，超了它客户端会整块砍规则头，
 所以按 6900 算，留 100 字余量给上游。
 
-🔴 **当前规则头 762 字（宫格）/ 803 字（直出）⇒ 六段正文合计控制在 6090 字以内**。
+🔴 **当前规则头 976 字（宫格）/ 910 字（直出）⇒ 六段正文合计控制在 5820 字以内**。
+（本上限按较长的宫格头算，并且已经为客户端追加的「导演风格取向」行（约 90 字）留好位：
+6900 − 976 − 2 − 90 ≈ 5832 ⇒ 取整报 5820。直出头更短，同样写不满。）
 🔴 **规则头字数一变，这个上限就必须跟着重算** —— 不要把上限写成一个固定数：
 头一长、写手上限还是旧的，写满上限就必然超限。
 （官方 §5.2 对生成类任务给的是 *350-500 English words*，中文正文 + 官方英文括注落在同一个量级。）
@@ -704,27 +712,32 @@ gpt-image-2提示词前段权重更高。场景、人物、动作放在开头，
 格2：指向屏幕 ← 模型可能分配左手，造成镜像翻转
 ```
 
-**4. 反文字约束（gpt-image-2强制，社区验证）**
+**4. 反文字约束（gpt-image-2强制，社区验证）——只禁「凭空新增」，不禁「参考图原有的」**
 gpt-image-2文字渲染准确率极高（~99%），导致模型过度自信——即使提示词中完全没有提到文字，约60%的输出仍会自行添加文字、水印、标签或随机字母。**每格结尾必须包含反文字约束**：
 
 ```
-无文字，无水印，无标签，无字幕，无随机字母
+无新增文字，无水印，无字幕，无随机字母；保留参考图中原有的文字与Logo
 ```
+
+🔴 **口径来源**：官方 §4.5 要求画面里**确实可见**的文字**逐字保留、不翻译**
+（*"Preserve the original text and punctuation verbatim, without translation."*）、
+官方 §5.1 同（*"Preserve the original language of dialogue, lyrics, and visible text."*）。
+⇒ **参考图里原有的文字／Logo／牌匾必须画出来**，只有**凭空新增**的水印、字幕、随机字母才禁。
 
 **5. 构图用自然语言表达**
 不要写"景别:中景"，而是融入句子：
 
 ```
-✅ 中景构图：教室课桌前...
-✅ 画面以全景展现日式庭院...
-✅ 近景聚焦人物面部...
+✅ 中景（a medium shot）构图：教室课桌前...
+✅ 画面以中远景（a medium-wide shot）展现日式庭院...
+✅ 近景（a close shot）聚焦人物面部...
 ```
 
 **每个宫格输出格式**（以 `【分镜提示词】` 标记开头，禁止出现时间格式、镜头编号、运镜方式）：
 
 ```
 【分镜提示词】
-1. [景别描述]：[场景环境]。[姿态描述：重心+脊柱+四肢+头部+手部]。[动作+空间交互]。[肢体侧+持物状态]。[光源方向+光质+色温]。高仿真度，细节丰富，无文字，无水印，无标签，无字幕，无随机字母
+1. [景别描述]：[场景环境]。[姿态描述：重心+脊柱+四肢+头部+手部]。[动作+空间交互]。[肢体侧+持物状态]。[光源方向+光质+色温]。高仿真度，细节丰富，无新增文字，无水印，无字幕，无随机字母；保留参考图中原有的文字与Logo
 2. [同上格式]
 ...（共6格）
 ```
@@ -763,7 +776,7 @@ gpt-image-2文字渲染准确率极高（~99%），导致模型过度自信—�
 
 **🔴 分镜映射JSON（宫格提示词之后必须输出，不可省略）**：
 
-在宫格提示词输出之后，**紧接着**输出一段 `【分镜映射】` JSON，记录本段视频的每个Shot对应哪些宫格帧。客户端自动解析并存入节点缓存，视频生成时注入到提示词中。
+在宫格提示词输出之后，**紧接着**输出一段 `【分镜映射】` JSON，记录本段视频的每个Shot对应哪些宫格帧。客户端自动解析并存入节点缓存 —— **只用于界面上的帧↔镜头对照与后续分析，不注入视频提示词正文**（`VideoGenDialog.tsx` 明确不注入）。
 
 格式：
 ```
@@ -853,7 +866,15 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 运镜本身即过渡——相邻镜头用运镜丝滑串联，模型自动生成柔和转场，
 **不需要写 `Cut to` / `Then` / `Begin with` 这类裸指令**。
 
-- **默认**：画面与人物一致时，用运镜连贯过渡，**禁止硬切**。
+- **默认**：官方 §4.2 逐字 —— *"If only the distance or a slight angle needs to change, **prefer
+  camera motion**."*（只是距离或轻微角度要变 ⇒ **优先用运镜**；官方说的是 *prefer*，不是「禁止硬切」，
+  本仓原来的「禁止硬切」是加码，**已按官方改回 prefer**。）
+- 🔴 **官方同时允许切镜以外的转场**：*"When explicitly requested by the user, **cross-dissolve, fade,
+  or wipe** may also be used."* —— 用户明确要求时，`cross-dissolve` / `fade` / `wipe` **可以用**
+  （本仓原来漏了这一句，已补回）。
+- 🔴 **切镜要有理由**：官方 §4.2 逐字 —— *"A cut should introduce new information about the subject,
+  space, state, viewpoint, or time."* ⇒ 一次切镜必须带**新信息**：在**主体／空间／状态／视角／时间**
+  里至少换掉一项；这五项全都没变 ⇒ **不要切**，改用运镜（上一条的 *prefer camera motion*）。
 - 🔴 **切镜只用官方 5 个动词之一**，且与镜头内容**同一行**：
   `the camera cuts to` / `the shot cuts to` / `the shot transitions to` /
   `the shot changes to` / `the shot switches to`。
@@ -877,28 +898,36 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 
 ### 景别体系
 
-| 景别 | 英文 | 画面范围 | 情感功能 |
+🔴 **官方没有景别档位表。** 官方原文里**确实出现过**的景别英文只有下面这 5 个
+（§4.1 范例 `a medium-wide shot` 与 `a medium shot`；§5.2 范例 `a close shot` 与 `an extreme close-up`；
+§4.1／§5.2 范例 `a close-up`）⇒ **正文里写成「中文档位 + 括注官方英文」**，例如 `中景（a medium shot）`。
+
+| 官方英文（正文括注） | 中文档位（正文写） | 画面范围 | 情感功能 |
 |------|------|---------|---------|
-| 远景 | Extreme Wide | 完整场景+环境 | 建立空间、交代地点 |
-| 全景 | Wide / Full Shot | 人物全身+部分环境 | 展示人物在环境中的位置 |
-| 中景 | Medium Shot | 人物腰部以上 | 对话、手部动作 |
-| 近景 | Medium Close-up | 人物胸部以上 | 表情+情绪开始突出 |
-| 特写 | Close-up | 面部为主 | 聚焦情绪、内心世界 |
-| 超特写 | Extreme Close-up | 眼睛/嘴唇/手指等局部 | 极度聚焦、象征意义 |
+| `a medium-wide shot` | 中远景 | 人物全身+部分环境 | 建立空间、交代人物位置 |
+| `a medium shot` | 中景 | 人物腰部以上 | 对话、手部动作 |
+| `a close shot` | 近景 | 人物胸部以上 | 表情+情绪开始突出 |
+| `a close-up` | 特写 | 面部／物件为主 | 聚焦情绪、内心世界 |
+| `an extreme close-up` | 大特写 | 眼睛／嘴唇／手指等局部 | 极度聚焦、象征意义 |
 
-### 光影美学词汇
+🔴 **以下 4 个英文景别不是官方字面量，一个字都不许写**：`an extreme wide shot`、`a wide shot`、
+`a full shot`、`a medium close-up` —— 官方原文里**一个都没有**。
+需要比「中远景」更宽的取景时，用 `a medium-wide shot` 再叠中文构图描述表达，**不要自造英文档位**。
 
-| 类型 | 描述方式 | 氛围 |
-|------|---------|------|
-| 黄金时刻 | 黄金时刻暖调阳光，低角度长阴影 | 温暖、怀旧、浪漫 |
-| 蓝调时刻 | 蓝调时刻，天空呈现深蓝渐变 | 静谧、孤独、黎明/黄昏 |
-| 伦勃朗光 | 伦勃朗光，一侧脸颊三角形高光 | 古典、庄重、人物肖像 |
-| 逆光剪影 | 强逆光，主体呈剪影，轮廓光勾勒边缘 | 神秘、浪漫、史诗 |
-| 柔光 | 大面积柔光，阴影柔和 | 温馨、日常、治愈感 |
-| 侧光 | 单侧光源，半脸半阴影 | 冲突、内心挣扎、戏剧性 |
-| 实用光源 | 画面内可见光源（台灯/烛光/霓虹灯管） | 真实感、温馨、叙事感 |
+### 光影怎么写
 
-> 🔴 **旅游场景同样适用上表** —— 只是「人物」换成**目的地与空间**：建筑的「特写」= 门头形制／材质肌理／招牌工艺，空间的「超特写」= 木纹／砖石风化／织纹／食物质地。
+🔴 **官方没有光影词表，也没有色温条款。** 官方原文里与光影有关的只有这两处定性写法：
+- §5.1：*"...with **soft lighting** and **a slightly desaturated color palette**."*
+- §7 范例：*"...with **warm indoor lighting**."*
+
+⇒ **光影只写定性中文**（光源方向 + 光质 + 冷暖倾向），**不括注英文**（括了就是自造）。
+**不写**色温数值（`3200K` 等），**不写**「暖光／中性光／冷光／烛火光」这类档位名。
+
+🔴 **光影流派标签一律不许写**（黄金时刻／蓝调时刻／伦勃朗光／逆光剪影／柔光／侧光／实用光源），
+它们的**英文写法也一律不许括注** —— 官方没有这套词表。需要这类效果时，用**可拍的物理语言**直接写中文
+（例如「夕阳从画面左后方低角度照进来，在地面拉出长长的影子」），**不要贴流派标签**。
+
+> 🔴 **旅游场景同样适用上表（下表 5 档，只用官方原文里出现过的英文）** —— 只是「人物」换成**目的地与空间**：建筑的「特写」= 门头形制／材质肌理／招牌工艺，空间的「大特写」= 木纹／砖石风化／织纹／食物质地。
 
 ---
 
@@ -915,7 +944,7 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 | 空间微距 | 环形光+浅景深，焦点落在一处材质细节上（墙面肌理／木纹／砖石风化／雕刻纹样）；保留真实岁月痕迹，禁止一键平滑式的假面感（见〈强制规则〉规则6） |
 | 美食微距 | 侧逆光+浅景深；食材光泽／蒸汽／油面反光逐帧锁定，禁止过度 HDR 与凭空增减摆盘细节 |
 | 风貌对比 | split-screen（同一机位昼夜或晴雨对照）**仅限对照场景**：两半共用同一构图与同一建筑轮廓，中轴对齐 |
-| 常见避坑 | ①15秒塞5个动作→变形 ②"电影级"堆砌→无效 ③相邻镜头角色外观描述一致 ④🔴**画面里一律不出现任何文字**（招牌/包装字/字幕/霓虹/水印），也不许把参考图上的文字画出来 |
+| 常见避坑 | ①15秒塞5个动作→变形 ②"电影级"堆砌→无效 ③相邻镜头角色外观描述一致 ④🔴**画面里/参考图上确实可见的文字**（招牌/标签/霓虹/包装字/Logo）按官方 §4.5 **放进英文双引号逐字保留、不翻译**；只禁止**凭空新增**字幕/水印/随机字母 |
 
 ---
 
