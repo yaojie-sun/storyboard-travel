@@ -160,6 +160,12 @@
    （官方可用说法：`continues seamlessly across the cut` / `continues uninterrupted into the next shot` /
    `carries over from the previous shot` / `remains audible across the transition`）；
    台词被片尾截断时用 `<cutoff>`。
+   🔴🔴 `<scenetrans>` / `<cutoff>` 一律写在 `<d>` **外面**。依据官方 §4.4 原句（本节开头逐字引文）：
+   "Inside `<d>`, include only the language tag and the actual user-provided spoken content."
+   —— 标签不是台词原文，写进 `<d>` 里模型会把它当成台词的一部分（实测会多出一段听不懂的人声）。
+   ✅ 切口前：`…says in an off-screen voiceover: <d>[Chinese] 前半句，</d> <scenetrans> 声音跨切连续到下一镜（continues seamlessly across the cut）。`
+   ✅ 切口后：`<scenetrans> <d>[Chinese] 后半句。</d> while her lips remain completely closed.`
+   ❌ `<d>[Chinese] 前半句，<scenetrans></d>` / `<d>[Chinese] <scenetrans>后半句。</d>`
    官方 §5.4：听不清的一段写 `[unclear]`，不许猜写或改写；标点只用 `,` `.` `?` `!` 这类基本书面符号。
    官方 §5.4：`(Sx)` 只按目标视频里实际发声的先后编号一次并处处复用；**每个发声处都必须带上该人的 `(Sx)`**；
    多人同时发声用复合号 `(S1,S2)`；`(Sx)` 不写进 `retention_analysis`。
