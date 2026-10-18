@@ -669,6 +669,7 @@
     "promptPlaceholder": "描述你想要生成的视频内容...",
     "extractFromStoryboard": "从分镜提取",
     "referenceImages": "参考图",
+    "clickToEnlarge": "点击放大",
     "voiceReference": "音色参考",
     "addVoice": "添加音色参考",
     "addFromGrid": "从宫格图导入",

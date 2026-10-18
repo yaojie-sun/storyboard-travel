@@ -669,6 +669,7 @@
     "promptPlaceholder": "Describe the video you want to generate...",
     "extractFromStoryboard": "From Storyboard",
     "referenceImages": "Reference Images",
+    "clickToEnlarge": "Click to enlarge",
     "voiceReference": "Voice Reference",
     "addVoice": "Add Voice Reference",
     "addFromGrid": "From Grid Images",

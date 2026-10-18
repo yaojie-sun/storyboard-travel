@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Download, Film, ImagePlus, Sparkles, X, FolderOpen, Upload, LoaderCircle, Minus } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { createPortal } from 'react-dom';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { canvasEventBus } from '@/features/canvas/application/canvasServices';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -18,6 +19,7 @@ import { useVideoGenStore } from './videoGenStore';
 import { VideoGenDock, VideoGenToast } from './VideoGenDock';
 import { deriveDockSubtitle } from './dockTitle';
 import { inferRefTypes, REF_TYPE_LABELS } from './refTypes';
+import { auditAndFixDTags, rememberDTagAudit, summarizeDTagAudit } from './dTagAudit';
 import { fetchVideoGenRules, type VideoGenRuleMode } from './videoGenRules';
 import {
   ASPECT_RATIO_OPTIONS,
@@ -679,6 +681,21 @@ function VideoGenDialogInner({
   // @图 picker 已移除：分镜提示词不可手动修改
   const showPromptPickerRef = useRef(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  /** 参考图点击放大：存的是已解析好的展示 URL，null = 未打开 */
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+
+  // 参考图放大层：Esc 关闭
+  useEffect(() => {
+    if (!previewImageUrl) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setPreviewImageUrl(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [previewImageUrl]);
   const [showAssetPicker, setShowAssetPicker] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -1098,7 +1115,19 @@ function VideoGenDialogInner({
 
       // 分镜提示词原样提交：H3 走自然语言视听时间线，靠 SKILL.md 生成约束
       // + prompt_rule 注入约束双保险，不再经过二次清洗。
-      const userContent = trimmedPrompt;
+      // 出站 `<d>` 审计：用户脚本千变万化，没法拿输入原文逐字比对 —— 只看 `<d>` 本身。
+      // 标签内除「语言标签 + 台词」外的字符，视频模型都会当成台词念出来（多出听不懂的人声）。
+      // 确定性的垃圾就地修正，可疑内容只报告；这部分不碰持久化链路，只改本次提交的文本。
+      const dAudit = auditAndFixDTags(trimmedPrompt);
+      if (dAudit.fixes.length || dAudit.issues.length) {
+        console.warn(summarizeDTagAudit(dAudit), {
+          fixes: dAudit.fixes,
+          issues: dAudit.issues,
+        });
+        rememberDTagAudit(dAudit);
+      }
+
+      const userContent = dAudit.text;
 
       // 2.5 shotFrameMap 保留在节点缓存中（用于后续分析/调试），
       // 但不再注入图N引用到 prompt。
@@ -1562,10 +1591,13 @@ function VideoGenDialogInner({
                   const meta = refMetas[i];
                   return (
                   <div key={img.id} className="group relative">
+                    {/* 点击放大（放大层是 portal，见组件末尾）；按 Esc 或点背景关闭 */}
                     <img
                       src={img.url}
                       alt=""
-                      className="h-16 w-16 rounded-lg border border-[rgba(255,255,255,0.1)] object-cover"
+                      onClick={() => setPreviewImageUrl(img.url)}
+                      title={t('videoGen.clickToEnlarge', '点击放大')}
+                      className="h-16 w-16 cursor-zoom-in rounded-lg border border-[rgba(255,255,255,0.1)] object-cover transition-opacity hover:opacity-85"
                     />
                     {meta && (
                       <span className={`absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded px-1.5 py-0.5 text-[9px] font-medium ${
@@ -2067,6 +2099,32 @@ function VideoGenDialogInner({
         </div>
       )}
 
+      {/* 参考图放大层 —— portal 到 body，层级高于弹窗(z-140)与资产选择器(z-160) */}
+      {previewImageUrl && typeof document !== 'undefined'
+        ? createPortal(
+          <div
+            className="fixed inset-0 z-[240] flex items-center justify-center"
+            onClick={() => setPreviewImageUrl(null)}
+          >
+            <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" />
+            <img
+              src={previewImageUrl}
+              alt=""
+              className="relative max-h-[88vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+            <button
+              type="button"
+              onClick={() => setPreviewImageUrl(null)}
+              className="absolute right-4 top-4 rounded-lg bg-black/50 p-2 text-white/80 transition-colors hover:bg-black/70 hover:text-white"
+              title={t('common.close', '关闭')}
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>,
+          document.body,
+        )
+        : null}
     </div>
   );
 }
