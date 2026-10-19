@@ -42,19 +42,71 @@ export function NetworkStatusBanner({ degraded }: NetworkStatusBannerProps) {
   );
 }
 
+interface ReconnectingPanelProps {
+  /** 已经自动重试的次数（用于在连续失败后展示明细）。 */
+  attempt?: number;
+  /** 最近一次失败原因（截断展示，仅供排查）。 */
+  error?: string;
+  /** 立即重试（重置退避并重新发起一轮连接）。 */
+  onRetry?: () => void;
+  /** 放弃自动重连，回到登录框（弱网永远连不上时的出口）。 */
+  onRelogin?: () => void;
+}
+
 /**
  * 冷启动 / 网络恢复过程中「正在连接服务器…」的占位面板。
  *
  * 🔴 出现它是**故意不要登录框**的：本地令牌还在，只是连不上服务器，
  * 后台会指数退避自动重连，**不该让用户重新输密码**。
+ * 连续失败若干次后必须给出「重试 / 重新登录」出口，避免永久卡死。
  */
-export function ReconnectingPanel() {
+export function ReconnectingPanel({
+  attempt = 0,
+  error,
+  onRetry,
+  onRelogin,
+}: ReconnectingPanelProps) {
   const { t } = useTranslation();
+  // 前几秒只转圈，避免把「刚抖一下就恢复」的正常情况渲染成报错；
+  // 连续失败后必须给出重试/重新登录两条出路，不能让用户永远等。
+  const showDetail = attempt >= 3;
 
   return (
-    <div className="relative z-10 flex flex-col items-center gap-3 text-text-muted">
+    <div className="relative z-10 flex w-[320px] flex-col items-center gap-3 text-text-muted">
       <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-text-muted/30 border-t-text-muted" />
       <span className="text-sm">{t('common.reconnecting')}</span>
+      {showDetail && (
+        <>
+          <span className="text-center text-xs">
+            {t('common.reconnectingAttempt', { count: attempt })}
+          </span>
+          {error && (
+            <span className="max-w-full break-words text-center text-[11px] opacity-70" title={error}>
+              {t('common.reconnectError', { message: error })}
+            </span>
+          )}
+          <div className="mt-1 flex items-center gap-2">
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="rounded-md border border-text-muted/30 px-3 py-1.5 text-xs text-text transition-colors hover:bg-text-muted/10"
+              >
+                {t('common.retry')}
+              </button>
+            )}
+            {onRelogin && (
+              <button
+                type="button"
+                onClick={onRelogin}
+                className="rounded-md px-3 py-1.5 text-xs opacity-70 transition-opacity hover:opacity-100"
+              >
+                {t('common.relogin')}
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

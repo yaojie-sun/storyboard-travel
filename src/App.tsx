@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -91,6 +91,15 @@ function App() {
   const [showRestartDialog, setShowRestartDialog] = useState(false);
   // 网络降级：服务器暂时不可达（**不等于**登录失效）。为 true 时保持登录态、出提示条并后台重连。
   const [networkDegraded, setNetworkDegraded] = useState(false);
+  // 重连明细：连续失败后必须让用户看到进度并给出出口，避免永久停在「正在连接服务器…」
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [reconnectError, setReconnectError] = useState('');
+  const [reconnectNonce, setReconnectNonce] = useState(0);
+  // 供重连循环读取最新登录态（不把 authStatus 塞进 effect 依赖，避免重连被反复打断）
+  const authStatusRef = useRef(authStatus);
+  useEffect(() => {
+    authStatusRef.current = authStatus;
+  }, [authStatus]);
 
   const isHydrated = useProjectStore((state) => state.isHydrated);
   const hydrate = useProjectStore((state) => state.hydrate);
@@ -206,6 +215,10 @@ function App() {
 
     const handleLoginRequired = () => {
       console.log('收到login-required事件，用户需要重新登录');
+      // 服务端明确否认身份 ⇒ 停止后台重连，避免登录框背后空转
+      setNetworkDegraded(false);
+      setReconnectAttempt(0);
+      setReconnectError('');
       setAuthStatus('logged_out');
       setShowLoginDialog(true);
       setUserInfo(null);
@@ -298,6 +311,14 @@ function App() {
     window.addEventListener('network-down' as any, handleNetworkDown);
     window.addEventListener('credits-refresh', handleCreditsRefresh);
 
+    // 🔴 Rust 侧 app.emit("login-required") / app.emit("network-down") 在这里接住。
+    // 这两个是 Tauri 事件，不会被上面的 window 监听器收到 —— 不接就是死事件：
+    // 401 不弹登录框、网络降级不触发后台重连。
+    const tauriUnlistenPromises = [
+      listen('login-required', () => handleLoginRequired()),
+      listen('network-down', () => handleNetworkDown()),
+    ];
+
     // 添加技能访问检查事件监听器
     window.addEventListener('skill-access-check', handleSkillAccessCheck);
 
@@ -313,6 +334,9 @@ function App() {
       window.removeEventListener('credits-refresh', handleCreditsRefresh);
       window.removeEventListener('skill-access-check', handleSkillAccessCheck);
       window.removeEventListener('sync:closing', handleSyncClosing);
+      tauriUnlistenPromises.forEach((promise) => {
+        void promise.then((unlisten) => unlisten());
+      });
     };
   }, []);
 
@@ -539,30 +563,52 @@ function App() {
     let attempt = 0;
     let timer: number | null = null;
 
+    const backToLogin = () => {
+      setNetworkDegraded(false);
+      setAuthStatus('logged_out');
+      setShowLoginDialog(true);
+      setUserInfo(null);
+    };
+
     const tryReconnect = async () => {
       if (cancelled) return;
       attempt += 1;
+      setReconnectAttempt(attempt);
       try {
         const initialized = await bananaInitialize();
-        if (initialized && !cancelled) {
-          const info = await bananaGetCurrentUser();
-          if (cancelled) return;
-          applyLoggedInSession(info);
-          console.log('[Network] 已重新连上服务器，自动恢复登录态');
+        if (cancelled) return;
+        if (!initialized) {
+          // 本地没有可用令牌 / 服务端已明确拒绝 ⇒ 回登录框，不再空转
+          console.warn('[Network] 重连时本地已无可用令牌，转为要求重新登录');
+          backToLogin();
           return;
         }
+        const info = await bananaGetCurrentUser();
+        if (cancelled) return;
+        setReconnectAttempt(0);
+        setReconnectError('');
+        if (authStatusRef.current === 'logged_in') {
+          // 使用过程中网络恢复：只解除降级标记，**不重建会话**。
+          // applyLoggedInSession 会 forceRehydrate，可能打断用户正在编辑的内容。
+          setNetworkDegraded(false);
+          console.log('[Network] 网络已恢复，降级提示自动解除');
+          return;
+        }
+        applyLoggedInSession(info);
+        console.log('[Network] 已重新连上服务器，自动恢复登录态');
+        return;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (isAuthRejectedError(msg)) {
           if (cancelled) return;
           console.warn('[Network] 重连时被服务端明确拒绝，转为要求重新登录');
-          setNetworkDegraded(false);
-          setAuthStatus('logged_out');
-          setShowLoginDialog(true);
-          setUserInfo(null);
+          backToLogin();
           return;
         }
-        // 仍是网络类错误 ⇒ 继续退避重试
+        // 仍是网络类错误 ⇒ 记录原因并继续退避重试
+        if (!cancelled) {
+          setReconnectError(msg.replace(/\s+/g, ' ').slice(0, 160));
+        }
       }
       if (cancelled) return;
       const delay = Math.min(30000, 1000 * 2 ** Math.min(attempt - 1, 5));
@@ -577,7 +623,24 @@ function App() {
         window.clearTimeout(timer);
       }
     };
-  }, [networkDegraded, applyLoggedInSession]);
+  }, [networkDegraded, applyLoggedInSession, reconnectNonce]);
+
+  // 手动重试：重置退避计数并立即发起一轮重连
+  const handleManualReconnect = useCallback(() => {
+    setReconnectAttempt(0);
+    setReconnectError('');
+    setReconnectNonce((n) => n + 1);
+  }, []);
+
+  // 放弃自动重连：回到登录框（弱网/环境问题永远连不上时的唯一出口）
+  const handleReconnectRelogin = useCallback(() => {
+    setNetworkDegraded(false);
+    setReconnectAttempt(0);
+    setReconnectError('');
+    setAuthStatus('logged_out');
+    setShowLoginDialog(true);
+    setUserInfo(null);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -942,7 +1005,12 @@ function App() {
             {/* 令牌激活或登录对话框居中 */}
             <div className="relative z-10">
               {networkDegraded && authStatus === 'checking' ? (
-                <ReconnectingPanel />
+                <ReconnectingPanel
+                  attempt={reconnectAttempt}
+                  error={reconnectError}
+                  onRetry={handleManualReconnect}
+                  onRelogin={handleReconnectRelogin}
+                />
               ) : showTokenActivation ? (
                 <TokenActivationDialog
                   isOpen={true}
@@ -1072,7 +1140,12 @@ function App() {
           {/* 登录对话框居中 */}
           <div className="relative z-10">
             {networkDegraded && authStatus === 'checking' ? (
-              <ReconnectingPanel />
+              <ReconnectingPanel
+                attempt={reconnectAttempt}
+                error={reconnectError}
+                onRetry={handleManualReconnect}
+                onRelogin={handleReconnectRelogin}
+              />
             ) : (
               <LoginDialog
                 isOpen={true}

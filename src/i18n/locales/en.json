@@ -20,7 +20,11 @@
     "saving": "Saving...",
     "dismiss": "Got it",
     "networkDegraded": "Network unstable — you stay signed in, reconnecting in the background…",
-    "reconnecting": "Connecting to server…"
+    "reconnecting": "Connecting to server…",
+    "reconnectingAttempt": "Retried {{count}} time(s), still cannot reach the server",
+    "reconnectError": "Last error: {{message}}",
+    "retry": "Retry",
+    "relogin": "Sign in again"
   },
   "theme": {
     "dark": "Dark",

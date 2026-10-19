@@ -20,7 +20,11 @@
     "saving": "保存中...",
     "dismiss": "知道了",
     "networkDegraded": "网络不稳定，已保持登录并在后台自动重连…",
-    "reconnecting": "正在连接服务器…"
+    "reconnecting": "正在连接服务器…",
+    "reconnectingAttempt": "已自动重试 {{count}} 次，仍未连上服务器",
+    "reconnectError": "最近一次错误：{{message}}",
+    "retry": "重试",
+    "relogin": "重新登录"
   },
   "theme": {
     "dark": "深色",

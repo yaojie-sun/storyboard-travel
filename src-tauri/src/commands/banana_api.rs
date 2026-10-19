@@ -16,6 +16,14 @@ static REFUNDED_TASK_IDS: std::sync::LazyLock<Arc<Mutex<HashSet<String>>>> =
 static VIDEO_POLL_ERROR_COUNT: std::sync::LazyLock<Arc<Mutex<HashMap<String, u32>>>> =
     std::sync::LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
+/// 技能包同步是否正在进行（防止重连循环并发触发多次下载）
+static SKILL_SYNC_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 技能包写入互斥锁（后台同步与 chat 兜底下载必须串行，避免争用同一个临时目录）
+static SKILL_SYNC_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 // 设备令牌存储
 static DEVICE_TOKEN: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 
@@ -900,13 +908,29 @@ pub(crate) async fn sync_xiaoya_skill_public(skills_dir: &std::path::Path) {
 }
 
 async fn sync_xiaoya_skill(skills_dir: &std::path::Path) {
+    // 所有写入技能目录的路径都从这里过，先串行化
+    let _sync_guard = SKILL_SYNC_LOCK.lock().await;
     let target_dir = skills_dir.join("xiaoya-ai-cinema-travel");
     let local_version_path = target_dir.join("version.txt");
     let version_url = format!("{}/jy/uploads/install_guide/files/version_travel.txt", BANANA_API_BASE_URL);
 
+    // 🔴 这里必须带超时：历史上用的裸 reqwest::get 没有任何 connect/read 超时，
+    // 客户弱网/半开连接时这个 await 永远不返回，会把启动和登录一起卡死。
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("[Skill] 创建 HTTP 客户端失败: {}", e);
+            return;
+        }
+    };
+
     // 版本检查：本地已存在时，对比服务器版本决定是否更新
     if target_dir.exists() && local_version_path.exists() {
-        match reqwest::get(&version_url).await {
+        match client.get(&version_url).send().await {
             Ok(resp) => {
                 if let Ok(remote_version) = resp.text().await {
                     if let Ok(local_version) = std::fs::read_to_string(&local_version_path) {
@@ -922,8 +946,6 @@ async fn sync_xiaoya_skill(skills_dir: &std::path::Path) {
                 return;
             }
         }
-        // 版本不一致或无法解析，删除旧目录重新下载
-        let _ = std::fs::remove_dir_all(&target_dir);
     } else if target_dir.exists() {
         return; // 目录存在但没有 version.txt，保留兼容
     }
@@ -931,7 +953,7 @@ async fn sync_xiaoya_skill(skills_dir: &std::path::Path) {
     let zip_url = format!("{}/jy/uploads/install_guide/files/xiaoya-ai-cinema-travel.zip", BANANA_API_BASE_URL);
 
     // 下载 zip
-    let response = match reqwest::get(&zip_url).await {
+    let response = match client.get(&zip_url).send().await {
         Ok(r) => r,
         Err(e) => {
             warn!("下载 xiaoya-ai-cinema-travel.zip 失败: {}", e);
@@ -963,8 +985,12 @@ async fn sync_xiaoya_skill(skills_dir: &std::path::Path) {
         slash_pos.map(|pos| format!("{}/", &name[..pos]))
     });
 
-    if let Err(e) = tokio::fs::create_dir_all(&target_dir).await {
-        warn!("创建 xiaoya-ai-cinema-travel 目录失败: {}", e);
+    // 先解压到临时目录，校验通过后再整体替换旧目录。
+    // 🔴 不能像以前那样在下载前 remove_dir_all：下载失败/超时会直接把技能目录删空。
+    let tmp_dir = skills_dir.join(".xiaoya-ai-cinema-travel.download");
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await; // 只清理自己的临时目录
+    if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
+        warn!("创建技能包临时目录失败: {}", e);
         return;
     }
 
@@ -1002,7 +1028,7 @@ async fn sync_xiaoya_skill(skills_dir: &std::path::Path) {
             continue;
         }
 
-        let out_path = target_dir.join(relative);
+        let out_path = tmp_dir.join(relative);
 
         if *is_dir {
             let _ = tokio::fs::create_dir_all(&out_path).await;
@@ -1012,6 +1038,41 @@ async fn sync_xiaoya_skill(skills_dir: &std::path::Path) {
             }
             let _ = tokio::fs::write(&out_path, data).await;
         }
+    }
+
+    // 校验产物：缺 SKILL.md 说明包不完整，保留旧目录，本次更新作废
+    if !tmp_dir.join("SKILL.md").exists() {
+        warn!("[Skill] 下载包缺少 SKILL.md，保留本地缓存");
+        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+        return;
+    }
+
+    // 替换旧目录：先把旧目录挪成备份，新目录就位后再删备份。
+    // Windows 上 rename 不能覆盖已存在目录，杀软也可能短暂锁文件 ——
+    // 任一步失败都必须把旧目录还原，绝不能出现「新包没装上、旧包已删」。
+    let backup_dir = skills_dir.join(".xiaoya-ai-cinema-travel.backup");
+    let _ = tokio::fs::remove_dir_all(&backup_dir).await;
+    let had_old = if target_dir.exists() {
+        match tokio::fs::rename(&target_dir, &backup_dir).await {
+            Ok(()) => true,
+            Err(e) => {
+                warn!("[Skill] 备份旧技能目录失败: {}", e);
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if let Err(e) = tokio::fs::rename(&tmp_dir, &target_dir).await {
+        warn!("[Skill] 替换技能目录失败: {}", e);
+        if had_old {
+            let _ = tokio::fs::rename(&backup_dir, &target_dir).await;
+        }
+        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+        return;
+    }
+    if had_old {
+        let _ = tokio::fs::remove_dir_all(&backup_dir).await;
     }
 
     info!("已同步 xiaoya-ai-cinema-travel skill 到 {:?}", target_dir);
@@ -1146,10 +1207,48 @@ pub(crate) async fn ensure_user_api_token(device_token: &str) -> Result<String, 
 async fn sync_post_login_tasks(api_key: &str) -> Result<(), String> {
     info!("同步登录后置任务");
 
-    // 同步 xiaoya-ai-cinema-travel skill（下载并解压 zip 到 ~/.claude/skills/）
+    // 同步技能包（下载并解压 zip 到 ~/.claude/skills/）。
+    // 🔴 技能包分发是纯网络 IO，绝不能挡在启动/登录的关键路径上：
+    // 丢到独立线程 + 独立 runtime，并加 90s 硬超时兜底。
+    // 同时用 in-flight 标记防止重连循环并发触发多次同步（会争用同一个临时目录）。
     if let Ok(claude_dir) = get_claude_dir() {
         let skills_dir = claude_dir.join("skills");
-        sync_xiaoya_skill(&skills_dir).await;
+        if SKILL_SYNC_IN_FLIGHT
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+        {
+            std::thread::spawn(move || {
+                let rt = match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .worker_threads(1)
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        warn!("[Skill] 创建同步 runtime 失败: {}", e);
+                        SKILL_SYNC_IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+                        return;
+                    }
+                };
+                rt.block_on(async {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(90),
+                        sync_xiaoya_skill(&skills_dir),
+                    )
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(_) => warn!("[Skill] 同步超时（90s），放弃本次更新，保留本地缓存"),
+                    }
+                });
+                SKILL_SYNC_IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
     }
 
     // 同步 xiaoya-ai-cinema-travel 的 auth_cache.json
