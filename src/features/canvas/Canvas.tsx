@@ -1414,7 +1414,7 @@ export function Canvas() {
       }));
 
       // Auto-link reference images —— 以写手为准（【选图】@图N）。
-      // 锚点是 getAssets 的原始顺序（与 @图N 同源），不做任何 filter/sort。
+      // 锚点是资产的稳定序号 seq（与 @图N 同源），不做任何 filter/sort —— 过滤会让编号位移。
       const projectId = useProjectStore.getState().currentProject?.id;
       const matchedAssets = matchRefAssets(
         projectId ? useAssetStore.getState().getAssets(projectId) : [],

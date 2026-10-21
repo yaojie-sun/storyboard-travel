@@ -24,6 +24,7 @@ import { fetchVideoGenRules, type VideoGenRuleMode } from './videoGenRules';
 import {
   ASPECT_RATIO_OPTIONS,
   VIDEO_DURATION_OPTIONS,
+  MAX_REFERENCE_IMAGES,
   computeVideoCost,
   type VideoDuration,
   type VideoResolution,
@@ -1036,8 +1037,36 @@ function VideoGenDialogInner({
     setReferenceImages((prev) => prev.filter((img) => img.id !== id));
   }, []);
 
+  /**
+   * 把第 index 张参考图的引用标记插到提示词光标处。
+   *
+   * 🔴 插的是 `<Picture N>`，不是 `@图N` —— 参考生视频正文只认 `<Picture N>`，
+   * `@图N` 是【选图】行的交互语法，出现在正文里属于非法写法（规则头明确禁止）。
+   * N 必须等于**实际提交顺序**（referenceImages 的下标 + 1），模型按这个顺序收到图片。
+   * 这是「选错图时用户自己换图」的唯一手工入口，别删。
+   */
+  const insertPictureRef = useCallback((index: number) => {
+    const marker = `<Picture ${index + 1}>`;
+    const el = textareaRef.current;
+    if (!el) {
+      setPrompt((prev) => (prev ? `${prev} ${marker}` : marker));
+      return;
+    }
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? start;
+    const next = `${el.value.slice(0, start)}${marker}${el.value.slice(end)}`;
+    setPrompt(next);
+    requestAnimationFrame(() => {
+      el.focus();
+      const pos = start + marker.length;
+      el.setSelectionRange(pos, pos);
+    });
+  }, []);
 
-  const maxImages = 5;
+
+  // 参考图上限：走 videoPricing 的统一常量（9），与后端 H3 的 MAX_REF_IMAGES 对齐。
+  // 别再写死 5 —— 5 是「带参考视频」时的档位（MAX_REFERENCE_IMAGES_WITH_VIDEO）。
+  const maxImages = MAX_REFERENCE_IMAGES;
   const creditCost = computeVideoCost(duration, false);
   // 订阅整个 history 引用，用 useMemo 稳定返回值避免空数组无限渲染
   const historyStore = useVideoGenStore((s) => s.history);
@@ -1543,7 +1572,7 @@ function VideoGenDialogInner({
               </div>
 
               <div className="relative">
-                {/* 高亮叠加层：只对 @图N 着色，其余透明，露出下方 textarea 文字 */}
+                {/* 高亮叠加层：对 `<Picture N>` / @图N 着色，其余透明，露出下方 textarea 文字 */}
                 <div
                   aria-hidden="true"
                   className="pointer-events-none absolute inset-0 z-10 overflow-hidden whitespace-pre-wrap rounded-lg border border-transparent px-3 py-2 text-sm"
@@ -1551,8 +1580,8 @@ function VideoGenDialogInner({
                   ref={(el) => { highlightRef.current = el; }}
                 >
                   {prompt
-                    ? prompt.split(/(@图\d+)/g).map((part, i) =>
-                        /^@图\d+$/.test(part) ? (
+                    ? prompt.split(/(<Picture \d+>|@图\d+)/g).map((part, i) =>
+                        /^(<Picture \d+>|@图\d+)$/.test(part) ? (
                           <mark key={i} className="rounded-sm bg-purple-500/20 text-purple-300 font-medium">
                             {part}
                           </mark>
@@ -1599,6 +1628,18 @@ function VideoGenDialogInner({
                       title={t('videoGen.clickToEnlarge', '点击放大')}
                       className="h-16 w-16 cursor-zoom-in rounded-lg border border-[rgba(255,255,255,0.1)] object-cover transition-opacity hover:opacity-85"
                     />
+                    {/* 序号角标 = 这张图在正文里的 <Picture N>。点一下把标记插到光标处 */}
+                    <button
+                      type="button"
+                      onClick={() => insertPictureRef(i)}
+                      title={t('videoGen.insertPictureRef', {
+                        n: i + 1,
+                        defaultValue: '插入 <Picture {{n}}> 到提示词',
+                      })}
+                      className="absolute -left-1.5 -top-1.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-purple-500/90 px-1 text-[10px] font-semibold text-white shadow transition-colors hover:bg-purple-400"
+                    >
+                      {i + 1}
+                    </button>
                     {meta && (
                       <span className={`absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded px-1.5 py-0.5 text-[9px] font-medium ${
                         meta.type === 'storyboard' ? 'bg-amber-500/80 text-amber-950' :

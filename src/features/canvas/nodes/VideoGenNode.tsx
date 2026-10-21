@@ -40,8 +40,8 @@ const VIDEO_GEN_NODE_DEFAULT_WIDTH = 260;
 const VIDEO_GEN_NODE_DEFAULT_HEIGHT = 340;
 const VIDEO_GEN_NODE_MAX_WIDTH = 1200;
 const VIDEO_GEN_NODE_MAX_HEIGHT = 1400;
-/** 节点上最多展示几张参考图缩略图（超出的只计数，不铺满节点） */
-const MAX_REF_THUMBNAILS = 6;
+/** 节点上最多展示几张参考图缩略图（与视频生成页上限 9 对齐，超出的只计数，不铺满节点） */
+const MAX_REF_THUMBNAILS = 9;
 
 function resolveNodeDimension(value: number | undefined, fallback: number): number {
   if (typeof value === 'number' && Number.isFinite(value) && value > 1) {

@@ -39,6 +39,32 @@ const DESCRIBE_PROMPT: &str = r#"你是一名专业的图像描述助手。请�
 
 要求：描述客观、可复现，不添加主观评价或故事性延伸，控制在 150 字以内。"#;
 
+/// 拼读图引导词：有资产名时把名称（身份锚点）一起交给视觉模型。
+///
+/// 为什么必须喂名称：写手选图靠的是「脚本里的名字 ↔ 资产名」的逐字对应，
+/// 只凭外观描述时，多个同类角色/场景的描述会趋同，选图就会偏。
+fn build_describe_prompt(asset_name: Option<&str>, asset_category: Option<&str>) -> String {
+    let name = asset_name.map(str::trim).unwrap_or("");
+    if name.is_empty() {
+        return DESCRIBE_PROMPT.to_string();
+    }
+
+    let category_label = match asset_category.unwrap_or("") {
+        "character" => "角色",
+        "scene" => "场景",
+        "costume_prop" => "服饰道具",
+        _ => "参考素材",
+    };
+
+    format!(
+        "{DESCRIBE_PROMPT}\n\n【参考信息】用户在项目资产库里把这张图命名为「{name}」，归类为「{category_label}」。\n\
+         这个名称就是它在剧本里的身份标识（角色名／场景名／道具名），是后续选图最权威的线索：\n\
+         - 画面主体与名称一致时：「主体」一行开头直接点明「{name}（{category_label}）」，让描述自带身份；\n\
+         - 画面与名称明显不一致时：如实描述画面，并在「主体」一行末尾注明「（资产名 {name} 与画面不符）」，\
+         不要为了迁就名称而改写画面。"
+    )
+}
+
 /// 调用 DeepSeek 视觉模型读图，返回中文视觉描述。
 ///
 /// 与 [`super::deepseek::optimize_prompt`] 同构：由调用方传入 api_key，
@@ -116,7 +142,12 @@ pub fn compress_for_upload(image_bytes: &[u8]) -> Result<UploadImage, AIError> {
     Ok(UploadImage::CompressedJpeg(buf.into_inner()))
 }
 
-pub async fn describe_image(image_bytes: &[u8], api_key: &str) -> Result<String, AIError> {
+pub async fn describe_image(
+    image_bytes: &[u8],
+    api_key: &str,
+    asset_name: Option<&str>,
+    asset_category: Option<&str>,
+) -> Result<String, AIError> {
     if api_key.is_empty() {
         return Err(AIError::Provider("DeepSeek视觉读图API密钥未配置".to_string()));
     }
@@ -125,6 +156,7 @@ pub async fn describe_image(image_bytes: &[u8], api_key: &str) -> Result<String,
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
     let image_data_url = format!("data:{};base64,{}", media_type, b64);
+    let describe_prompt = build_describe_prompt(asset_name, asset_category);
 
     let body = serde_json::json!({
         "model": DEEPSEEK_VL_MODEL,
@@ -132,7 +164,7 @@ pub async fn describe_image(image_bytes: &[u8], api_key: &str) -> Result<String,
             {
                 "role": "user",
                 "content": [
-                    { "type": "text", "text": DESCRIBE_PROMPT },
+                    { "type": "text", "text": describe_prompt },
                     { "type": "image_url", "image_url": { "url": image_data_url } }
                 ]
             }

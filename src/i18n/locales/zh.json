@@ -324,6 +324,7 @@
     "name": "名称",
     "namePlaceholder": "输入资产名称（如：男主角、办公室）",
     "nameHint": "名称必须与提示词中的名称完全一致，否则自动匹配将无法识别",
+    "seqBadge": "@图{{n}}",
     "clickToUpload": "点击选择图片",
     "empty": "暂无资产",
     "tab": {
@@ -674,6 +675,7 @@
     "extractFromStoryboard": "从分镜提取",
     "referenceImages": "参考图",
     "clickToEnlarge": "点击放大",
+    "insertPictureRef": "插入 <Picture {{n}}> 到提示词",
     "voiceReference": "音色参考",
     "addVoice": "添加音色参考",
     "addFromGrid": "从宫格图导入",

@@ -8,6 +8,8 @@ export interface AssetRecord {
   filePath: string;
   fileName: string;
   createdAt: number;
+  /** 项目内稳定序号（从 1 起，按上传先后递增，删除后留空号不复用）= @图N 的 N */
+  seq: number;
 }
 
 export type AssetCategory = 'character' | 'scene' | 'costume_prop';
@@ -73,10 +75,16 @@ export async function buildAssetReferenceLines(
   const descMap = new Map(descArr.map((d) => [d.assetId, d.description]));
 
   // 只在生成时补读缺失描述（阻塞 + 补读后重查缓存，保证发消息时描述已就绪）
+  // 分批并发：读图引导词升级后，老项目会一次性「全部缺失」，不限流会瞬间打出几十个请求
   if (readIfMissing) {
     const missing = assets.filter((a) => !descMap.has(a.id));
-    if (missing.length > 0) {
-      await Promise.allSettled(missing.map((a) => describeAsset(a.id).catch(() => null)));
+    const DESCRIBE_CONCURRENCY = 3;
+    for (let i = 0; i < missing.length; i += DESCRIBE_CONCURRENCY) {
+      await Promise.allSettled(
+        missing
+          .slice(i, i + DESCRIBE_CONCURRENCY)
+          .map((a) => describeAsset(a.id).catch(() => null)),
+      );
     }
     const refreshed = await getAssetDescriptions(projectId).catch(() => []);
     refreshed.forEach((d) => descMap.set(d.assetId, d.description));
@@ -85,8 +93,10 @@ export async function buildAssetReferenceLines(
   const catLabel = (cat: string) =>
     cat === 'character' ? '角色' : cat === 'scene' ? '场景' : '服装及道具';
 
+  // 编号用资产自己的稳定序号 seq（不是数组下标）——新传一张图不会让已发出的 @图N 指错
   return assets.map((a, i) => {
-    const base = `@图${i + 1}: ${a.name} (${catLabel(a.category)})`;
+    const n = a.seq > 0 ? a.seq : i + 1;
+    const base = `@图${n}: ${a.name} (${catLabel(a.category)})`;
     const desc = descMap.get(a.id);
     return desc ? `${base}\n  视觉描述：${desc}` : base;
   });

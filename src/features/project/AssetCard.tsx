@@ -8,11 +8,13 @@ interface AssetCardProps {
   name: string;
   category: string;
   filePath: string;
+  /** 资产稳定序号 = 写手【选图】/ 资产行里用的 @图N */
+  seq?: number;
   onDelete: (id: string) => void;
   onEdit: (id: string) => void;
 }
 
-export function AssetCard({ id, name, category, filePath, onDelete, onEdit }: AssetCardProps) {
+export function AssetCard({ id, name, category, filePath, seq, onDelete, onEdit }: AssetCardProps) {
   const { t } = useTranslation();
   const [imgError, setImgError] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -41,6 +43,16 @@ export function AssetCard({ id, name, category, filePath, onDelete, onEdit }: As
           />
         )}
       </div>
+
+      {/* 资产编号角标 = 写手选图用的 @图N，让用户能核对编号 */}
+      {typeof seq === 'number' && seq > 0 && (
+        <span
+          className="absolute left-1.5 top-1.5 rounded-full bg-black/65 px-1.5 py-0.5 text-[10px] font-semibold text-white/90"
+          title={t('asset.seqBadge', { n: seq, defaultValue: '@图{{n}}' })}
+        >
+          @图{seq}
+        </span>
+      )}
 
       {/* Info */}
       <div className="p-2.5">

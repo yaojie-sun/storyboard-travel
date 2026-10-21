@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, ImageOff } from 'lucide-react';
 import { useAssetStore, type AssetCategory } from '@/stores/assetStore';
@@ -36,9 +36,14 @@ export function AssetManager({ projectId }: AssetManagerProps) {
   }, [projectId, loadAssets]);
 
   const allAssets = assetsByProject[projectId] ?? [];
+  // 列表展示按「新上传在前」，但 @图N 用的是 seq（分配后固定不变），两者互不影响
+  const orderedAssets = useMemo(
+    () => [...allAssets].sort((a, b) => b.createdAt - a.createdAt),
+    [allAssets],
+  );
   const filteredAssets = activeTab === 'all'
-    ? allAssets
-    : allAssets.filter((a) => a.category === activeTab);
+    ? orderedAssets
+    : orderedAssets.filter((a) => a.category === activeTab);
 
   const handleDelete = useCallback((assetId: string) => {
     deleteAsset(projectId, assetId);
@@ -111,6 +116,7 @@ export function AssetManager({ projectId }: AssetManagerProps) {
               name={asset.name}
               category={asset.category}
               filePath={asset.filePath}
+              seq={asset.seq}
               onDelete={handleDelete}
               onEdit={handleEdit}
             />

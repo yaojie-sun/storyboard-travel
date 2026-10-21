@@ -364,6 +364,38 @@ function parsePictureNumbers(text: string): number[] | undefined {
 }
 
 /**
+ * 把正文里的 `<Picture N>` 重编成「本段实际挂载顺序」。
+ *
+ * 为什么需要：写手写 `<Picture N>` 时用的是 `@图N`（项目全局资产序号），
+ * 而客户端挂图是按【选图】行的顺序从 1 排的（`matchRefAssets` → referenceImages）。
+ * 写手选 `@图3,@图5` 时，正文的 `<Picture 3>/<Picture 5>` 对不上实际只有 2 张图。
+ *
+ * 幂等保护：只有「正文引用的每一张都在【选图】集合内」时才重编 —— 重编后的编号
+ * （1..M）不会再全部落在原集合里，所以重复解析不会二次位移。
+ */
+function renumberPictureTags(content: string, selected: number[] | undefined): string {
+  if (!selected || selected.length === 0) return content;
+  // 已经是 1..M 顺序，不需要动
+  if (selected.every((n, i) => n === i + 1)) return content;
+
+  const nums = [...new Set(
+    (content.match(/<\s*Picture[ \t]*(\d+)\s*>/gi) ?? []).map((s) =>
+      parseInt(s.replace(/\D/g, ''), 10),
+    ),
+  )];
+  if (nums.length === 0) return content;
+
+  const picked = new Set(selected);
+  if (!nums.every((n) => picked.has(n))) return content;
+
+  const pos = new Map(selected.map((n, i) => [n, i + 1]));
+  return content.replace(/<\s*Picture[ \t]*(\d+)\s*>/gi, (match, digits: string) => {
+    const target = pos.get(parseInt(digits, 10));
+    return target ? `<Picture ${target}>` : match;
+  });
+}
+
+/**
  * 从后往前找最近一条「带选图」的 assistant 消息（最多回溯 maxLookback 条）。
  *
  * 用途：多段流程里，后续轮的提示词没写【选图】也没写 `<Picture N>` 时，
@@ -433,6 +465,9 @@ function parsePromptBlocks(
     parsePictureNumbers(content) ??
     inheritSelectedRefImages;
   content = content.replace(/【选图】[^\n【]*\n?/g, '').trim();
+
+  // 正文 `<Picture N>` 对齐到实际挂载顺序（客户端按【选图】顺序从 1 挂图）
+  content = renumberPictureTags(content, selectedRefImages);
 
   // ⚠️ 解析并剥离【故事梗概】行（前端隐藏，仅供宫格节点注入故事背景）
   const storySynopsis = parseStorySynopsis(content);

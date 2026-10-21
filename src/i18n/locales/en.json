@@ -324,6 +324,7 @@
     "name": "Name",
     "namePlaceholder": "e.g. Protagonist, Office Room",
     "nameHint": "Name must exactly match the name used in prompt text, otherwise auto-match will fail",
+    "seqBadge": "@Image {{n}}",
     "clickToUpload": "Click to select image",
     "empty": "No assets yet",
     "tab": {
@@ -674,6 +675,7 @@
     "extractFromStoryboard": "From Storyboard",
     "referenceImages": "Reference Images",
     "clickToEnlarge": "Click to enlarge",
+    "insertPictureRef": "Insert <Picture {{n}}> into prompt",
     "voiceReference": "Voice Reference",
     "addVoice": "Add Voice Reference",
     "addFromGrid": "From Grid Images",

@@ -18,6 +18,10 @@ pub struct AssetRecord {
     pub file_path: String,
     pub file_name: String,
     pub created_at: i64,
+    /// 项目内稳定序号（从 1 起，分配后永不变动，删除后留空号不复用）。
+    /// @图N 的 N 就是它 —— 不再用数组下标，避免「新传/删除一张图 → 全项目编号位移」。
+    /// 升级时的回填沿用旧语义（1 = 最新那张），保证历史对话里的【选图】@图N 指向不变。
+    pub seq: i64,
 }
 
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
@@ -51,6 +55,7 @@ fn ensure_assets_table(conn: &Connection) -> Result<(), String> {
 
     // Self-heal: add columns if missing (future-proofing)
     let mut has_project_id = false;
+    let mut has_seq = false;
     let mut stmt = conn
         .prepare("PRAGMA table_info(assets)")
         .map_err(|e| format!("Failed to inspect assets schema: {}", e))?;
@@ -64,12 +69,44 @@ fn ensure_assets_table(conn: &Connection) -> Result<(), String> {
         if column_name == "project_id" {
             has_project_id = true;
         }
+        if column_name == "seq" {
+            has_seq = true;
+        }
     }
 
     if !has_project_id {
         conn.execute_batch("ALTER TABLE assets ADD COLUMN project_id TEXT NOT NULL DEFAULT ''")
             .map_err(|e| format!("Failed to add project_id column: {}", e))?;
     }
+
+    if !has_seq {
+        conn.execute_batch("ALTER TABLE assets ADD COLUMN seq INTEGER")
+            .map_err(|e| format!("Failed to add seq column: {}", e))?;
+    }
+
+    // 回填稳定序号：**按「最新在前」**（created_at DESC，同毫秒按 id DESC）在项目内从 1 编。
+    //
+    // 🔴 为什么是 DESC 而不是上传先后：升级前 `list_assets` 就是 `ORDER BY created_at DESC`，
+    // @图N 取的是这个数组的下标 —— 即「@图1 = 最新那张」。历史对话里已经写死的【选图】@图N
+    // 全是这套语义。若按 ASC 回填，升级后同一张图会换个号，老对话一重挂图就指错（§12.4 核心链路）。
+    // 所以这里必须复刻旧的编号语义，只是把它从「会随上传位移的下标」固化成「不再变动的列」。
+    //
+    // WHERE 限定空号 ⇒ 只在首次升级/新增列时真正写一次，之后每次调用都是空转。
+    conn.execute_batch(
+        r#"
+        UPDATE assets SET seq = (
+          SELECT COUNT(*) FROM assets a2
+          WHERE a2.project_id = assets.project_id
+            AND (
+              a2.created_at > assets.created_at
+              OR (a2.created_at = assets.created_at AND a2.id > assets.id)
+            )
+        ) + 1
+        WHERE seq IS NULL OR seq = 0;
+        CREATE INDEX IF NOT EXISTS idx_assets_project_seq ON assets(project_id, seq);
+        "#,
+    )
+    .map_err(|e| format!("Failed to backfill asset seq: {}", e))?;
 
     Ok(())
 }
@@ -119,7 +156,22 @@ pub fn add_asset(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
-    let record = AssetRecord {
+    let conn = open_db(&app)?;
+    ensure_assets_table(&conn)?;
+
+    // 序号在项目内单调递增、删除后不复用 —— 保证已发出的【选图】@图N 永远指向同一张图。
+    // 🔴 取号与插入写在同一条语句里（INSERT … SELECT MAX(seq)+1），并发上传时不会取到同一个号。
+    conn.execute(
+        r#"
+        INSERT INTO assets (id, project_id, category, name, file_path, file_name, created_at, seq)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(MAX(seq), 0) + 1
+        FROM assets WHERE project_id = ?2
+        "#,
+        params![id, project_id, category, name, dest_path_str, file_name, now],
+    )
+    .map_err(|e| format!("Failed to insert asset: {}", e))?;
+
+    let mut record = AssetRecord {
         id,
         project_id,
         category,
@@ -127,27 +179,15 @@ pub fn add_asset(
         file_path: dest_path_str,
         file_name,
         created_at: now,
+        seq: 0,
     };
-
-    let conn = open_db(&app)?;
-    ensure_assets_table(&conn)?;
-
-    conn.execute(
-        r#"
-        INSERT INTO assets (id, project_id, category, name, file_path, file_name, created_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        "#,
-        params![
-            record.id,
-            record.project_id,
-            record.category,
-            record.name,
-            record.file_path,
-            record.file_name,
-            record.created_at,
-        ],
-    )
-    .map_err(|e| format!("Failed to insert asset: {}", e))?;
+    record.seq = conn
+        .query_row(
+            "SELECT seq FROM assets WHERE id = ?1",
+            params![record.id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to read asset seq: {}", e))?;
 
     Ok(record)
 }
@@ -158,7 +198,7 @@ pub fn list_assets(app: AppHandle, project_id: String) -> Result<Vec<AssetRecord
     ensure_assets_table(&conn)?;
 
     let mut stmt = conn
-        .prepare("SELECT id, project_id, category, name, file_path, file_name, created_at FROM assets WHERE project_id = ?1 ORDER BY created_at DESC")
+        .prepare("SELECT id, project_id, category, name, file_path, file_name, created_at, seq FROM assets WHERE project_id = ?1 ORDER BY seq ASC")
         .map_err(|e| format!("Failed to prepare list assets: {}", e))?;
 
     let rows = stmt
@@ -171,6 +211,7 @@ pub fn list_assets(app: AppHandle, project_id: String) -> Result<Vec<AssetRecord
                 file_path: row.get(4)?,
                 file_name: row.get(5)?,
                 created_at: row.get(6)?,
+                seq: row.get(7)?,
             })
         })
         .map_err(|e| format!("Failed to list assets: {}", e))?;
@@ -197,7 +238,7 @@ pub fn update_asset(
             r#"
             UPDATE assets SET name = ?1, category = ?2
             WHERE id = ?3
-            RETURNING id, project_id, category, name, file_path, file_name, created_at
+            RETURNING id, project_id, category, name, file_path, file_name, created_at, seq
             "#,
             params![name, category, id],
             |row| {
@@ -209,6 +250,7 @@ pub fn update_asset(
                     file_path: row.get(4)?,
                     file_name: row.get(5)?,
                     created_at: row.get(6)?,
+                    seq: row.get(7)?,
                 })
             },
         )
@@ -348,22 +390,24 @@ async fn describe_asset_inner(app: &AppHandle, asset_id: &str) -> Result<Option<
         .ok_or_else(|| "DeepSeek视觉读图API密钥未配置".to_string())?;
 
     // 阶段一（同步）：读文件 + 查缓存。conn 必须在 await 前 drop（rusqlite Connection 非 Send）。
-    let (file_hash, bytes, cached_desc) = {
+    let (file_hash, bytes, cached_desc, asset_name, asset_category) = {
         let conn = open_db(app)?;
         ensure_assets_table(&conn)?;
         ensure_asset_descriptions_table(&conn)?;
 
-        let file_path: String = conn
+        let (file_path, asset_name, asset_category): (String, String, String) = conn
             .query_row(
-                "SELECT file_path FROM assets WHERE id = ?1",
+                "SELECT file_path, name, category FROM assets WHERE id = ?1",
                 params![asset_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|e| format!("Failed to find asset: {}", e))?;
 
         let bytes = std::fs::read(&file_path)
             .map_err(|e| format!("Failed to read asset file: {}", e))?;
-        let file_hash = format!("{:x}", md5::compute(&bytes));
+        // 🔴 缓存键带版本前缀：读图引导词升级（注入资产名）后，旧描述必须重读一次，
+        // 否则老项目会一直用「不知道名字」的通用描述，选图依旧会偏。
+        let file_hash = format!("describe-v2-{:x}", md5::compute(&bytes));
 
         let cached: Option<String> = conn
             .query_row(
@@ -373,7 +417,7 @@ async fn describe_asset_inner(app: &AppHandle, asset_id: &str) -> Result<Option<
             )
             .ok();
 
-        (file_hash, bytes, cached)
+        (file_hash, bytes, cached, asset_name, asset_category)
     };
 
     if let Some(desc) = cached_desc {
@@ -388,9 +432,11 @@ async fn describe_asset_inner(app: &AppHandle, asset_id: &str) -> Result<Option<
     };
 
     // 阶段二（await）：调读图。此时不持有 conn，future 保持 Send。
-    let description = crate::ai::describe::describe_image(&bytes, &api_key)
-        .await
-        .map_err(|e| e.to_string())?;
+    // 资产名一并喂给视觉模型 —— 名称是用户在脚本里给的身份锚点，读图要围绕它描述。
+    let description =
+        crate::ai::describe::describe_image(&bytes, &api_key, Some(&asset_name), Some(&asset_category))
+            .await
+            .map_err(|e| e.to_string())?;
 
     // 阶段三（同步）：写缓存
     let now = SystemTime::now()
