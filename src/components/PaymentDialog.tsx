@@ -147,6 +147,23 @@ export function PaymentDialog({
     if (pollingInterval) {
       clearInterval(pollingInterval);
     }
+    if (status === 'pending' && orderId) {
+      // 支付进行中允许关闭（旧实现里关闭按钮是空函数）。关闭后用户仍可能在手机端完成支付，
+      // 因此延迟复查一次，避免「钱付了、界面没到账」。
+      window.setTimeout(() => {
+        void (async () => {
+          try {
+            const result = await bananaCheckPaymentStatus(orderId);
+            if (result.paid) {
+              onRecharged?.();
+              onPaymentSuccess?.(orderId);
+            }
+          } catch {
+            // 复查失败不影响关闭流程
+          }
+        })();
+      }, 60_000);
+    }
     onClose();
   };
 
@@ -293,7 +310,7 @@ export function PaymentDialog({
                 </span>
               </div>
               <p className="text-xs text-text-muted text-center mt-2">
-                {t('paymentDialog.pollingHint', '支付成功后会自动解锁功能，请勿关闭此窗口')}
+                {t('paymentDialog.pollingHint', '支付成功后会自动解锁功能，关闭窗口不影响支付结果')}
               </p>
             </div>
           </div>
@@ -314,12 +331,15 @@ export function PaymentDialog({
             ? t('common.notice', '提示')
             : t('paymentDialog.title', '充值解锁功能')
         }
-        onClose={status === 'pending' ? () => {} : handleClose}
+        onClose={handleClose}
         widthClassName="w-[480px]"
         footer={
-          status === 'pending' ? null :
           status === 'recharge_guide' ? null : (
-            <UiButton variant="primary" size="sm" onClick={handleClose}>
+            <UiButton
+              variant={status === 'pending' ? 'muted' : 'primary'}
+              size="sm"
+              onClick={handleClose}
+            >
               {t('common.close', '关闭')}
             </UiButton>
           )

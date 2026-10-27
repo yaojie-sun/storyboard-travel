@@ -9,6 +9,7 @@ import { DistributionDashboard } from './components/DistributionDashboard';
 import { UpdateAvailableDialog } from './components/UpdateAvailableDialog';
 import { GlobalErrorDialog } from './components/GlobalErrorDialog';
 import { LoginDialog } from './components/LoginDialog';
+import { LoginRequiredPanel } from './components/LoginRequiredPanel';
 import { PaymentDialog } from './components/PaymentDialog';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ProjectManager, ProjectDashboard } from './features/project';
@@ -888,10 +889,8 @@ function App() {
   };
 
   const handleLoginClose = () => {
-    // 如果用户未登录，不允许关闭登录对话框
-    if (authStatus === 'logged_out') {
-      return;
-    }
+    // 关闭按钮必须真的有反馈：未登录时收起登录框，露出「未登录」占位页（含重新登录入口）。
+    // 旧实现在 logged_out 时直接 return，用户点 X 毫无反应，等同于按钮坏了。
     setShowLoginDialog(false);
   };
 
@@ -1017,13 +1016,15 @@ function App() {
                   onActivated={handleTokenActivated}
                   onSwitchToLogin={handleSwitchToLogin}
                 />
-              ) : (
+              ) : showLoginDialog ? (
                 <LoginDialog
                   isOpen={true}
                   onClose={handleLoginClose}
                   onLoginSuccess={handleLoginSuccess}
                   onSwitchToToken={handleSwitchToToken}
                 />
+              ) : (
+                <LoginRequiredPanel onLogin={() => setShowLoginDialog(true)} />
               )}
             </div>
           </div>
@@ -1146,13 +1147,15 @@ function App() {
                 onRetry={handleManualReconnect}
                 onRelogin={handleReconnectRelogin}
               />
-            ) : (
+            ) : showLoginDialog ? (
               <LoginDialog
                 isOpen={true}
                 onClose={handleLoginClose}
                 onLoginSuccess={handleLoginSuccess}
                 onSwitchToToken={handleSwitchToToken}
               />
+            ) : (
+              <LoginRequiredPanel onLogin={() => setShowLoginDialog(true)} />
             )}
           </div>
           {/* 仍然渲染全局错误对话框，以防需要显示错误 */}

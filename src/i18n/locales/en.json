@@ -494,6 +494,7 @@
   },
   "loginDialog": {
     "title": "Login to XiaoYa Platform",
+    "required": "Please log in to continue",
     "registerTitle": "Register for XiaoYa Platform",
     "email": "Email",
     "username": "Username",

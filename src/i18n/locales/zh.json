@@ -494,6 +494,7 @@
   },
   "loginDialog": {
     "title": "登录小鸭中台",
+    "required": "请先登录后使用",
     "registerTitle": "注册小鸭中台",
     "email": "邮箱",
     "username": "用户名",

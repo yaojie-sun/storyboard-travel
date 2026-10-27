@@ -186,9 +186,14 @@
    🔴🔴 `<scenetrans>` / `<cutoff>` 一律写在 `<d>` **外面**。依据官方 §4.4 原句（本节开头逐字引文）：
    "Inside `<d>`, include only the language tag and the actual user-provided spoken content."
    —— 标签不是台词原文，写进 `<d>` 里模型会把它当成台词的一部分（实测会多出一段听不懂的人声）。
-   ✅ 切口前：`…says in an off-screen voiceover: <d>[Chinese] 前半句，</d> <scenetrans> 声音跨切连续到下一镜（continues seamlessly across the cut）。`
-   ✅ 切口后：`<scenetrans> <d>[Chinese] 后半句。</d> while her lips remain completely closed.`
+   🔴🔴 **跨切连续性说明只写官方英文串**（上面四条，逐字照用；不许译成中文，也不许写成「中文（英文）」括注）；
+   **说明写在标签前面，标签紧贴切口，标签后面不再写任何中文**。
+   实测 `<scenetrans>` 后面紧跟的中文会被模型当成旁白念出来（「声音跨切连续到下一镜」曾被整句念出）。
+   ✅ 切口前：`…says in an off-screen voiceover: <d>[Chinese] 前半句，</d> The audio continues seamlessly across the cut. <scenetrans>`
+   ✅ 切口后：`The audio carries over from the previous shot. <scenetrans> <d>[Chinese] 后半句。</d> while her lips remain completely closed.`
+   ✅ 片尾截断：`… <d>[Chinese] 说到一半的台词</d> <cutoff>`（标签紧贴 `</d>`，后面不写中文）
    ❌ `<d>[Chinese] 前半句，<scenetrans></d>` / `<d>[Chinese] <scenetrans>后半句。</d>`
+   ❌ `<scenetrans> 声音跨切连续到下一镜（continues seamlessly across the cut）` —— 标签后的中文会被念出来
    🔴🔴 **`<d>` 是台词唯一的容身处**：一句台词只写一次、只写在 `<d>` 内。正文别处、
    `subject_definitions`、`summary`、`overall_soundscape`、`non_diegetic_music` 里
    **都不许**再用引号引述、复述或摘要这句话 —— `<d>` 之外的引号句、括号说明、冒号后的文字，
