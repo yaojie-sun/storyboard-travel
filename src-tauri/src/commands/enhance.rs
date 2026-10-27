@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager};
 use tracing::info;
 
 /// 创建隐藏窗口的 Command（Windows 上禁止弹出 CMD 窗口）
-fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
@@ -40,7 +40,7 @@ fn normalize_image_path(raw: &str) -> String {
 }
 
 /// 统一查找打包二进制（resource_dir 优先，CARGO_MANIFEST_DIR 开发回退）
-fn resolve_binary(resource_dir: &PathBuf, dir: &str, exe: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_binary(resource_dir: &PathBuf, dir: &str, exe: &str) -> Result<PathBuf, String> {
     let mut candidates: Vec<PathBuf> = vec![resource_dir.join(dir).join(exe)];
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         candidates.push(

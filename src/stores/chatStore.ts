@@ -16,6 +16,7 @@ import { buildProjectChatContext } from '@/features/chat/projectContext';
 import {
   parseStageAnchor,
   autoNextAnchor,
+  declaredSegmentOf,
   isInspirationTrigger,
   resolveUnitPlan,
   type StageId,
@@ -55,6 +56,14 @@ export interface PromptBlock {
   characterContext?: string;
   /** 【场景描述】按 1-based 区间**展开成逐格一份**，前端不展示 */
   sceneContext?: string[];
+  /**
+   * 中文**显示镜像**（英译中，只给人看）。
+   * 🔴 提交给视频模型的永远是 `content`（英文原文），本字段一个字节都不进请求。
+   * 老会话没有这个字段 ⇒ 显示英文，行为与改动前一致。
+   */
+  contentZh?: string;
+  /** 生成 `contentZh` 时 `content` 的指纹；与当前 `content` 不符即视为过期，不显示 */
+  contentZhFrom?: string;
 }
 
 export interface ChatMessage {
@@ -272,6 +281,25 @@ function parseGridFrames(gridContent: string): PromptBlockFrame[] {
     .map((description) => description.trim())
     .filter(Boolean)
     .map((description) => ({ description }));
+}
+
+/**
+ * 「这真的是 6 格吗」的判据 —— **只用于官方六段式那条隐式切分**。
+ *
+ * 🔴 2026-10-28 实测 bug：写手在六段正文**前面**加了一句解释
+ *   （「Shot 2 – Shot 6 按原表合计 38 秒，超出单段 15 秒上限…」），
+ *   `splitOfficialOutput` 把 `subject_definitions:` **之前的一切**当宫格区，
+ *   而那句解释里恰好有 `Shot 2、Shot 5、Shot 6` —— 被编号解析器切成「格子」
+ *   ⇒ 界面上多出一个叫「宫格提示词」的气泡，正文就是那句废话，还带「编辑」按钮。
+ *   ⇒ 官方形状下的宫格区是**隐式**的，必须够硬才认：至少 3 格、每格有实质内容。
+ *   （显式写了 `【分镜提示词】` 的旧路径不受这条约束。）
+ */
+const MIN_GRID_FRAMES = 3;
+const MIN_GRID_FRAME_CHARS = 8;
+
+function looksLikeRealGrid(frames: PromptBlockFrame[]): boolean {
+  const solid = frames.filter((f) => (f.description ?? '').trim().length >= MIN_GRID_FRAME_CHARS);
+  return solid.length >= MIN_GRID_FRAMES;
 }
 
 /**
@@ -522,7 +550,9 @@ function parsePromptBlocks(
     }
     if (official.gridText) {
       const frames = parseGridFrames(official.gridText);
-      if (frames.length >= 2) {
+      // 🔴 只有**真宫格**才建块（判据见 `looksLikeRealGrid`）：六段正文前的一句解释
+      //    不算宫格，否则界面上会多出一个装废话的「宫格提示词」气泡。
+      if (looksLikeRealGrid(frames)) {
         blocks.push({
           id: generateId(),
           type: 'grid',
@@ -769,6 +799,13 @@ interface ChatState {
     messageId: string,
     blockId: string,
     newContent: string,
+  ) => void;
+  /** 写入中文显示镜像（只影响展示，不碰 `content`） */
+  setPromptBlockMirror: (
+    messageId: string,
+    blockId: string,
+    zh: string,
+    from: string,
   ) => void;
   renameConversation: (id: string, title: string) => void;
   getActiveConversation: () => Conversation | undefined;
@@ -1238,6 +1275,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               askedStage,
               chained.autoChainMode,
               resolveUnitPlan(updatedMessages),
+              // 用户自己声明了「第 N 段」⇒ 锚点带 `【单元】U{N}`，别恒发 U1
+              declaredSegmentOf(content),
             )
           : null;
       if (nextAnchor) {
@@ -1315,6 +1354,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
             promptBlocks: replyBlocks.length > 0 ? replyBlocks : undefined,
             continuationPrompt,
             shotFrameMap,
+          };
+        }),
+      }));
+      schedulePersistConversations(next);
+      return { conversations: next };
+    });
+  },
+
+  setPromptBlockMirror: (messageId, blockId, zh, from) => {
+    set((state) => {
+      const next = state.conversations.map((conv) => ({
+        ...conv,
+        messages: conv.messages.map((msg) => {
+          if (msg.id !== messageId || !msg.promptBlocks) {
+            return msg;
+          }
+          return {
+            ...msg,
+            promptBlocks: msg.promptBlocks.map((block) =>
+              block.id === blockId ? { ...block, contentZh: zh, contentZhFrom: from } : block,
+            ),
           };
         }),
       }));

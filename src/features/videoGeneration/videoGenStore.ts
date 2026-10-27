@@ -14,6 +14,10 @@ export interface PersistedVoice {
   rawUrl: string;
   url: string;
   fileName: string;
+  /** 这段声音属于谁（项目资产「人物」名或手填）。可选，老数据没有该字段。 */
+  character?: string;
+  /** 前端探测到的时长（秒），可选，仅用于本地限额校验 */
+  durationSecs?: number;
 }
 
 export interface VideoGenNodeConfig {
@@ -24,7 +28,10 @@ export interface VideoGenNodeConfig {
   videoModel?: string;
   videoUrl?: string;
   referenceImageUrls?: PersistedRefImage[];
+  /** 旧的单段音色参考：继续照原样写/读（第一段），保证老版本与老数据都能用 */
   referenceVoice?: PersistedVoice;
+  /** 多段音色参考（官方最多 3 段）。可选；缺省时回落到 referenceVoice。 */
+  referenceVoices?: PersistedVoice[];
   pendingTaskId?: string;
   pendingCreditsDeducted?: number;
   gridFrames?: string[];

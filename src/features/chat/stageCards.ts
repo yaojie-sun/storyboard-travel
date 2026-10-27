@@ -277,6 +277,8 @@ export interface UnitPlan {
   next: number;
   /** 下一个单元要出的镜头，如 `Shot 4 - Shot 6`（`finished` 时为空串）。与 `next` **同源**：分组的第 `next-1` 项 */
   nextShots: string;
+  /** 各单元的镜头范围（第 k 项 = `U(k+1)`）；用户自己声明「第 N 段」时按它对号取范围 */
+  units: string[];
   /** 所有单元都兑现过 ⇒ 不给按钮 */
   finished: boolean;
 }
@@ -347,13 +349,29 @@ const SHOT_TOTAL_RE = /共\s*(\d+)\s*个镜头/;
  * 🔴 **只认首格**：第二格起会写「承接 Shot 2 的结尾」这类正文，全文扫会把承接关系
  *   当成镜头行（表头 `| Shot ID & Duration | …` 也靠「Shot 后面必须跟数字」排除）。
  */
+const ROW_HEAD_SHOT_RE = /^\s*\*{0,2}\s*(?:\[\s*Shot\s*(\d+)\s*\]|Shot\s*(\d+)|S(\d+))/;
+
 function matchShotRowHead(line: string): number | null {
   const trimmed = line.trimStart();
-  const head = trimmed.startsWith('|') ? (trimmed.split('|')[1] ?? trimmed) : line;
-  const m = head.match(/\[Shot\s*(\d+)\]|Shot\s*(\d+)|S(\d+)\s*[（(]/);
+  // 🔴 只认**首格开头**：2026-10-28 实测的镜头表写成
+  //    `| S1 · 00.000–07.000（7.0s，U1） | …` —— 镜号后面跟的是 `·` 和时间码，
+  //    而旧判据要求 `S(\d+)` 后面**紧跟** `（`，六行真实镜头**一行都没认出来**；
+  //    反过来它把表尾的〈分段建议〉`- 【单元】U1：S1–S2（15 秒）` 当成了镜头行
+  //    （那一行里 `S2（` 正好命中）⇒ 读出的「镜头表」是 [2,4,6]、秒数全读不出
+  //    ⇒ 贪心切单元兜底成**一组**⇒ 锚点发出 `U1 · Shot 2 - Shot 6`（38 秒塞进 15 秒）。
+  //    锚在格首，两种误判同时消失：分段建议以 `-` 开头，不会被当成镜头行。
+  const isTableRow = trimmed.startsWith('|');
+  const head = isTableRow ? (trimmed.split('|')[1] ?? '') : trimmed;
+  const m = head.match(ROW_HEAD_SHOT_RE);
   if (!m) return null;
   const n = Number(m[1] ?? m[2] ?? m[3]);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** 表格行/裸行的**首格**原文（时长与镜号都只在这格里读，避免读进后面的正文列）。 */
+function rowHeadCell(line: string): string {
+  const trimmed = line.trimStart();
+  return trimmed.startsWith('|') ? (trimmed.split('|')[1] ?? '') : trimmed;
 }
 
 /**
@@ -397,7 +415,7 @@ function parseShotRows(shotTable: string): ShotRow[] {
     const n = matchShotRowHead(line);
     if (n === null) continue;
     if (rows.some((r) => r.n === n)) continue;
-    rows.push({ n, seconds: readShotSeconds(line.slice(0, 120)) });
+    rows.push({ n, seconds: readShotSeconds(rowHeadCell(line)) });
   }
   return rows;
 }
@@ -426,6 +444,39 @@ function groupShotsByDuration(rows: ShotRow[]): number[][] {
   return groups;
 }
 
+/**
+ * 〈分段建议〉里**简写镜号**的范围：`S1–S2` / `S3 - S4`（写手 2026-10 的写法）。
+ *
+ * 🔴 `collectShotNumbersLoose` 只认带 `Shot` 这个词的写法，而真实的〈分段建议〉写的是
+ *   `- 【单元】U1：S1–S2（15 秒）` ⇒ 旧代码在这份表上一条单元都读不出来，
+ *   落回「按秒数贪心切」的兜底（而秒数同样因为镜头行认不出而全为空）⇒ 整片被切成一组。
+ *   只在**已确认是单元声明的行**上用它，不会把正文里的 `S1` 误当镜号。
+ */
+const S_SHOT_RANGE_RE = /\bS\s*(\d+)\s*[-–—~至]\s*S?\s*(\d+)/g;
+const S_SHOT_SINGLE_RE = /\bS\s*(\d+)\b/g;
+
+function collectShortShotNumbers(text: string): number[] {
+  const out: number[] = [];
+  S_SHOT_RANGE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  let matched = false;
+  while ((m = S_SHOT_RANGE_RE.exec(text)) !== null) {
+    matched = true;
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (!Number.isFinite(a) || a <= 0) continue;
+    const last = Number.isFinite(b) && b >= a ? b : a;
+    for (let n = a; n <= last && n - a < 64; n += 1) out.push(n);
+  }
+  if (matched) return out;
+  S_SHOT_SINGLE_RE.lastIndex = 0;
+  while ((m = S_SHOT_SINGLE_RE.exec(text)) !== null) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n > 0) out.push(n);
+  }
+  return out;
+}
+
 /** 镜头表末尾的〈分段建议〉——写手自己划的单元，优先于按秒数推算。 */
 function parseDeclaredUnits(shotTable: string): number[][] | null {
   const units = new Map<number, number[]>();
@@ -439,7 +490,8 @@ function parseDeclaredUnits(shotTable: string): number[][] | null {
       line.match(DECLARED_UNIT_EQUALS_RE);
     if (!head) continue;
     const k = Number(head[1]);
-    const shots = collectShotNumbersLoose(line);
+    const loose = collectShotNumbersLoose(line);
+    const shots = loose.length > 0 ? loose : collectShortShotNumbers(line);
     if (Number.isFinite(k) && k > 0 && shots.length > 0) units.set(k, shots);
   }
   if (units.size === 0) return null;
@@ -528,11 +580,47 @@ export function resolveUnitPlan(
   // 也不用锚点里出现过的最大 U 号（那是我们自己刚发出去的、还没兑现的请求 ⇒ 计数器失控）。
   const produced = new Set<number>();
   let pendingUnit: number | null = null;
+  /** 用户自己声明了「第 N 段」⇒ 前 N-1 段必然已经出过，先记为已产出 */
+  const markBelow = (unit: number) => {
+    for (let k = 1; k < unit; k += 1) produced.add(k);
+  };
+
+  // 🔴 **用户「第 N 段」的声明在镜头表之前**（他就是用那句话把脚本贴进来的），
+  //   而下面的作用域是「最后一条镜头表之后」⇒ 扫不到它。
+  //   2026-10-28 实测：贴「第二段 15秒 …」后，`STEP5.5 → STEP6` 发出的锚点是 `U1`，
+  //   写手按 U1 出了 Shot 1-2，而用户要的是第二段（Shot 3-4）。
+  //   ⇒ 单独在**整段会话**里找最后一次声明，把 1…N-1 记为已产出。
+  //   ⚠️ 夹在 `groups.length` 内：用户声明的段号超出这张镜头表时，
+  //      `markBelow` 会把所有单元都标成已完成 ⇒ 判 `finished`、不出按钮（直接卡死），
+  //      所以宁可只认表里存在的段号。
+  {
+    let declared: number | null = null;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
+      if (msg.role !== 'user') continue;
+      const found = declaredSegmentOf(msg.content);
+      if (found) {
+        declared = found;
+        break;
+      }
+    }
+    if (declared) markBelow(Math.min(declared, groups.length));
+  }
   for (const msg of scope) {
     if (msg.role === 'user') {
-      // 每条用户消息都**重设**待兑现的单元号：锚点 = 它要的那个号；非锚点 = 清空
-      // （免得一条早先失败的锚点被后面无关的正文兑现）。
-      pendingUnit = isStageAnchorMessage(msg.content) ? requestedUnitOf(msg.content) : null;
+      // 每条用户消息都**重设**待兑现的单元号：锚点 = 它要的那个号；用户手打「第 N 段」= N；
+      // 其余 = 清空（免得一条早先失败的锚点被后面无关的正文兑现）。
+      if (isStageAnchorMessage(msg.content)) {
+        const req = requestedUnitOf(msg.content);
+        // 🔴 显式 `【单元】U{N}`（N>1）＝前面的单元都出过了：`step6Card` 只会这么发，
+        //    用户声明的第 N 段也这么发。不记 1…N-1，就会出现「刚出完第 2 段，却弹 U1」。
+        if (req?.explicit) markBelow(req.unit);
+        pendingUnit = req ? req.unit : null;
+      } else {
+        const declared = declaredSegmentOf(msg.content);
+        if (declared) markBelow(declared);
+        pendingUnit = declared;
+      }
       continue;
     }
     if (msg.role !== 'assistant' || msg.stage !== 'STEP6') continue;
@@ -546,9 +634,10 @@ export function resolveUnitPlan(
   let next = 1;
   while (produced.has(next)) next += 1;
   const done = Math.min(produced.size, groups.length);
+  const units = groups.map((g) => formatShotRange(g));
 
   if (next > groups.length) {
-    return { totalShots: trustedTotal, done, next, nextShots: '', finished: true };
+    return { totalShots: trustedTotal, done, next, nextShots: '', units, finished: true };
   }
   return {
     totalShots: trustedTotal,
@@ -556,21 +645,62 @@ export function resolveUnitPlan(
     next,
     // 🔴 与 `next` **同源**：第 k 个单元就是分组的第 k-1 项。
     nextShots: formatShotRange(groups[next - 1]),
+    units,
     finished: false,
   };
 }
 
 /**
  * 一条锚点请求的是第几个单元。
- * - `【单元】U3` / `【单元】3` ⇒ 3（`step6Card` 发的形状）
- * - `【阶段】STEP6 【模式】直出`（**老锚点/自动串联的第一单元**不带单元行）⇒ **1**
+ * - `【单元】U3` / `【单元】3` ⇒ `{ unit: 3, explicit: true }`（`step6Card` / 用户声明发的形状）
+ * - `【阶段】STEP6 【模式】直出`（**老锚点/自动串联的第一单元**不带单元行）⇒ `{ unit: 1, explicit: false }`
  * - 不是 `STEP6` 的锚点（`STEP1` / `STEP7` …）⇒ `null`，不参与「兑现正文」
  */
-function requestedUnitOf(content: string): number | null {
+function requestedUnitOf(content: string): { unit: number; explicit: boolean } | null {
   if (parseStageAnchor(content) !== 'STEP6') return null;
   const m = content.match(/【单元】\s*\**\s*U?\s*(\d+)/) ?? content.match(/\bU(\d+)\b/);
-  const n = Number(m?.[1] ?? 1);
-  return Number.isFinite(n) && n > 0 ? n : 1;
+  if (!m) return { unit: 1, explicit: false };
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? { unit: n, explicit: true } : { unit: 1, explicit: false };
+}
+
+/** 中文数字（1–99）→ 数字；`十` / `十一` / `二十` / `二十三`。 */
+function chineseNumber(text: string): number | null {
+  const digits: Record<string, number> = {
+    一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
+  };
+  if (/^\d{1,2}$/.test(text)) return Number(text);
+  if (!text.includes('十')) {
+    return text.length === 1 && digits[text] ? digits[text] : null;
+  }
+  const [tens, ones] = text.split('十');
+  const tensValue = tens === '' ? 1 : digits[tens];
+  const onesValue = ones === '' ? 0 : digits[ones];
+  if (tensValue === undefined || onesValue === undefined) return null;
+  const value = tensValue * 10 + onesValue;
+  return value > 0 ? value : null;
+}
+
+/**
+ * 用户自己在消息里声明的**段落号**（`第二段` / `第 2 段` / `第二单元` / `第3集`）。
+ *
+ * 🔴 2026-10-28 实测 bug：用户贴「第二段 15秒 …」，前端发出去的 STEP6 锚点恒是
+ *   `【单元】U1`，于是写手出的是 U1、`produced` 只认 1 ⇒ 第二单元永远「未兑现」
+ *   ⇒ 用户刚贴完第二段，界面还弹「出下一单元（U2 · Shot 3 - Shot 4）」，而那正是他刚写完的内容。
+ *
+ * ⇒ 用户自己写了第几段，就以他的号为准：锚点带 `【单元】U{N}`，
+ *   同时 1…N-1 视为已产出（他既然在写第 N 段，前 N-1 段必然已经有了）。
+ *
+ * ⚠️ 只认**用户消息**里的声明，锚点（`【阶段】…`）一律不认 —— 那是我们自己发的。
+ */
+export function declaredSegmentOf(content: string): number | null {
+  if (!content || isStageAnchorMessage(content)) return null;
+  // 「第 N 段／第 N 个单元／第 N 集」，取**第一个**出现的（用户把段号写在开头）。
+  // 🔴 `段(?!镜头)`：正文里的「第一段镜头」不是段落号；「第二阶段」这种「阶+段」天然不命中。
+  const m = content.match(/第\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:段(?!镜头)|个?单元|集)/m);
+  if (!m) return null;
+  const n = chineseNumber(m[1]);
+  return n && n >= 1 && n <= 99 ? n : null;
 }
 
 /**
@@ -768,6 +898,7 @@ export function autoNextAnchor(
   stage: StageId,
   _mode: ChainMode,
   unit?: UnitPlan | null,
+  segment?: number | null,
 ): string | null {
   if (stage === AUTO_CHAIN_TERMINUS) return null;
   const idx = MAIN_CHAIN.indexOf(stage);
@@ -787,10 +918,24 @@ export function autoNextAnchor(
     //      第一单元由写手自己划、后面的单元由 `step6Card` 按同一套分组续 —— 两边若不同源，
     //      就会「U1 出了镜头 1-3，而按钮说下一个单元是 Shot 4-6」这种对不上的账。
     //      读不出镜头表（`unit` 为 `null`）时照旧只带 `【单元】U1`，写手按镜头表自取。
-    const firstUnitRange = unit && !unit.finished ? unit.nextShots : '';
+    // 🔴 **用户自己写了「第 N 段」就以他的号为准**（2026-10-28 实测：贴第二段却弹「出下一单元 U2」）。
+    //    `segments[N-1]` 取的是**这一份镜头表**里第 N 个分组的镜头范围；
+    //    表里没有第 N 组（用户手打的段号超出镜头表）时退回 `unit.nextShots`，
+    //    再取不到就只带单元行，让写手按镜头表自取。
+    // 🔴 默认取 **`unit.next`**，不是恒取 1。2026-10-28 实测：用户贴「第二段 15秒 …」，
+    //    `declaredSegmentOf` 在**第一条**输入上就认出 `2`，可它在 STEP0 那一跳就被丢掉了
+    //    （那一步的 `next` 是 STEP1，用不上段号），等链跑到 `STEP5.5 → STEP6` 时
+    //    `content` 已经是 `【阶段】STEP5.5`、`declaredSegmentOf` 返回 null
+    //    ⇒ 旧代码落回 `segmentIndex = 1` ⇒ 发出 `U1`，而 `unit` 里算出来的 `next` 已经是 2。
+    //    `resolveUnitPlan` 扫的是**整段会话**（含用户的「第 N 段」声明），
+    //    它的 `next` 才是这一轮该出的单元 —— 两者必须同源。
+    const segmentIndex =
+      segment && segment > 0 ? segment : unit && unit.next > 0 ? unit.next : 1;
+    const segRange = unit ? unit.units[segmentIndex - 1] ?? '' : '';
+    const firstUnitRange = segRange || (unit && !unit.finished ? unit.nextShots : '');
     return buildAnchor('STEP6', {
       模式: '直出',
-      单元: 'U1',
+      单元: `U${segmentIndex}`,
       ...(firstUnitRange ? { 镜头范围: firstUnitRange } : {}),
     });
   }

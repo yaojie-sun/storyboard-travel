@@ -967,7 +967,11 @@ export interface VideoGenParams {
   imageInput: string[];
   videoInput?: string[];
   model?: string;
-  voiceUrl?: string;
+  /**
+   * 音色参考（官方 r2va，最多 3 段）。
+   * `character` 是这段声音属于的角色名（项目资产「人物」名或手填），留空表示不绑定。
+   */
+  voiceRefs?: Array<{ dataUrl: string; character?: string }>;
   negativePrompt?: string;
   guidanceScale?: number;
   shotType?: string;
@@ -1003,7 +1007,7 @@ export async function bananaSubmitVideoJob(params: VideoGenParams): Promise<Vide
     imageInput: params.imageInput,
     videoInput: params.videoInput || null,
     model: params.model || null,
-    voiceUrl: params.voiceUrl || null,
+    voiceRefs: params.voiceRefs && params.voiceRefs.length > 0 ? params.voiceRefs : null,
     negativePrompt: params.negativePrompt || null,
     guidanceScale: params.guidanceScale ?? null,
     shotType: params.shotType || null,

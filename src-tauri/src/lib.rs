@@ -12,10 +12,12 @@ use commands::chat;
 use commands::enhance;
 use commands::image;
 use commands::project_state;
+use commands::prompt_repair;
 use commands::seedance_integration;
 use commands::skill_management;
 use commands::sync as sync_commands;
 use commands::system;
+use commands::translate_display;
 use commands::update;
 use commands::usage_report;
 use tauri::{Emitter, Manager, WindowEvent};
@@ -286,6 +288,9 @@ pub fn run() {
             update::fetch_video_gen_rules,
             update::download_upgrade,
             update::launch_installer,
+            translate_display::translate_prompt_to_zh,
+            translate_display::translate_prompt_to_english,
+            prompt_repair::repair_prompt_shape,
             sync_commands::sync_pull,
             sync_commands::sync_push,
             sync_commands::sync_get_status,

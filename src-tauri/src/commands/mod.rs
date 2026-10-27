@@ -5,13 +5,16 @@ pub mod chat;
 pub mod enhance;
 pub mod image;
 pub mod project_state;
+pub mod prompt_repair;
 pub mod seedance_integration;
 pub mod skill_management;
 pub mod system;
 pub mod sync;
+pub mod translate_display;
 pub mod update;
 pub mod usage_report;
 pub mod video_key_pool;
+pub mod video_voice_ref;
 
 pub use ai::*;
 pub use banana_api::*;

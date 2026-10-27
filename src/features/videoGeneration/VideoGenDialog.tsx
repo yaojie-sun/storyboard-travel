@@ -22,6 +22,13 @@ import { inferRefTypes, REF_TYPE_LABELS } from './refTypes';
 import { auditAndFixDTags, rememberDTagAudit, summarizeDTagAudit } from './dTagAudit';
 import { fetchVideoGenRules, type VideoGenRuleMode } from './videoGenRules';
 import {
+  getPromptMirror,
+  looksChineseWritten,
+  promptFingerprint,
+  translatePromptForSubmit,
+} from '@/commands/translateDisplay';
+import { looksGeneratedPrompt } from './promptShapeCheck';
+import {
   ASPECT_RATIO_OPTIONS,
   VIDEO_DURATION_OPTIONS,
   MAX_REFERENCE_IMAGES,
@@ -38,24 +45,29 @@ import {
 const VIDEO_PROMPT_MAX_CHARS = 6900;
 
 /**
+ * 上游的**绝对硬限**（模型侧 `[1, 7000]`）。
+ *
+ * 6900 是客户端自己留余量的安全线（超了砍规则头块）；7000 是模型真的不接的那条线 ——
+ * 拼装完还超过它，就**不发请求、不扣费**，直接让用户缩减提示词（2026-10-28 用户定调）。
+ */
+const PROMPT_HARD_LIMIT = 7000;
+
+/**
  * 超限时规则头的**块丢弃顺序**（先丢最不影响的）。
  *
  * 规则头由若干 `【…】` 块组成，`【】` 之前的引子块名字为空串。超限时整块丢弃，
  * **绝不句中腰斩** —— 旧实现是 `slice(0, budget)`，一刀切在中间，丢掉的恰好是排在
  * 后面的块，等于把最需要约束的部分删干净、留下最泛的部分。
  *
- * 规则头已瘦身（v9：只留只有视频模型这一层才需要知道的接线说明，写作规范全部回
- * SKILL.md / writer_rules），当前头 702 字（宫格）/ 633 字（直出），正文额度 6196 字
- * （宫格）/ 6265 字（直出）—— 文档里统一按 5820 字报给写手（安全垫 376 字）。
- * 正常不会触发丢弃。
- * 顺序依据（越靠前越可丢）：
- *   ① 【画外音】—— 官方英文触发句本来就由写手逐字写进正文，这块是双保险
- *   ② 【参考图的作用】—— 表述最泛
- *   ③ 【参考图形态】—— 表述较具体，往后挪
- *   ④ 【文字】—— 画面文字类负面词已逐项并入 `negative_prompt`
- * 保底不丢：【语言】【声音】（后者是「模型自配听不懂人声」的病根）
+ * 🔴 2026-10-28 用户裁定：**规则头整段删除**（线上 version 16 起 `prompt_rule` 为空串）。
+ * 理由成立且已核对：正文本身就是按 H3 官方标准产出的六段式 —— `<Picture N>` /
+ * `<d>[Language]` / retention 标记 / 画外音官方英文句 / 双引号可见文字，全部写在
+ * 正文里；规则头说的每一件事都能在正文里逐字找到，是**同一件事的第二个真相源**。
+ * 第二个真相源只会漂移（最近一次：头里写「正文用中文」、正文已经改成英文）。
+ * 因此这里保留 `assembleVideoPrompt` 与丢块逻辑，只作为**万一将来又要加一句时的
+ * 安全阀**：`rule` 为空串时原样返回正文，不走任何裁剪分支。
  */
-const RULE_DROP_ORDER = ['画外音', '参考图的作用', '参考图形态', '文字'];
+const RULE_DROP_ORDER: string[] = [];
 
 /** 按 `【…】` 把规则头切成块；`【】` 之前的引子归为名字为空串的一块 */
 function splitRuleBlocks(rule: string): { name: string; text: string }[] {
@@ -72,10 +84,10 @@ function splitRuleBlocks(rule: string): { name: string; text: string }[] {
  * 规则头 + 正文拼装，保证不越过服务端硬限（`Params [Prompt], should be in [1, 7000]`）。
  * 规则头只是「保险」，六段正文才是正片 —— 超限时只动规则头，**绝不裁用户正文**。
  */
-function assembleVideoPrompt(rule: string, body: string): string {
+function assembleVideoPrompt(rule: string, body: string, reserve = 0): string {
   if (!rule) return body;
 
-  const budget = VIDEO_PROMPT_MAX_CHARS - body.length - 2;
+  const budget = VIDEO_PROMPT_MAX_CHARS - body.length - 2 - reserve;
   if (budget <= 0) {
     // 正文本身就把额度吃光了：规则头全长也比截断强不了，直接省掉并留痕
     console.warn(`[VideoGenDialog] 正文 ${body.length} 字已超出视频模型上限，省略规则头`);
@@ -117,16 +129,69 @@ interface ReferenceVoice {
   url: string;
   rawUrl: string;
   fileName: string;
+  /** 这段声音属于谁（项目资产里的「人物」名，或手填）。空表示不绑定角色。 */
+  character?: string;
+  /** 前端探测到的时长（秒），仅用于「合计 ≤15 秒」的本地拦截；后端会重新探测 */
+  durationSecs?: number;
 }
 
 /**
  * 音色参考入口开关。
- * 当前线路（minimax/mod.rs）只读 duration_seconds / quality，reference_voice 被静默丢弃，
- * 上传了也不影响成片 —— 所以入口下线、不再让用户白传。
- * 🔴 只关 UI：referenceVoice state、saveConfig 回填、hydrateVideoGenStore 链路一律保持原样，
- *    历史配置里已存的音色参考照常读回、照常写回（§12.4 用户数据保护）。
+ * 2026-10-28 已接通：H3 官方 r2va 支持参考音频（content[] 里 type=audio_url / role=reference_audio），
+ * 前端把音频转成 DataURL 交给后端，后端按官方规格校验后放进 content[]。
+ *
+ * 官方规格（MiniMax H3 · POST /v2/video_generation）：
+ * - 格式 WAV / MP3；单文件 ≤ 15 MB；单段时长 2–15 秒；最多 3 段；总时长 ≤ 15 秒
+ * 🔴 持久化：新字段 `referenceVoices`（可选）承载多段；旧的 `referenceVoice` 仍照旧写/读第一段，
+ *    回填优先新字段、缺失时回落旧字段 —— 老项目数据不改也能正常回填（§12.4）。
  */
-const VOICE_REF_UI_ENABLED = false;
+const VOICE_REF_UI_ENABLED = true;
+
+/** 音色参考的官方硬限制（前端先拦一道，后端 video_voice_ref.rs 再校验一次） */
+const VOICE_REF_MAX_BYTES = 15 * 1024 * 1024;
+const VOICE_REF_MIN_SECS = 2;
+const VOICE_REF_MAX_SECS = 15;
+const VOICE_REF_MAX_COUNT = 3;
+const VOICE_REF_TOTAL_SECS = 15;
+const VOICE_REF_ACCEPT = 'audio/wav,audio/mpeg,audio/mp3,.wav,.mp3';
+
+/** 换行、空白都清掉，避免角色名把提示词行撑破 */
+function sanitizeCharacterName(name: string | undefined): string | undefined {
+  const trimmed = (name ?? '').replace(/\s+/g, ' ').trim();
+  return trimmed ? trimmed.slice(0, 24) : undefined;
+}
+
+/** 只认官方允许的 WAV / MP3 */
+function isAllowedVoiceFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.wav') || name.endsWith('.mp3')) return true;
+  return (
+    file.type === 'audio/wav' ||
+    file.type === 'audio/wave' ||
+    file.type === 'audio/x-wav' ||
+    file.type === 'audio/mpeg' ||
+    file.type === 'audio/mp3'
+  );
+}
+
+/** 读本地音频时长（秒）；读不出来返回 null，交给后端 ffmpeg 与上游兜底 */
+function readAudioDuration(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = document.createElement('audio');
+    const done = (value: number | null) => {
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => {
+      const seconds = audio.duration;
+      done(Number.isFinite(seconds) && seconds > 0 ? seconds : null);
+    };
+    audio.onerror = () => done(null);
+    audio.src = url;
+  });
+}
 
 interface ReferenceImage {
   id: string;
@@ -179,6 +244,10 @@ function translateVideoError(errorMsg: string): { title: string; detail: string 
   }
   if (msg.startsWith('QUEUE_TIMEOUT:')) {
     return { title: '排队等待结束', detail: msg.slice('QUEUE_TIMEOUT:'.length).trim() };
+  }
+  // 音色参考不合规（WAV/MP3、≤15MB、2–15 秒），后端在扣费前就拦掉了
+  if (msg.startsWith('VOICE_REF:')) {
+    return { title: '音色参考不可用', detail: msg.slice('VOICE_REF:'.length).trim() };
   }
   const lower = msg.toLowerCase();
 
@@ -558,6 +627,21 @@ function VideoGenDialogInner({
   const { t } = useTranslation();
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
   const assets = useAssetStore((s) => (currentProjectId ? s.getAssets(currentProjectId) : EMPTY_ASSETS));
+  // 音色归属候选：项目资产里「人物」分类的名字 + 「旁白（画外音）」，单选。
+  // 短视频一般就一两个人物，逐个列出来让用户点选，不让人手打。
+  const voiceOwnerOptions = useMemo(
+    () => {
+      const names = Array.from(new Set(
+        assets
+          .filter((a) => a.category === 'character')
+          .map((a) => (a.name || '').trim())
+          .filter((name) => name.length > 0),
+      ));
+      return [...names, t('videoGen.voiceOwnerNarrator')];
+    },
+    // t 随语言切换变化，切换语言后按钮文案要跟着变
+    [assets, t],
+  );
   const loadAssets = useAssetStore((s) => s.loadAssets);
   const saveConfig = useVideoGenStore((s) => s.saveConfig);
   const addToHistory = useVideoGenStore((s) => s.addToHistory);
@@ -584,7 +668,11 @@ function VideoGenDialogInner({
     if (seededRef.current) return;
     seededRef.current = true;
     if (!savedConfig) return;
-    if (savedConfig.prompt) setPrompt(savedConfig.prompt);
+    if (savedConfig.prompt) {
+      setPrompt(savedConfig.prompt);
+      // 只有**我们生成的**六段式正文才锁；用户自己打的字，第二次打开照样能改。
+      setPromptLocked(looksGeneratedPrompt(savedConfig.prompt));
+    }
     if (savedConfig.aspectRatio) setAspectRatio(savedConfig.aspectRatio);
     if (savedConfig.duration) setDuration(savedConfig.duration);
     if (savedConfig.videoUrl) setVideoUrl(savedConfig.videoUrl);
@@ -593,7 +681,12 @@ function VideoGenDialogInner({
     if (savedConfig.referenceImageUrls?.length && initialImages.length === 0) {
       setReferenceImages(savedConfig.referenceImageUrls);
     }
-    if (savedConfig.referenceVoice) setReferenceVoice(savedConfig.referenceVoice);
+    // 音色参考回填：优先多段新字段，缺失时回落旧的单段字段（老项目数据不改也能回填）
+    if (savedConfig.referenceVoices?.length) {
+      setReferenceVoices(savedConfig.referenceVoices);
+    } else if (savedConfig.referenceVoice) {
+      setReferenceVoices([savedConfig.referenceVoice]);
+    }
     if (savedConfig.gridFrames?.length && initialGridFrames.length === 0) {
       setGridFrames(savedConfig.gridFrames);
     }
@@ -615,10 +708,116 @@ function VideoGenDialogInner({
   // 旧存档里的历史模型名不会在此被改写，仅在用户改动参数触发自动保存时惰性升级。
   const [videoModel] = useState<string>('minimax/minimax-h3');
   const [prompt, setPrompt] = useState('');
+  /**
+   * 🔴 输入框里**显示**的是中文镜像；提交给视频模型的永远是 `prompt`（英文原文）。
+   * 两层关系不变：`prompt` 才是 `saveConfig` / 历史 / `finalPrompt` 的唯一来源。
+   *
+   * `promptLocked` = 这份提示词由脚本生成（不是用户自己敲的）⇒ 不可手改，可切中英显示；
+   * 空白框（手工写提示词的入口）不锁，边打边显示英文。
+   */
+  const [promptLocked, setPromptLocked] = useState(false);
+  const [promptLang, setPromptLang] = useState<'zh' | 'en'>('zh');
+  const [promptZh, setPromptZh] = useState<{ zh: string; from: string } | null>(null);
+  const [promptZhPending, setPromptZhPending] = useState(false);
+  // 只在**取失败之后**才提示「暂不可用」，否则首帧会闪一下琥珀色警告
+  const [promptZhFailed, setPromptZhFailed] = useState(false);
   const [gridFrames, setGridFrames] = useState<string[]>(initialGridFrames);
 
+  // 中文显示镜像（只给人看）。指纹不匹配即视为过期，立刻退回英文原文。
+  const promptFp = useMemo(() => promptFingerprint(prompt), [prompt]);
+  const promptZhText = promptZh && promptZh.from === promptFp ? promptZh.zh : null;
+  /**
+   * 🔴 2026-10-28 二次定调：**提示词本体就是中文**（写手出中文、用户可改中文），
+   *    英文只在点「生成视频」那一刻由回译规则产出。
+   *    所以「显示中文」不再依赖镜像：正文本身是中文 ⇒ 直接显示、直接编辑；
+   *    只有**老会话**（正文是英文）才走镜像显示。
+   */
+  const promptIsChinese = useMemo(() => (prompt.trim() ? looksChineseWritten(prompt) : false), [prompt]);
+  const showingMirror = promptLocked && promptLang === 'zh' && !promptIsChinese;
+  // 🔴 中文是**默认显示**的那一份（用户定调「chat 页面和这里默认都显示中文」）。
+  //    译文还没回来时**不退回英文** —— 那会让人以为产品默认就是英文；
+  //    框里留空、只显示「正在生成中文对照…」，等译文到了再填进去。
+  //    ⚠️ 只有**取不到**（`promptZhFailed`）才退回英文原文，并给出提示。
+  const promptMirrorWaiting =
+    showingMirror && !promptZhText && !promptZhFailed && Boolean(prompt.trim());
+  const displayPrompt = showingMirror ? (promptZhText ?? (promptZhFailed ? prompt : '')) : prompt;
+
+  // 🔴 只在**英文正文 + 要显示中文镜像**时取镜像：手工输入时每敲一个字都会变指纹，会把网关打穿。
+  useEffect(() => {
+    if (!promptLocked || promptIsChinese || !prompt.trim()) return;
+    let cancelled = false;
+    setPromptZhPending(true);
+    setPromptZhFailed(false);
+    getPromptMirror(prompt).then((res) => {
+      if (cancelled) return;
+      setPromptZhPending(false);
+      if (res.zh) setPromptZh({ zh: res.zh, from: promptFp });
+      else setPromptZhFailed(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [promptLocked, promptIsChinese, promptFp, prompt]);
+
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>(initRefImages);
-  const [referenceVoice, setReferenceVoice] = useState<ReferenceVoice | null>(null);
+  // 音色参考：最多 3 段，每段可绑定一个角色（官方 r2va）。第一段同时写进旧的单段字段。
+  const [referenceVoices, setReferenceVoices] = useState<ReferenceVoice[]>([]);
+  // 音色参考的本地校验提示（格式/体积/时长），只影响上传入口，不写入任何持久化
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
+  /**
+   * 选文件 → 前端按官方规格先拦一道（WAV/MP3、≤15MB、单段 2–15 秒、最多 3 段、合计 ≤15 秒）。
+   * 后端 `video_voice_ref.rs` 会再校验一次（含 ffmpeg 探时长），这里只是省掉一次无效提交。
+   */
+  const handleAddVoice = () => {
+    if (referenceVoices.length >= VOICE_REF_MAX_COUNT) {
+      setVoiceError(t('videoGen.voiceCountError', { max: VOICE_REF_MAX_COUNT }));
+      return;
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = VOICE_REF_ACCEPT;
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      if (!isAllowedVoiceFile(file)) {
+        setVoiceError(t('videoGen.voiceFormatError'));
+        return;
+      }
+      if (file.size > VOICE_REF_MAX_BYTES) {
+        setVoiceError(t('videoGen.voiceSizeError'));
+        return;
+      }
+      const seconds = await readAudioDuration(file);
+      if (seconds !== null && (seconds < VOICE_REF_MIN_SECS || seconds > VOICE_REF_MAX_SECS)) {
+        setVoiceError(t('videoGen.voiceDurationError', { seconds: seconds.toFixed(1) }));
+        return;
+      }
+      // 总时长 ≤15 秒（官方上限）。时长读不出来的段不计入，交给后端 ffmpeg 兜底。
+      const knownTotal = referenceVoices.reduce((sum, v) => sum + (v.durationSecs ?? 0), 0);
+      if (seconds !== null && knownTotal + seconds > VOICE_REF_TOTAL_SECS + 0.05) {
+        setVoiceError(t('videoGen.voiceTotalDurationError', { max: VOICE_REF_TOTAL_SECS }));
+        return;
+      }
+      setVoiceError(null);
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        setReferenceVoices((prev) => [
+          ...prev,
+          {
+            id: `voice-${Date.now()}-${prev.length}`,
+            rawUrl: dataUrl,
+            url: dataUrl,
+            fileName: file.name,
+            durationSecs: seconds ?? undefined,
+          },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  };
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   // 本地路径需转为 Tauri asset URL 才能在 webview 中播放
   const displayVideoUrl = useMemo(() => {
@@ -654,14 +853,16 @@ function VideoGenDialogInner({
         videoModel,
         videoUrl: videoUrl ?? existingCfg?.videoUrl,
         referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
-        referenceVoice: referenceVoice ?? existingCfg?.referenceVoice,
+        // 音色参考：新数组是权威源；旧的单段字段继续写第一段（向后兼容老版本读取）
+        referenceVoice: referenceVoices[0] ?? undefined,
+        referenceVoices: referenceVoices.length > 0 ? referenceVoices : undefined,
         pendingTaskId: pendingTaskId ?? existingCfg?.pendingTaskId,
         pendingCreditsDeducted: creditsDeducted || existingCfg?.pendingCreditsDeducted,
         gridFrames: gridFrames.length > 0 ? gridFrames : existingCfg?.gridFrames,
       });
     }, 300);
     return () => clearTimeout(timer);
-  }, [prompt, aspectRatio, duration, videoModel, videoUrl, referenceImages, referenceVoice, pendingTaskId, creditsDeducted, saveConfig, hydrated]);
+  }, [prompt, aspectRatio, duration, videoModel, videoUrl, referenceImages, referenceVoices, pendingTaskId, creditsDeducted, saveConfig, hydrated]);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
@@ -759,7 +960,8 @@ function VideoGenDialogInner({
               videoModel,
               videoUrl: finalVideoPath,
               referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
-              referenceVoice: referenceVoice ?? undefined,
+              referenceVoice: referenceVoices[0] ?? undefined,
+              referenceVoices: referenceVoices.length > 0 ? referenceVoices : undefined,
               gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
             };
             if (nodeIdRef.current) {
@@ -790,7 +992,8 @@ function VideoGenDialogInner({
                 pendingTaskId: undefined,
                 pendingCreditsDeducted: undefined,
                 referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
-                referenceVoice: referenceVoice ?? undefined,
+                referenceVoice: referenceVoices[0] ?? undefined,
+                referenceVoices: referenceVoices.length > 0 ? referenceVoices : undefined,
                 gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
               });
             }
@@ -953,6 +1156,8 @@ function VideoGenDialogInner({
     // 去除 @图N 引用——C1 Fusion 模式使用宫格图作参考，@图N 语法无效
     const cleaned = selectedPrompt.replace(/@图\d+[的所示中指]*/g, '').replace(/  +/g, ' ').trim();
     setPrompt(cleaned);
+    // 从分镜提取来的一律是生成结果 ⇒ 锁；万一提取到的是用户别处贴的散文，则不锁。
+    setPromptLocked(looksGeneratedPrompt(cleaned));
     if (frames?.length) setGridFrames(frames);
     setShowPromptPicker(false);
   }, []);
@@ -1048,7 +1253,9 @@ function VideoGenDialogInner({
   const insertPictureRef = useCallback((index: number) => {
     const marker = `<Picture ${index + 1}>`;
     const el = textareaRef.current;
-    if (!el) {
+    // 🔴 锁定态下输入框显示的是**中文镜像**，光标位置对不上英文原文（`el.value` 是中文），
+    //    绝不能拿它的 slice 拼回 `prompt` —— 会把中文写进提交串。一律追加到英文末尾。
+    if (promptLocked || !el) {
       setPrompt((prev) => (prev ? `${prev} ${marker}` : marker));
       return;
     }
@@ -1061,7 +1268,7 @@ function VideoGenDialogInner({
       const pos = start + marker.length;
       el.setSelectionRange(pos, pos);
     });
-  }, []);
+  }, [promptLocked]);
 
 
   // 参考图上限：走 videoPricing 的统一常量（9），与后端 H3 的 MAX_REF_IMAGES 对齐。
@@ -1156,7 +1363,33 @@ function VideoGenDialogInner({
         rememberDTagAudit(dAudit);
       }
 
-      const userContent = dAudit.text;
+      // 🔴 2026-10-28 产品定调：提示词**全程中文**（写手出中文、用户可改中文），
+      //    只在提交这一刻翻成官方英文正文交给 H3 —— 回译规则是一份独立规则
+      //    （`src-tauri/src/commands/translate_rules/prompt_to_english.md`）。
+      //    ⚠️ 翻不出来**不能退回中文原文提交**：规则头要求英文正文，中英混排正是
+      //    「旁白听不懂 / 旁白时人物张嘴」的病根，花钱换一段坏片不值得 ⇒ 直接报错让用户重试。
+      const rawContent = dAudit.text;
+      const needsTranslation = looksChineseWritten(rawContent);
+      const translatedForH3 = needsTranslation ? await translatePromptForSubmit(rawContent) : null;
+      if (needsTranslation && !translatedForH3) {
+        console.error('[VideoGenDialog] 提示词回译失败，已拦截提交');
+        setIsGenerating(false);
+        setGenerationPhase(null);
+        setQueueAhead(0);
+        queueTokenRef.current = null;
+        setError(
+          t('videoGen.promptTranslateFailed', {
+            defaultValue: '提示词翻译成英文失败，请稍后重试（不会扣费）。',
+          })
+        );
+        return;
+      }
+      const userContent = translatedForH3 ?? rawContent;
+      if (translatedForH3) {
+        console.log(
+          `[VideoGenDialog] 提示词已回译为英文：${rawContent.length} → ${translatedForH3.length} 字`
+        );
+      }
 
       // 2.5 shotFrameMap 保留在节点缓存中（用于后续分析/调试），
       // 但不再注入图N引用到 prompt。
@@ -1170,9 +1403,47 @@ function VideoGenDialogInner({
       const guidanceScale = rules.guidance_scale;
       const shotType = rules.shot_type;
 
+      // 🔴 兜底（2026-10-28 实测事故）：App.tsx 里 `hydrateVideoGenStore()` 是 fire-and-forget，
+      // 弹窗可能在配置读盘完成前就被点「生成」——本地 state 还是空的，界面却已通过
+      // savedConfig 渲染出音色，结果请求带着 audio=0 发出去。本地为空时改用节点已持久化的
+      // 音色（只读，不写回，不碰回填/持久化链路）。
+      const storedVoices: ReferenceVoice[] = (() => {
+        const cfg = nodeIdRef.current
+          ? useVideoGenStore.getState().configs[nodeIdRef.current]
+          : undefined;
+        if (!cfg) return [];
+        if (cfg.referenceVoices?.length) return cfg.referenceVoices;
+        return cfg.referenceVoice ? [cfg.referenceVoice] : [];
+      })();
+      const voicesForSubmit = referenceVoices.length > 0 ? referenceVoices : storedVoices;
+
       // 规则头尾句（代码层 100% 可靠追加，AI 无法遗忘）
-      finalPrompt = assembleVideoPrompt(promptRule, userContent);
+      // 带音色参考时，后端还要往六段里补 `<Audio N>` 声明 / reference 标记 / 内联引用，
+      // 这部分字数要从规则头预算里先扣掉，否则拼接后可能越过上游 7000 字上限。
+      const audioReserve = voicesForSubmit.length > 0
+        ? 120 + voicesForSubmit.length * 240
+        : 0;
+      finalPrompt = assembleVideoPrompt(promptRule, userContent, audioReserve);
       console.log(`[VideoGenDialog] MiniMax H3, mode:`, mode, 'refs:', referenceImages.length, 'hasRule:', !!promptRule, 'hasNegPrompt:', !!negativePrompt, 'guidanceScale:', guidanceScale, 'shotType:', shotType, 'promptLen:', finalPrompt.length, 'ruleLen:', promptRule.length, 'bodyLen:', userContent.length);
+
+      // 🔴 提交闸口（2026-10-28 用户定调）：视频模型对**整段提交内容**（规则头 + 正文）
+      //    的硬限是 7000 字符，超了任务根本建不出来（`Params [Prompt], should be in [1, 7000]`）。
+      //    这里在**扣费之前**拦住，直接告诉用户去缩减提示词，别让他花了钱才看到失败。
+      if (finalPrompt.length > PROMPT_HARD_LIMIT) {
+        console.warn('[VideoGenDialog] 提示词超过硬限，已拦截提交:', finalPrompt.length);
+        setIsGenerating(false);
+        setGenerationPhase(null);
+        setQueueAhead(0);
+        queueTokenRef.current = null;
+        setError(
+          t('videoGen.promptTooLongGate', {
+            len: finalPrompt.length,
+            limit: PROMPT_HARD_LIMIT,
+            defaultValue: `提示词共 ${finalPrompt.length} 字，超过 ${PROMPT_HARD_LIMIT} 字上限，容易导致生成失败，建议缩减提示词后重试。`,
+          })
+        );
+        return;
+      }
 
       // 4. 准备参考图 — 直接用 base64
       const imageInput: string[] = [];
@@ -1188,24 +1459,26 @@ function VideoGenDialogInner({
         }
       }
 
-      // 准备音色参考 audio data URL
-      let voiceUrl: string | undefined;
-      if (referenceVoice) {
+      // 准备音色参考 audio data URL（最多 3 段，顺序即提示词里的 reference audio 序号）
+      const voiceRefs: Array<{ dataUrl: string; character?: string }> = [];
+      for (const voice of voicesForSubmit.slice(0, VOICE_REF_MAX_COUNT)) {
         try {
-          const rawUrl = referenceVoice.rawUrl;
+          const rawUrl = voice.rawUrl;
+          let dataUrl: string;
           if (rawUrl.startsWith('data:')) {
-            voiceUrl = rawUrl;
+            dataUrl = rawUrl;
           } else {
             // Read audio file via fetch + FileReader → base64 data URL
             const response = await fetch(rawUrl);
             const blob = await response.blob();
-            voiceUrl = await new Promise<string>((resolve, reject) => {
+            dataUrl = await new Promise<string>((resolve, reject) => {
               const reader = new FileReader();
               reader.onload = () => resolve(reader.result as string);
               reader.onerror = () => reject(new Error('Failed to read audio file'));
               reader.readAsDataURL(blob);
             });
           }
+          voiceRefs.push({ dataUrl, character: sanitizeCharacterName(voice.character) });
         } catch (e) {
           console.warn('[VideoGenDialog] failed to read voice file:', e);
         }
@@ -1218,7 +1491,7 @@ function VideoGenDialogInner({
         resolution,
         durationSeconds: duration,
         imageInput,
-        voiceUrl,
+        voiceRefs,
         negativePrompt: negativePrompt || undefined,
         guidanceScale,
         shotType,
@@ -1272,7 +1545,8 @@ function VideoGenDialogInner({
             videoModel,
             videoUrl: finalVideoPath,
             referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
-            referenceVoice: referenceVoice ?? undefined,
+            referenceVoice: voicesForSubmit[0] ?? undefined,
+            referenceVoices: voicesForSubmit.length > 0 ? voicesForSubmit : undefined,
             gridFrames: gridFrames.length > 0 ? gridFrames : undefined,
           };
           if (nodeIdRef.current) {
@@ -1299,6 +1573,9 @@ function VideoGenDialogInner({
               pendingTaskId: result.taskId,
               pendingCreditsDeducted: deducted,
               referenceImageUrls: referenceImages.map(({ id, rawUrl, url }) => ({ id, rawUrl, url })),
+              // 这条保存会整体覆盖节点配置：不带音色就会把已挂上的音色从盘上抹掉
+              referenceVoice: voicesForSubmit[0] ?? undefined,
+              referenceVoices: voicesForSubmit.length > 0 ? voicesForSubmit : undefined,
             });
           }
           startPolling(result.taskId, false, deducted, videoModel);
@@ -1562,14 +1839,50 @@ function VideoGenDialogInner({
                 <label className="text-xs font-medium text-text-muted">
                   {t('videoGen.prompt', '提示词')}
                 </label>
-                <button
-                  type="button"
-                  onClick={() => setShowPromptPicker(true)}
-                  className="text-xs text-purple-400 hover:text-purple-300 transition-colors"
-                >
-                  {t('videoGen.extractFromStoryboard', '从分镜提取')}
-                </button>
+                <div className="flex items-center gap-2">
+                  {showingMirror && prompt.trim().length > 0 && (
+                    <div
+                      className="flex items-center overflow-hidden rounded-md border border-[rgba(255,255,255,0.12)] text-[11px]"
+                      role="group"
+                      aria-label={t('chat.prompt.langToggle')}
+                    >
+                      {(['zh', 'en'] as const).map((key) => (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setPromptLang(key)}
+                          className={`
+                            px-1.5 py-0.5 transition-colors
+                            ${promptLang === key
+                              ? 'bg-purple-500/20 font-medium text-purple-300'
+                              : 'text-text-muted hover:text-text'}
+                          `}
+                        >
+                          {key === 'zh' ? t('chat.prompt.langZh') : t('chat.prompt.langEn')}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowPromptPicker(true)}
+                    className="text-xs text-purple-400 hover:text-purple-300 transition-colors"
+                  >
+                    {t('videoGen.extractFromStoryboard', '从分镜提取')}
+                  </button>
+                </div>
               </div>
+
+              {promptLocked && promptLang === 'zh' && promptZhPending && !promptZhText && (
+                <div className="mb-1 text-[11px] text-text-muted">
+                  {t('chat.prompt.mirrorPending')}
+                </div>
+              )}
+              {promptLocked && promptLang === 'zh' && promptZhFailed && !promptZhText && (
+                <div className="mb-1 text-[11px] text-amber-500">
+                  {t('chat.prompt.mirrorFailed')}
+                </div>
+              )}
 
               <div className="relative">
                 {/* 高亮叠加层：对 `<Picture N>` / @图N 着色，其余透明，露出下方 textarea 文字 */}
@@ -1579,8 +1892,8 @@ function VideoGenDialogInner({
                   style={{ fontFamily: 'inherit', lineHeight: '1.5', wordBreak: 'break-word' }}
                   ref={(el) => { highlightRef.current = el; }}
                 >
-                  {prompt
-                    ? prompt.split(/(<Picture \d+>|@图\d+)/g).map((part, i) =>
+                  {displayPrompt
+                    ? displayPrompt.split(/(<Picture \d+>|@图\d+)/g).map((part, i) =>
                         /^(<Picture \d+>|@图\d+)$/.test(part) ? (
                           <mark key={i} className="rounded-sm bg-purple-500/20 text-purple-300 font-medium">
                             {part}
@@ -1593,9 +1906,17 @@ function VideoGenDialogInner({
                 </div>
                 <textarea
                   ref={textareaRef}
-                  value={prompt}
+                  value={displayPrompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  placeholder={t('videoGen.promptPlaceholder', '描述你想要生成的视频内容...')}
+                  // 🔴 2026-10-28 用户定调：**提示词可以手改**（chat 页与这里都能改）。
+                  //    正文是中文 ⇒ 直接编辑；提交那一刻由回译规则译成官方英文。
+                  //    只有「英文老会话 + 想看中文镜像」这一种情况是只读（镜像不是真相源）。
+                  readOnly={showingMirror}
+                  placeholder={
+                    promptMirrorWaiting
+                      ? t('chat.prompt.mirrorPending')
+                      : t('videoGen.promptPlaceholder', '描述你想要生成的视频内容...')
+                  }
                   rows={13}
                   className="relative w-full resize-none rounded-lg border border-[rgba(255,255,255,0.12)] bg-transparent px-3 py-2 text-sm placeholder-text-muted focus:outline-none"
                   style={{ lineHeight: '1.5', wordBreak: 'break-word' }}
@@ -1605,6 +1926,11 @@ function VideoGenDialogInner({
                   }}
                 />
               </div>
+              {promptIsChinese && prompt.trim().length > 0 && (
+                <div className="mt-1 text-[11px] text-text-muted/70">
+                  {t('videoGen.promptEditableHint')}
+                </div>
+              )}
             </div>
 
             {/* Reference images */}
@@ -1695,47 +2021,90 @@ function VideoGenDialogInner({
                 )}
               </div>
 
-              {/* 音色参考上传 —— 当前线路丢弃该参数，入口暂时下线（见 VOICE_REF_UI_ENABLED） */}
+              {/* 音色参考上传 —— 官方 r2va 的 reference_audio
+                  （WAV/MP3、单段 2–15 秒、≤15MB、最多 3 段、总时长 ≤15 秒）
+                  每段可绑定一个角色，提交时按序号写进提示词，指明这段声音由谁发出。 */}
               {VOICE_REF_UI_ENABLED && (
                 <div className="mt-4">
                   <label className="mb-1.5 block text-xs font-medium text-text-muted">
-                    {t('videoGen.voiceRef', '音质参考（可选）')}
+                    {t('videoGen.voiceRef')}
                   </label>
-                  {referenceVoice ? (
-                    <div className="flex items-center gap-2 rounded-lg border border-[rgba(255,255,255,0.1)] bg-bg-dark px-3 py-2">
-                      <span className="flex-1 truncate text-xs text-text-dark">{referenceVoice.fileName}</span>
-                      <button type="button" onClick={() => setReferenceVoice(null)} className="text-text-muted hover:text-red-400">
-                        <X className="h-4 w-4" />
+                  <div className="space-y-2">
+                    {referenceVoices.map((voice, index) => (
+                      <div
+                        key={voice.id}
+                        className="rounded-lg border border-[rgba(255,255,255,0.1)] bg-bg-dark px-3 py-2"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="shrink-0 rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] font-medium text-purple-300">
+                            #{index + 1}
+                          </span>
+                          <span className="flex-1 truncate text-xs text-text-dark">{voice.fileName}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReferenceVoices((prev) => prev.filter((v) => v.id !== voice.id));
+                              setVoiceError(null);
+                            }}
+                            className="text-text-muted hover:text-red-400"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                        {/* 这段声音属于谁：项目「人物」资产逐个列出 + 旁白（画外音），点选一个即可。
+                            再点一次已选中的可取消。旁白不是角色，后端会写成官方的 `off-screen voiceover`。 */}
+                        <div className="mt-1.5">
+                          <p className="mb-1 text-[11px] text-text-muted">
+                            {t('videoGen.voiceOwnerPlaceholder')}
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {voiceOwnerOptions.map((label) => {
+                              const active = (voice.character ?? '').trim() === label;
+                              return (
+                                <button
+                                  key={label}
+                                  type="button"
+                                  onClick={() =>
+                                    setReferenceVoices((prev) =>
+                                      prev.map((v) =>
+                                        v.id === voice.id
+                                          ? { ...v, character: active ? '' : label }
+                                          : v,
+                                      ),
+                                    )
+                                  }
+                                  className={`rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                                    active
+                                      ? 'border-purple-400/60 bg-purple-500/15 text-purple-300'
+                                      : 'border-[rgba(255,255,255,0.12)] text-text-muted hover:border-purple-400/40 hover:text-purple-300'
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    {referenceVoices.length < VOICE_REF_MAX_COUNT && (
+                      <button
+                        type="button"
+                        onClick={handleAddVoice}
+                        className="flex h-9 items-center gap-1.5 rounded-lg border border-dashed border-[rgba(255,255,255,0.15)] bg-bg-dark px-3 text-xs text-text-muted transition-colors hover:border-purple-400/40 hover:text-purple-300"
+                      >
+                        <Upload className="h-4 w-4" />
+                        {referenceVoices.length === 0
+                          ? t('videoGen.uploadVoice')
+                          : t('videoGen.addVoice')}
                       </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const input = document.createElement('input');
-                        input.type = 'file';
-                        input.accept = 'audio/*';
-                        input.onchange = async (e) => {
-                          const file = (e.target as HTMLInputElement).files?.[0];
-                          if (!file) return;
-                          const reader = new FileReader();
-                          reader.onload = () => {
-                            setReferenceVoice({
-                              id: `voice-${Date.now()}`,
-                              rawUrl: reader.result as string,
-                              url: reader.result as string,
-                              fileName: file.name,
-                            });
-                          };
-                          reader.readAsDataURL(file);
-                        };
-                        input.click();
-                      }}
-                      className="flex h-9 items-center gap-1.5 rounded-lg border border-dashed border-[rgba(255,255,255,0.15)] bg-bg-dark px-3 text-xs text-text-muted transition-colors hover:border-purple-400/40 hover:text-purple-300"
-                    >
-                      <Upload className="h-4 w-4" />
-                      {t('videoGen.uploadVoice', '上传音质参考')}
-                    </button>
+                    )}
+                  </div>
+                  {referenceVoices.length === 0 && !voiceError && (
+                    <p className="mt-1.5 text-xs text-text-muted">{t('videoGen.voiceHint')}</p>
+                  )}
+                  {voiceError && (
+                    <p className="mt-1.5 text-xs text-red-400">{voiceError}</p>
                   )}
                 </div>
               )}
@@ -1866,6 +2235,7 @@ function VideoGenDialogInner({
                             }
                             setVideoUrl(entry.videoUrl ?? null);
                             setPrompt(entry.prompt);
+                            setPromptLocked(looksGeneratedPrompt(entry.prompt));
                             setAspectRatio(entry.aspectRatio);
                             setDuration(entry.duration);
                             setShowHistory(false);
@@ -1940,7 +2310,8 @@ function VideoGenDialogInner({
               <button
                 type="button"
                 onClick={handleGenerate}
-                disabled={isGenerating}
+                // 配置读盘未完成前不许提交：否则音色/提示词等回填还没到，请求会漏参
+                disabled={isGenerating || !hydrated}
                 className="flex h-9 items-center gap-1.5 rounded-lg bg-purple-500/80 px-4 text-xs font-medium text-white transition-colors hover:bg-purple-500 disabled:opacity-40"
               >
                 <Sparkles className="h-3.5 w-3.5" />

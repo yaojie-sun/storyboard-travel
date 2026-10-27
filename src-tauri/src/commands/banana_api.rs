@@ -2750,7 +2750,7 @@ pub async fn banana_submit_video_job(
     image_input: Vec<String>,
     video_input: Option<Vec<String>>,
     model: Option<String>,
-    voice_url: Option<String>,
+    voice_refs: Option<Vec<crate::commands::video_voice_ref::VoiceRefInput>>,
     negative_prompt: Option<String>,
     guidance_scale: Option<f64>,
     shot_type: Option<String>,
@@ -2798,6 +2798,36 @@ pub async fn banana_submit_video_job(
             "currentCredits": current_credits
         }));
     }
+
+    // 3.5 音色参考音频本地校验（官方 r2va：WAV/MP3、≤15MB、单段 2–15 秒、最多 3 段、合计 ≤15 秒）。
+    //     🔴 必须早于取槽与扣费：不合规的音频在本地拦掉，不要「扣了钱、上游 400、再退费」，
+    //     也不要在排队重发时白占一个槽位。
+    let voice_refs: Vec<crate::commands::video_voice_ref::VoiceReference> = match voice_refs {
+        Some(inputs) if !inputs.is_empty() => {
+            let app_for_voice = app.clone();
+            match tauri::async_runtime::spawn_blocking(move || {
+                crate::commands::video_voice_ref::validate_all(&app_for_voice, &inputs)
+            })
+            .await
+            {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
+                    warn!("[VoiceRef] 校验未通过: {}", e);
+                    return Ok(serde_json::json!({
+                        "success": false,
+                        "error": format!("VOICE_REF: {}", e)
+                    }));
+                }
+                Err(e) => {
+                    return Ok(serde_json::json!({
+                        "success": false,
+                        "error": format!("VOICE_REF: 音色参考校验失败（{}），请重试或移除后重新生成", e)
+                    }));
+                }
+            }
+        }
+        _ => Vec::new(),
+    };
 
     // 4. 根据模型选择 Provider（仅境内供应商）
     //    密钥解析放在扣费之前：密钥缺失属配置问题，不应先扣后退。
@@ -2923,25 +2953,36 @@ pub async fn banana_submit_video_job(
         }
     }
 
-    // 上传音色参考音频到七牛云
-    if let Some(ref voice) = voice_url {
-        if !voice.is_empty() {
-            let ext = if voice.contains("audio/wav") || voice.contains("audio/wave") { "wav" }
-                else if voice.contains("audio/mp3") || voice.contains("audio/mpeg") { "mp3" }
-                else if voice.contains("audio/flac") { "flac" }
-                else { "mp3" };
-            let user_id = crate::sync::get_current_user_id().unwrap_or_else(|| "unknown".to_string());
-            match upload_single_ref_to_qiniu_with_ext(voice, &user_id, ext).await {
-                Ok(qiniu_url) => {
-                    info!("[Qiniu] uploaded voice ref → {}", qiniu_url);
-                    extra_params.insert("reference_voice".to_string(), serde_json::json!(qiniu_url));
-                }
-                Err(e) => {
-                    warn!("[Qiniu] voice upload failed, fallback to original: {}", e);
-                    extra_params.insert("reference_voice".to_string(), serde_json::json!(voice));
-                }
+    // 音色参考（官方 r2va：`content[]` 里 type=audio_url / role=reference_audio）
+    // 走 base64 DataURL 直传，和参考图同一条链路 —— compshare 直连拉不到七牛 CDN，
+    // 传七牛只会得到一个上游取不到的公网地址。规格校验已在 3.5 步做完。
+    if !voice_refs.is_empty() {
+        for (index, voice) in voice_refs.iter().enumerate() {
+            match voice.duration_secs {
+                Some(secs) => info!(
+                    "[VoiceRef] #{} 已附带音色参考: {:.1}s, 角色={}",
+                    index + 1,
+                    secs,
+                    voice.character.as_deref().unwrap_or("-")
+                ),
+                None => info!(
+                    "[VoiceRef] #{} 已附带音色参考（时长未探测）, 角色={}",
+                    index + 1,
+                    voice.character.as_deref().unwrap_or("-")
+                ),
             }
         }
+        // 顺序即提示词里的 `reference audio N` 序号：前端按 UI 顺序提交，这里原样保序。
+        let voices: Vec<serde_json::Value> = voice_refs
+            .iter()
+            .map(|voice| {
+                serde_json::json!({
+                    "url": voice.data_url,
+                    "character": voice.character,
+                })
+            })
+            .collect();
+        extra_params.insert("reference_voices".to_string(), serde_json::json!(voices));
     }
 
     // 5a. MiniMax via compshare 用 base64 直传（compshare 无法下载 Qiniu CDN URL）

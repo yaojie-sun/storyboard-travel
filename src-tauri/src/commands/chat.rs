@@ -291,7 +291,7 @@ fn extract_openai_text(response: &serde_json::Value) -> String {
 ///    而内容过滤造成的空响应重发也是同一结果、白花一次调用。
 ///
 /// 抽出来只为让「重试一次」这件事只写一遍；请求形状与本函数出现之前**逐字一致**。
-async fn call_gateway_once(
+pub(crate) async fn call_gateway_once(
     client: &reqwest::Client,
     api_key: &str,
     system_prompt: &str,
