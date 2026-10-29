@@ -11,7 +11,10 @@ import { useAssetStore } from '@/stores/assetStore';
 import { resolveImageDisplayUrl, imageUrlToDataUrl } from '@/features/canvas/application/imageData';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
 import { bananaSubmitVideoJob, bananaPollVideoJob, bananaCheckCredits, bananaReportUsage, bananaRefundCredits, bananaVideoQueueStatus, bananaCancelQueuedVideoJob } from '@/commands/ai';
-import { enhanceVideo } from '@/commands/enhance';
+import { enhanceVideo, enhanceVideoAi, probeSrCapability, type SrCapability } from '@/commands/enhance';
+
+/** 本地增强目标：短边 1536（2K 档，1344×768 → 2688×1536）；两条链路共用同一档位 */
+const LOCAL_ENHANCE_SHORT_EDGE = 1536;
 import { RechargeDialog } from '@/components/RechargeDialog';
 import { UiModal, UiChipButton } from '@/components/ui';
 import { StoryboardPromptPicker } from './StoryboardPromptPicker';
@@ -872,6 +875,8 @@ function VideoGenDialogInner({
   const [queueAhead, setQueueAhead] = useState(0);
   const [isLocalEnhancing, setIsLocalEnhancing] = useState(false);
   const [localEnhanceProgress, setLocalEnhanceProgress] = useState(0);
+  /** 本机 AI 超分能力：null = 还在探测。探不到就只用快速档，用户不需要做任何选择 */
+  const [srCap, setSrCap] = useState<SrCapability | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const submitParamsRef = useRef<{ aspectRatio: string; duration: number; videoModel: string; refUrls: string[]; negativePrompt?: string } | null>(null);
@@ -1622,26 +1627,86 @@ function VideoGenDialogInner({
     };
   }, []);
 
+  /** 本机能力探测：整个会话只跑一次（内部缓存），探测失败静默降级为只用快速档 */
+  useEffect(() => {
+    let alive = true;
+    probeSrCapability()
+      .then((cap) => {
+        if (alive) setSrCap(cap);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /** 探测结果要经 ref 读：`autoEnhanceTo2K` 会被更早定义的轮询/生成回调捕获，
+   *  那些 useCallback 不会因探测完成而重建 —— 直接读 state 会永远停在 srCap=null 那一版。 */
+  const srCapRef = useRef<SrCapability | null>(null);
+  srCapRef.current = srCap;
+
+  /** AI 逐帧重建的真实进度（后端 `enhance-video-progress`），只有 AI 档会用上 */
+  useEffect(() => {
+    if (!isLocalEnhancing) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<{ percent: number }>('enhance-video-progress', (event) => {
+          if (!cancelled) setLocalEnhanceProgress(event.payload?.percent ?? 0);
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [isLocalEnhancing]);
+
   const autoEnhanceTo2K = useCallback(async (localVideoPath: string): Promise<string> => {
+    // 档位由程序自己定：本机实测能跑 AI 重建就用（探测里含一次微基准），否则走快速档。
+    // 用户不选、也看不到这个选择。
+    const useAi = !!srCapRef.current?.aiAvailable;
     setIsLocalEnhancing(true);
     setLocalEnhanceProgress(0);
-    // 模拟进度条：0→90% 约 3 分钟，完成后跳到 100%
-    const progressTimer = setInterval(() => {
-      setLocalEnhanceProgress(prev => {
-        if (prev >= 90) return prev;
-        const increment = Math.random() * 6 + 2;
-        return Math.min(90, prev + increment);
-      });
-    }, 2500);
+    // 快速档只有几秒、拿不到逐帧进度，用模拟进度条顶着；AI 档显示后端真实进度
+    const progressTimer = useAi
+      ? null
+      : setInterval(() => {
+          setLocalEnhanceProgress(prev => {
+            if (prev >= 90) return prev;
+            const increment = Math.random() * 6 + 2;
+            return Math.min(90, prev + increment);
+          });
+        }, 2500);
     try {
-      const result = await enhanceVideo(localVideoPath, 2);
+      if (useAi) {
+        const result = await enhanceVideoAi(localVideoPath, LOCAL_ENHANCE_SHORT_EDGE);
+        setLocalEnhanceProgress(100);
+        return result;
+      }
+      const result = await enhanceVideo(localVideoPath, 2, LOCAL_ENHANCE_SHORT_EDGE);
       setLocalEnhanceProgress(100);
       return result;
     } catch (e: any) {
-      console.warn('[VideoGenDialog] auto local upscale to 2K failed, fallback to original:', e);
+      console.warn('[VideoGenDialog] auto local upscale to 2K failed:', e);
+      // AI 档失败（驱动/显存抖动）时退回快速档，别让用户白等一场
+      if (useAi) {
+        try {
+          const result = await enhanceVideo(localVideoPath, 2, LOCAL_ENHANCE_SHORT_EDGE);
+          setLocalEnhanceProgress(100);
+          return result;
+        } catch (fallbackErr) {
+          console.warn('[VideoGenDialog] fallback upscale failed, keep original:', fallbackErr);
+        }
+      }
       return localVideoPath;
     } finally {
-      clearInterval(progressTimer);
+      if (progressTimer) clearInterval(progressTimer);
       setIsLocalEnhancing(false);
     }
   }, []);

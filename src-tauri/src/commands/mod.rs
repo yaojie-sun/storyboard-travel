@@ -3,6 +3,7 @@ pub mod asset;
 pub mod banana_api;
 pub mod chat;
 pub mod enhance;
+pub mod enhance_ai;
 pub mod image;
 pub mod project_state;
 pub mod prompt_repair;

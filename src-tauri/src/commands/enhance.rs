@@ -1,7 +1,8 @@
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
-use tracing::info;
+use tracing::{info, warn};
 
 /// 创建隐藏窗口的 Command（Windows 上禁止弹出 CMD 窗口）
 pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -13,6 +14,62 @@ pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+// ── 编码器选择 ────────────────────────────────────────────────────────────
+//
+// 自带 ffmpeg 编译进了 nvenc / qsv / amf（Windows）与 videotoolbox（macOS），
+// 但**编译进去 ≠ 本机能用**：没有对应硬件时编码直接失败。所以只能逐个试跑
+// 一次真实编码来确认，结果在进程内缓存（每台机器的硬件不会变）。
+
+const SOFTWARE_ENCODER: &str = "libx264";
+
+#[cfg(target_os = "windows")]
+const H264_HW_CANDIDATES: &[&str] = &["h264_nvenc", "h264_qsv", "h264_amf"];
+#[cfg(target_os = "macos")]
+const H264_HW_CANDIDATES: &[&str] = &["h264_videotoolbox"];
+#[cfg(all(unix, not(target_os = "macos")))]
+const H264_HW_CANDIDATES: &[&str] = &["h264_nvenc"];
+
+/// 该编码器能否在这台机器上真正跑完一次编码
+pub(crate) fn encoder_usable(ffmpeg: &Path, encoder: &str) -> bool {
+    hidden_command(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error"])
+        .args(["-f", "lavfi", "-i", "color=c=black:s=256x144:r=25:d=0.2"])
+        .args(["-c:v", encoder, "-frames:v", "2", "-f", "null", "-"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 选定 H.264 编码器：硬件优先，全部不可用才回退 libx264。进程内只探测一次。
+pub(crate) fn pick_h264_encoder(ffmpeg: &Path) -> &'static str {
+    static PICKED: OnceLock<String> = OnceLock::new();
+    PICKED
+        .get_or_init(|| {
+            for candidate in H264_HW_CANDIDATES {
+                if encoder_usable(ffmpeg, candidate) {
+                    info!("[Enhance] 硬件编码器可用: {}", candidate);
+                    return candidate.to_string();
+                }
+            }
+            info!("[Enhance] 无可用硬件编码器，回退 {}", SOFTWARE_ENCODER);
+            SOFTWARE_ENCODER.to_string()
+        })
+        .as_str()
+}
+
+/// 编码参数：硬件编码器的质量档位名各家不同，统一按「同码率」给。
+pub(crate) fn encoder_options(encoder: &str) -> &'static [&'static str] {
+    match encoder {
+        "h264_nvenc" => &["-c:v", "h264_nvenc", "-b:v", "50M", "-preset", "p5"],
+        "h264_qsv" => &["-c:v", "h264_qsv", "-b:v", "50M", "-preset", "medium"],
+        "h264_amf" => &["-c:v", "h264_amf", "-b:v", "50M", "-quality", "quality"],
+        "h264_videotoolbox" => &["-c:v", "h264_videotoolbox", "-b:v", "50M"],
+        _ => &["-c:v", "libx264", "-b:v", "50M"],
+    }
 }
 
 /// Maximum file size for enhanced images before auto-compression kicks in (40MB).
@@ -37,6 +94,46 @@ fn normalize_image_path(raw: &str) -> String {
         decoded.to_string()
     };
     normalized
+}
+
+/// 目标分辨率口径：按**短边**对齐到 1536（2K 档，横版约 2688x1536、竖版约 1536x2688）。
+/// 与前端 `LOCAL_ENHANCE_SHORT_EDGE` 保持一致。
+pub(crate) const DEFAULT_TARGET_SHORT_EDGE: u32 = 1536;
+
+/// libx264 + yuv420p 要求宽高为偶数，向下取偶并保证不小于 2
+pub(crate) fn even(v: u32) -> u32 {
+    (v & !1).max(2)
+}
+
+/// 把短边强制换算到 target（可升可降），保持原始宽高比。
+///
+/// 用于 AI 超分后收敛：推理倍数只有整数档位，结果通常高于目标（768×2=1536 → 1080）。
+pub(crate) fn dims_at_short_edge(width: u32, height: u32, target: u32) -> (u32, u32) {
+    if width == 0 || height == 0 {
+        return (even(width), even(height));
+    }
+    let short = width.min(height);
+    if short == target {
+        return (even(width), even(height));
+    }
+    let ratio = target as f64 / short as f64;
+    (even((width as f64 * ratio).round() as u32), even((height as f64 * ratio).round() as u32))
+}
+
+/// 按「短边达到 target」换算目标尺寸，保持原始宽高比。
+///
+/// - 源短边已不小于 target 时原样返回（只做偶数对齐），**绝不降分辨率**
+/// - 否则等比放大到短边 == target
+///
+/// 用于 ffmpeg 快速放大：只保证不偷工，不主动降质。
+pub(crate) fn fit_dims_to_short_edge(width: u32, height: u32, target: u32) -> (u32, u32) {
+    if width == 0 || height == 0 {
+        return (even(width), even(height));
+    }
+    if width.min(height) >= target {
+        return (even(width), even(height));
+    }
+    dims_at_short_edge(width, height, target)
 }
 
 /// 统一查找打包二进制（resource_dir 优先，CARGO_MANIFEST_DIR 开发回退）
@@ -164,6 +261,8 @@ pub async fn enhance_image(
     // 2. 定位 realesrgan 二进制
     let binary_name = if cfg!(target_os = "windows") {
         "realesrgan-ncnn-vulkan.exe"
+    } else if cfg!(target_os = "macos") {
+        "realesrgan-ncnn-vulkan-macos"
     } else {
         "realesrgan-ncnn-vulkan"
     };
@@ -255,10 +354,13 @@ pub async fn enhance_image(
 
 /// 使用 ffmpeg Lanczos 对视频进行本地超分
 ///
-/// 直接 ffmpeg lanczos scale → 编码，一条命令完成。秒级耗时，不依赖 GPU。
+/// 直接 ffmpeg lanczos scale（放大时叠加轻锐化 + 时域颗粒）→ 编码，一条命令完成。
+/// 秒级耗时，不依赖 GPU；编码优先走本机可用的硬件编码器（nvenc/qsv/amf/videotoolbox），
+/// 都不可用时回退 libx264。
 ///
 /// - `video_path`: 本地 mp4 文件路径
-/// - `scale`: 超分倍数，默认 2（可选 2/3/4）
+/// - `scale`: 超分倍数，默认 2（可选 2/3/4）；`target_short_edge` 给定时忽略
+/// - `target_short_edge`: 目标短边（2K 档为 1536），按比例换算目标分辨率
 /// - `model`: 保留参数（兼容旧接口），当前忽略
 ///
 /// 返回增强后的视频文件路径
@@ -267,6 +369,7 @@ pub async fn enhance_video(
     app: AppHandle,
     video_path: String,
     scale: Option<u32>,
+    target_short_edge: Option<u32>,
     model: Option<String>,
 ) -> Result<String, String> {
     let scale = scale.unwrap_or(2);
@@ -454,8 +557,11 @@ pub async fn enhance_video(
     };
     info!("[EnhanceVideo] 源分辨率: {}x{}", src_w, src_h);
 
-    let target_w = src_w * scale;
-    let target_h = src_h * scale;
+    // 目标分辨率：优先按目标短边等比换算（不降分辨率），否则退回固定倍数
+    let (target_w, target_h) = match target_short_edge {
+        Some(edge) if edge >= 240 => fit_dims_to_short_edge(src_w, src_h, edge),
+        _ => (src_w * scale, src_h * scale),
+    };
 
     info!(
         "[EnhanceVideo] Lanczos 超分: {}x{} -> {}x{} @ {}",
@@ -466,34 +572,54 @@ pub async fn enhance_video(
         output.display()
     );
 
-    // 5. ffmpeg Lanczos scale + 编码（libx264 通用软件编码，不挑显卡）
-    let scale_filter = format!(
-        "scale={}:{}:flags=lanczos",
-        target_w, target_h
-    );
+    // 5. Lanczos 放大 + 轻锐化 + 时域颗粒，然后编码
+    //
+    // 纯插值放大画面会发肉（细节没长出来，边缘还被抹钝），所以只在**真的放大**时
+    // 补一档很轻的锐化把边缘拉回来，再加一点逐帧变化的颗粒压住平滑区域的塑料感。
+    // 两者强度都很小：目标是「放大后的原片」，不是「另一张更精致的脸」。
+    let upscaling = target_w > src_w || target_h > src_h;
+    let mut video_filter = format!("scale={}:{}:flags=lanczos", target_w, target_h);
+    if upscaling {
+        video_filter.push_str(",unsharp=5:5:0.25:5:5:0,noise=c0s=3:allf=t");
+    }
 
-    let merge = hidden_command(&ffmpeg_binary)
-        .arg("-i")
-        .arg(input_path.to_string_lossy().as_ref())
-        .arg("-vf")
-        .arg(&scale_filter)
-        .arg("-c:v")
-        .arg("libx264")
-        .arg("-b:v")
-        .arg("50M")
-        .arg("-c:a")
-        .arg("copy")
-        .arg("-pix_fmt")
-        .arg("yuv420p")
-        .arg("-movflags")
-        .arg("+faststart")
-        .arg(&output)
-        .output()
-        .map_err(|e| format!("启动 ffmpeg 超分失败: {}", e))?;
+    let run_encode = |encoder: &'static str| -> Result<(), String> {
+        let merge = hidden_command(&ffmpeg_binary)
+            .arg("-i")
+            .arg(input_path.to_string_lossy().as_ref())
+            .arg("-vf")
+            .arg(&video_filter)
+            .args(encoder_options(encoder))
+            .arg("-c:a")
+            .arg("copy")
+            .arg("-pix_fmt")
+            .arg("yuv420p")
+            .arg("-movflags")
+            .arg("+faststart")
+            .arg(&output)
+            .output()
+            .map_err(|e| format!("启动 ffmpeg 超分失败: {}", e))?;
 
-    if !merge.status.success() {
-        let stderr = String::from_utf8_lossy(&merge.stderr);
-        return Err(format!("视频超分失败: {}", stderr));
+        if !merge.status.success() {
+            let stderr = String::from_utf8_lossy(&merge.stderr);
+            return Err(format!("视频超分失败: {}", stderr));
+        }
+        Ok(())
+    };
+
+    // 硬件编码器偶尔会在特定素材上中途失败（驱动/参数兼容），失败就退回软件编码重跑一次，
+    // 不让一次硬件抖动把整条生成链路打掉。
+    let encoder = pick_h264_encoder(&ffmpeg_binary);
+    if let Err(err) = run_encode(encoder) {
+        if encoder == SOFTWARE_ENCODER {
+            return Err(err);
+        }
+        warn!(
+            "[EnhanceVideo] 硬件编码器 {} 失败，回退 {} 重试: {}",
+            encoder, SOFTWARE_ENCODER, err
+        );
+        let _ = std::fs::remove_file(&output);
+        run_encode(SOFTWARE_ENCODER)?;
     }
 
     if !output.exists() {

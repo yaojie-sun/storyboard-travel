@@ -10,6 +10,7 @@ use commands::asset;
 use commands::banana_api;
 use commands::chat;
 use commands::enhance;
+use commands::enhance_ai;
 use commands::image;
 use commands::project_state;
 use commands::prompt_repair;
@@ -213,6 +214,8 @@ pub fn run() {
             image::copy_image_source_to_clipboard,
             enhance::enhance_image,
             enhance::enhance_video,
+            enhance_ai::enhance_video_ai,
+            enhance_ai::probe_sr_capability,
             ai_commands::set_api_key,
             ai_commands::clear_all_api_keys,
             ai_commands::submit_generate_image_job,
