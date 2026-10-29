@@ -26,7 +26,7 @@ OFFICIAL ENGLISH VOCABULARY — use exactly these words:
 - Camera moves: Zoom In, Zoom Out, Push In, Pull Out, Pan Left, Pan Right, Truck Left, Truck Right, Tilt Up, Tilt Down, Pedestal Up, Pedestal Down, Arc Shot, Tracking Shot, Static Shot, Shake Slightly, Shake Strongly, POV, Roll Clockwise, Roll Counterclockwise, with small amplitude, with large amplitude, at slow speed, at fast speed. Write the move as a natural English action inside the shot sentence; never stack it as a label at the end of the sentence.
 - Shot cuts: the camera cuts to / the shot cuts to / the shot transitions to / the shot changes to / the shot switches to
 - Shot sizes: an extreme close-up / a close-up / a close shot / a medium shot / a medium-wide shot
-- Off-screen voiceover: that line MUST contain the exact words `says in an off-screen voiceover` and MUST also state that the lips stay closed, e.g. `while his lips remain completely closed.`
+- Off-screen voiceover: that line MUST contain the exact words `says in an off-screen voiceover`. If it names an on-screen subject (`<Subject N>`), it MUST also state that the lips stay closed, e.g. `while his lips remain completely closed.` If nobody is on screen in that shot, do not add a closed-lips clause and do not invent a person.
 - On-camera speaking: `mouth movements naturally syncing to the new dialogue` (never a Chinese mouth sentence)
 - Human voice: use `says` / `speaks` / `recites`. Never `chant`, `sing`, or `intone` unless the original explicitly asks for singing.
 
