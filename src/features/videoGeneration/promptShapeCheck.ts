@@ -56,11 +56,9 @@ const BODY_SOFT_LIMIT_ZH = 2400;
 
 const VOICEOVER_TRIGGERS = ['says in an off-screen voiceover', '-voice-over'];
 /**
- * 画外音行的合法收尾 —— **两种都算合规**（官方 §4.4 + 本仓第 18 条）：
- * · 画框里有人 ⇒ `while his/her/its lips remain completely closed`
- * · 画框里没人（空镜） ⇒ 明说这一镜没有人，例如
- *   `There is no person in this shot, so no one can open a mouth.`
- * 只认前者会把空镜旁白全部误判成缺句。
+ * 画外音行的合法收尾（官方 §4.4）：`while his/her/its lips remain completely closed`。
+ * 画框里没人（空镜）⇒ 官方闭唇句没有指代对象，**不写**（判据见下方第 5 条）。
+ * 后面 "no person …" 一类匹配是**旧口径遗留**，只为兼容老会话保留。
  */
 const CLOSED_LIPS =
   /lips? remain completely closed|no person (?:is )?in (?:this )?(?:shot|frame)|no one can open a mouth|no person in frame/i;
@@ -208,7 +206,11 @@ export function checkPromptShape(
     let bad = 0;
     for (const line of text.split('\n')) {
       const hasTrigger = VOICEOVER_TRIGGERS.some((t) => line.includes(t));
-      if (hasTrigger && !CLOSED_LIPS.test(line)) bad += 1;
+      // 🔴 官方 §4.4 的闭唇句只对「the corresponding on-screen character」成立：
+      //    只有点名了画内主体（<Subject N>）的画外音句才要求闭唇句；
+      //    纯旁白／空镜不写闭唇句，也不许为此凭空造人。
+      const hasOnScreenSubject = /<Subject\s*\d/.test(line);
+      if (hasTrigger && hasOnScreenSubject && !CLOSED_LIPS.test(line)) bad += 1;
     }
     if (bad > 0) {
       issues.push({ code: 'voiceoverLips', level: 'error', params: { count: bad } });

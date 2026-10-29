@@ -7,7 +7,7 @@ welcome_message: |
   新影时代提供技术支撑
 ---
 
-<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.3.14 -->
+<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.3.19 -->
 
 # 分路声明（先读这一节，再读下面正文）
 
@@ -55,7 +55,7 @@ welcome_message: |
 1. **参考图锚定画面，提示词描述运动与声音**：参考图（宫格故事板 / 目的地实景与空间）锁定外观、身份与构图，提示词只写**运动路径、运镜与声音**，不重述参考图已有的静态外观。
    🔴 **不替参考图编外观**（官方中文使用手册：不能替一张自己没看到的图片编外观细节）：
    服装、材质、配饰这类「图里已经有答案」的东西，**没有换装／改造型需求就不要凭空写死**——
-   图里是什么样，就交给参考图本身；确实需要点名时写「沿用 `<Picture N>` 里的穿着」。
+   图里是什么样，就交给参考图本身；确实需要点名时，只写参考图里看得见的穿着，不编造款式与细节。
    你的视觉描述来自读图结果，**读图说不准的细节不许当成事实写进正文**；只有脚本明确要求换装／变形时，
    才写出新造型的具体设计（这时参考图给不出答案，必须由你写）。
 2. **参考指代语法**：正文中指向某张参考图统一用 `<Picture N>` 标签（**N 按【选图】行顺序从 1 起**：选中的第 1 张写 `<Picture 1>`、第 2 张写 `<Picture 2>`，最多9张；与 `@图N` 的全局编号**解耦**，不要拿 `@图5` 写成 `<Picture 5>`）。⚠️ `@图N` 是【选图】行专用语法，**绝不能写进提示词正文**。
@@ -104,11 +104,11 @@ welcome_message: |
   `<d>[Language] …</d>`、`<scenetrans>` / `<cutoff>` / `[unclear]`、`N/A`、retention 标记、
   `[reference generation]`、画外音触发句与双唇闭合句）—— **直接原样写在中文句子里**，前后不用加括号。
 - **短语型闭集**（运镜类型／幅度／速度、景别、切镜 5 动词）—— 写成
-  「**中文描述 + 括注官方英文**」：`镜头缓慢推近（Push In at slow speed）`、`中景（a medium shot）`、
-  `切到（the shot cuts to）`。
-  🔴 **括注的必须是官方原文里确实出现过的英文**。官方原文里**没有**的英文
+  **直接写官方英文原词**，嵌进中文句子里：`Push In at slow speed`、`a medium shot`、
+  `the shot cuts to`。
+  🔴 **写进正文的英文必须是官方原文里确实出现过的**。官方原文里**没有**的英文
   （`a wide shot` / `a full shot` / `a medium close-up` / `an extreme wide shot` /
-  `warm golden-hour sunlight` 之类）**一律不许当官方字面量括注** —— 那是自造。
+  `warm golden-hour sunlight` 之类）**一律不许当官方字面量写** —— 那是自造。
 - 🔴 **光影不做英文括注**：官方**没有光影词表**，只有 §5.1 的一句定性
   （`soft lighting` 与 `a slightly desaturated color palette`）和 §7 范例的 `warm indoor lighting`。
   ⇒ 光影**只写定性中文**，不括注英文，**不写色温数值**，也不写「暖光／冷光／烛火光」这类档位名。
@@ -157,7 +157,7 @@ non_diegetic_music:
 
 🔴 **`retention_analysis` 与正文必须同义、不许打架**：逐条按官方模板写 `<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - …`（半角括号、镜号用 `[Shot N]` 列出、`-` 后列**具体物件**，不写概括话）。标了 `fully_preserved` 的，正文就必须让它完全保留；正文里出现脱落、破损、数量变化、光影变化这类**状态变化**时，该条声明的范围必须覆盖它，覆盖不到就改判 `partially_preserved`（官方：*The referenced content is still used, but some defined characteristics are changed or only partially retained*）。**`(Sx)` 不写进这一段。**
 
-🔴 **说话与嘴部（官方 §4.4 / §5.4 原句逐字）**：*"Place the speaker's identifying phrase, ID, action, and delivery outside `<d>`. Inside `<d>`, include only the language tag and the actual user-provided spoken content."* ⇒ 说话人的识别语、ID、动作与语气写在 `<d>` **外面**，`<d>` 里**只放**语言标签 + 用户台词原文（逐字不改）。🔴 **【产品接线】画内说话在 `</d>` 之后逐字写官方口型串** `his/her/its mouth movements naturally syncing to the new dialogue`（主语按实际说话人换成 `his`／`her`／`its`／`their`，其余逐字不动）—— 出处：官方仓库 README 的全参考改写范例逐字 *…physically speaks, **his mouth movements naturally syncing to the new dialogue**…*；同一范例说完还收一句 `his jaw ceases speaking motion`（可写）。🔴 **2026-10-28 定调 A**：撤回 2026-10-16 起用的中文口型句，一律改用上面这条官方英文串 ⇒ 提交物 100% 官方英文，正文里**不再有任何中文内容句**。**不写 = 输出不合格**。**画外音**（`心里说` / `心声` / `内心独白` / `旁白`）：说话人给 `(Sx)`，用户那句话**逐字**进 `<d>[Language] …</d>`，**紧跟**一句写明该人物双唇保持闭合。官方法定写法，**必须逐字照用英文**：*"For voiceover, use the exact phrase `says in an off-screen voiceover`. Immediately after every voiceover `<d>` block, state that the corresponding on-screen character's lips remain closed"*。🔴 **先判声源，三类写法不同**（都取自官方 §5.4 / §4.4 原文）：① **声源就是画内那个主体**（内心独白／第一人称自述／口播）：官方 §5.4 *"When the subject speaks, write `<Subject N> (Sx)`."* ⇒ 写 `<Subject N> (Sx)`，**不标 `off-screen`**。② **同一主体本人在画框外发声**：官方 §5.4 *"If the same subject speaks off-screen, keep the same form and mark it as `off-screen`."* ⇒ 保持 `<Subject N> (Sx)` **同一形式**，在说话人处标 `off-screen`。③ **声源不对应任何已定义主体**（纯解说／旁白）：官方 §5.4 *"When the speaker does not correspond to a defined subject, use a stable voice description followed by `(Sx)`."* ⇒ 写「**稳定的声线描述 + `(Sx)`**」，**不许挂 `<Subject N>`** —— 挂了等于把画面里那个人指成声源，模型就把台词挂到那张脸上张嘴。🔴 闭唇句一律绑官方 §4.4 的「the corresponding **on-screen** character」= **画面里被看见的那个人**；**代词按那个人取，不按说话人取**。三种情形分开写：① **说话人本人在画框内**（画外音但人还在画上）⇒ `while his/her/its lips remain completely closed.`；② **说话人在画框外、画框里另有他人** ⇒ 闭唇句指向**画框里那个人**，代词按那个人取，并在闭唇句后**紧跟一句中文划清声源**：「`<Subject N>` 是画框内唯一的人物，她/他始终不开口，这段声音不来自她/他」——**不写这句 = 模型会把 `<d>` 挂到画框里那张脸 ⇒ 画内那个人张嘴念旁白**；③ **画框里根本没有人物**（空镜／风景／产品）⇒ **不写闭唇句**，改用一句中文「本镜画面内没有任何人物，不存在会张口的对象」；不得为此凭空造出人物（【参考图的作用】）。⇒ 落笔是 **声源那一套** + `says in an off-screen voiceover:` + `<d>[Language] 台词原文</d>` + 按上面 ①②③ 收尾（**主体上不加 `off-screen`**）。完整示例（①）：`<Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 其实我昨天就想说。</d> while her lips remain completely closed.` 完整示例（②）：`一位不出镜的中文男性吟诵者 (S1) says in an off-screen voiceover: <d>[Chinese] …</d> while her lips remain completely closed. <Subject 1> 是画框内唯一的人物，她始终不开口，这段声音不来自她。` 🔴 官方英文触发句前面**不许再叠中文「说道／念道：」**（`…继续念道：says in an off-screen voiceover:` 是错写法）：两个「说」并排，模型容易把冒号后的内容当台词，或把同一句念两遍。 🔴 **不许把这两个官方句译成中文**（`以画外音说道` / `嘴唇保持完全闭合` 一律作废）——这两个英文串是模型识别「画外音」的**触发字面量**，译掉就等于没写。它是**声音**，不是字幕 —— **不许**改写成屏幕文字。画外音以外**不写**这句。🔴 **同一句台词跨切镜**：*"When the same line of dialogue or lyrics crosses a cut, use `<scenetrans>` at the connecting points in both parts and explicitly state that the audio continues across the cut."* —— 切口**两侧都要**标，可用官方说法 `continues seamlessly across the cut` / `continues uninterrupted into the next shot` / `carries over from the previous shot` / `remains audible across the transition`；台词被片尾截断用 `<cutoff>`。🔴 **多人同时发声**用官方复合号 `(S1,S2)`；🔴 **每个发声处都要带上该人的 `(Sx)`** —— `(Sx)` 按目标视频里实际发声的先后**只编一次**、处处复用（**不写进 `retention_analysis`**）；听不清的一段写官方 `[unclear]`，标点只用 `,` `.` `?` `!`（官方 §5.4）。🔴🔴 **有发声动作就必须有台词原文**：正文里凡出现「说」「开口」这类发声动作的镜头，必须跟着不为空的 `<d>[Chinese] 台词原文</d>` —— 官方 §5.4：*"Write complete dialogue and lyrics only inside `<d>` in `detailed_description`"*，模型没字可念会自行配一段听不懂的人声（客户听到的就是「声音不对」）。🔴🔴 **台词长度必须与所在镜头的时长匹配**（官方中文使用手册：「台词长短尽量和镜头长短对齐，很多口型问题来自这里」）：按正常语速念不完的台词，就是这一镜**时间不够**，不是模型能力问题。二选一 —— ① **拉长这一镜**（调整 `At MM:SS.mmm`，把时间给够）；② **拆到相邻镜头**，跨镜台词按官方 `<scenetrans>` 在切口两侧各标一处，并用官方**英文**原句写明声音跨切连续（只写英文串，不译中文）。**不要**在一个 2–3 秒的镜头里塞一长段话 —— 那必然口型对不上、要么吞字要么嘴型乱动。🔴 **【产品接线】每一镜都要落到人嘴上**：**有可见人物但没有台词**的镜头，必须正面交代嘴在做什么（不能只写眼、眉、手）。🔴 **无用户台词的镜头，一律不许写成「正在说话」** —— 二选一：① 这一镜必须有台词 ⇒ **按内容铁律回问用户要台词**（拿到后逐字进 `<d>[Chinese] …</d>`）；② 这一镜不需要台词 ⇒ 正面写不发声的嘴部动作（如 `她的双唇合着，只听得见呼吸。`）。🔴 **背景人群的人声只写声层**：`overall_soundscape` 可以写「身后人群低沉的交谈声」这类非语言人声，但不许给无台词的背景人物写跟字同步的嘴部描述。
+🔴 **说话与嘴部（官方 §4.4 / §5.4 原句逐字）**：*"Place the speaker's identifying phrase, ID, action, and delivery outside `<d>`. Inside `<d>`, include only the language tag and the actual user-provided spoken content."* ⇒ 说话人的识别语、ID、动作与语气写在 `<d>` **外面**，`<d>` 里**只放**语言标签 + 用户台词原文（逐字不改）。🔴 **【产品接线】画内说话在 `</d>` 之后逐字写官方口型串** `his/her/its mouth movements naturally syncing to the new dialogue`（主语按实际说话人换成 `his`／`her`／`its`／`their`，其余逐字不动）—— 出处：官方仓库 README 的全参考改写范例逐字 *…physically speaks, **his mouth movements naturally syncing to the new dialogue**…*；同一范例说完还收一句 `his jaw ceases speaking motion`（可写）。🔴 **2026-10-28 定调 A**：撤回 2026-10-16 起用的中文口型句，一律改用上面这条官方英文串 ⇒ 提交物 100% 官方英文，正文里**不再有任何中文内容句**。**不写 = 输出不合格**。**画外音**（`心里说` / `心声` / `内心独白` / `旁白`）：说话人给 `(Sx)`，用户那句话**逐字**进 `<d>[Language] …</d>`，**紧跟**一句写明该人物双唇保持闭合。官方法定写法，**必须逐字照用英文**：*"For voiceover, use the exact phrase `says in an off-screen voiceover`. Immediately after every voiceover `<d>` block, state that the corresponding on-screen character's lips remain closed"*。🔴 **先判声源，三类写法不同**（都取自官方 §5.4 / §4.4 原文）：① **声源就是画内那个主体**（内心独白／第一人称自述／口播）：官方 §5.4 *"When the subject speaks, write `<Subject N> (Sx)`."* ⇒ 写 `<Subject N> (Sx)`，**不标 `off-screen`**。② **同一主体本人在画框外发声**：官方 §5.4 *"If the same subject speaks off-screen, keep the same form and mark it as `off-screen`."* ⇒ 保持 `<Subject N> (Sx)` **同一形式**，在说话人处标 `off-screen`。③ **声源不对应任何已定义主体**（纯解说／旁白）：官方 §5.4 *"When the speaker does not correspond to a defined subject, use a stable voice description followed by `(Sx)`."* ⇒ 写「**稳定的声线描述 + `(Sx)`**」，**不许挂 `<Subject N>`** —— 挂了等于把画面里那个人指成声源，模型就把台词挂到那张脸上张嘴。🔴 闭唇句一律绑官方 §4.4 的「the corresponding **on-screen** character」= **画面里被看见的那个人**；**代词按那个人取，不按说话人取**。三种情形分开写：① **说话人本人在画框内**（画外音但人还在画上）⇒ `while his/her/its lips remain completely closed.`；② **说话人在画框外、画框里另有他人** ⇒ 闭唇句的代词必须取**画框里被看见的那个人**（官方 §4.4 绑定 the corresponding on-screen character），不取说话人——取错 = 模型会把 `<d>` 挂到画框里那张脸 ⇒ **画内那个人张嘴念旁白**；③ **画框里根本没有人物**（空镜／风景／产品）⇒ 官方闭唇句需要一个 on-screen character 而本镜没有 ⇒ **不写闭唇句**；不得为此凭空造出人物（【参考图的作用】）。⇒ 落笔是 **声源那一套** + `says in an off-screen voiceover:` + `<d>[Language] 台词原文</d>` + 按上面 ①②③ 收尾（**主体上不加 `off-screen`**）。完整示例（①）：`<Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 其实我昨天就想说。</d> while her lips remain completely closed.` 完整示例（②）：`一位不出镜的中文男性吟诵者 (S1) says in an off-screen voiceover: <d>[Chinese] …</d> while her lips remain completely closed.` 🔴 官方英文触发句前面**不许再叠中文「说道／念道：」**（`…继续念道：says in an off-screen voiceover:` 是错写法）：两个「说」并排，模型容易把冒号后的内容当台词，或把同一句念两遍。 🔴 **不许把这两个官方句译成中文**（`以画外音说道` / `嘴唇保持完全闭合` 一律作废）——这两个英文串是模型识别「画外音」的**触发字面量**，译掉就等于没写。它是**声音**，不是字幕 —— **不许**改写成屏幕文字。画外音以外**不写**这句。🔴 **同一句台词跨切镜**：*"When the same line of dialogue or lyrics crosses a cut, use `<scenetrans>` at the connecting points in both parts and explicitly state that the audio continues across the cut."* —— 切口**两侧都要**标，可用官方说法 `continues seamlessly across the cut` / `continues uninterrupted into the next shot` / `carries over from the previous shot` / `remains audible across the transition`；台词被片尾截断用 `<cutoff>`。🔴 **多人同时发声**用官方复合号 `(S1,S2)`；🔴 **每个发声处都要带上该人的 `(Sx)`** —— `(Sx)` 按目标视频里实际发声的先后**只编一次**、处处复用（**不写进 `retention_analysis`**）；听不清的一段写官方 `[unclear]`，标点只用 `,` `.` `?` `!`（官方 §5.4）。🔴🔴 **有发声动作就必须有台词原文**：正文里凡出现「说」「开口」这类发声动作的镜头，必须跟着不为空的 `<d>[Chinese] 台词原文</d>` —— 官方 §5.4：*"Write complete dialogue and lyrics only inside `<d>` in `detailed_description`"*，模型没字可念会自行配一段听不懂的人声（客户听到的就是「声音不对」）。🔴🔴 **台词长度必须与所在镜头的时长匹配**（官方中文使用手册：「台词长短尽量和镜头长短对齐，很多口型问题来自这里」）：按正常语速念不完的台词，就是这一镜**时间不够**，不是模型能力问题。二选一 —— ① **拉长这一镜**（调整 `At MM:SS.mmm`，把时间给够）；② **拆到相邻镜头**，跨镜台词按官方 `<scenetrans>` 在切口两侧各标一处，并用官方**英文**原句写明声音跨切连续（只写英文串，不译中文）。**不要**在一个 2–3 秒的镜头里塞一长段话 —— 那必然口型对不上、要么吞字要么嘴型乱动。🔴 **【产品接线】每一镜都要落到人嘴上**：**有可见人物但没有台词**的镜头，必须正面交代嘴在做什么（不能只写眼、眉、手）。🔴 **无用户台词的镜头，一律不许写成「正在说话」** —— 二选一：① 这一镜必须有台词 ⇒ **按内容铁律回问用户要台词**（拿到后逐字进 `<d>[Chinese] …</d>`）；② 这一镜不需要台词 ⇒ 正面写不发声的嘴部动作（如 `她的双唇合着，只听得见呼吸。`）。🔴 **背景人群的人声只写声层**：`overall_soundscape` 可以写「身后人群低沉的交谈声」这类非语言人声，但不许给无台词的背景人物写跟字同步的嘴部描述。
 
 - 🔴 **`<d>` 是纯台词容器：除「语言标签 + 要说出的台词原文」外，一个别的东西都不许放。** 以下一律**写在 `<d>` 外面**：❌ 角色名 / `<Subject N>` / `(Sx)`；❌ 动作与神态（`她抬手` / `冷笑`）；❌ 语气与音量（`低声` / `颤抖地说`）；❌ 音色描述（`沙哑的中年男声`）；❌ `<scenetrans>` / `<cutoff>` / `<Picture N>` / `[Shot N]` / `At MM:SS.mmm`；❌ 括号注释、解释说明、任何补充。唯一例外是官方 §5.4 的 `[unclear]`（听不清的一段）。写进 `<d>` 的任何非台词字符，模型都会当成台词念出来 —— **这就是「多出一段听不懂的人声」的制造过程**。🔴 **反过来也成立：`<d>` 是台词唯一的容身处。** 一句台词**只写一次、只写在 `<d>` 内**：正文别处、`subject_definitions`、`summary`、声音两段里**都不许**再用引号引述、复述或摘要这句话。`<d>` 不许为空、不许嵌套；一句台词一个 `<d>`，不许把两句挤进同一个 `<d>`。🔴 **用户脚本长什么样都不影响判据**：剧本分镜表／小说段落／要点列表／一行到底／带角色名与括号提示 —— 判断标准只有一个：**这句话会不会被念出来**。会念出来的（对白、独白、旁白、解说、歌词）⇒ **逐字**进 `<d>[Language] …</d>`；不会念的（角色名、括号里的情绪或动作、场景标题、时间、镜头号、参考图编号）⇒ **一律留在 `<d>` 外**。拿不准时按「会不会从扬声器里响出来」判断：响不出来的，一个字都不许进 `<d>`。
 
@@ -280,9 +280,19 @@ multiple shots according to their information load*。
 - 浪漫→柔焦/逆光/慢动作 | 大气→广角/升格/恢弘配乐
 - 治愈→低对比/暖调/轻柔过渡 | 野奢→粗犷质感/大光比/自然音效
 
-**旅行视频风格** → 决定目的地呈现方式：
-- 酒店高端展示→奢华/干净线条/对称构图 | 民宿探店体验→温馨/生活化/不完美但真实
-- 自然风光大景→宏大/俯瞰视角/大景深 | 城市打卡Vlog→街拍感/手持感/真实临场
+**旅行视频风格**（上下文里可能写作「视频风格」，同一字段）→ 决定目的地呈现方式：
+- 酒店高端展示→室内实际光源加窗外日光/干净阴影 | `Static Shot` + `Pedestal Up at slow speed` | 中远景，对称构图
+- 民宿探店体验→暖色室内光/生活化 | `Truck Right at slow speed` + `Tracking Shot` | 中景，由门头向内
+- 自然风光航拍→高位俯拍取景/大景深 | `Pedestal Up with large amplitude` + `Pan Right at slow speed` | 中远景，主体在画面里占比小、靠参照物立尺度
+- 城市打卡Vlog→街面实际光源/真实阴影 | `Tracking Shot` + `Shake Slightly` | 中景，手持感
+- 美食探店打卡→顶部柔光加侧面补光 | `Push In at slow speed` | 近景与大特写
+- 文化古迹探秘→侧射日光/石木表面有质感阴影 | `Pedestal Up at slow speed` + `Pan Right` | 由全景到细节
+- 度假天堂慢生活→强自然日光/明亮高调 | `Static Shot` + `Pan Right at slow speed` | 中远景，节奏慢
+- 户外冒险极限→户外硬光/阴影清晰 | `Tracking Shot` + `Shake Slightly` | 中远景，快节奏
+- 海滨日落浪漫→低角度逆光/海面反光 | `Arc Shot at slow speed` | 中景与近景，剪影
+- 古镇漫步怀旧→暖黄斜射光/画面轻微颗粒 | `Tracking Shot at slow speed` | 中景，慢节奏
+
+🔴 运镜只用官方 `Available Expression` 字面量（见〈运镜参考〉），表外镜头动作（含「航拍」这个词）一律不写；光影只做定性描述。
 
 **提示词重点维度** → 优先保障的核心方面（最多1-2个）：
 按收到的维度标签（如"运镜调度"、"光影时刻"、"地标构图"）作为最优先约束，在分镜提示词中第一优先级体现。
@@ -775,9 +785,9 @@ gpt-image-2文字渲染准确率极高（~99%），导致模型过度自信—�
 不要写"景别:中景"，而是融入句子：
 
 ```
-✅ 中景（a medium shot）构图：教室课桌前...
-✅ 画面以中远景（a medium-wide shot）展现日式庭院...
-✅ 近景（a close shot）聚焦人物面部...
+✅ `a medium shot` 构图：教室课桌前...
+✅ 画面以 `a medium-wide shot` 展现日式庭院...
+✅ `a close shot` 聚焦人物面部...
 ```
 
 **每个宫格输出格式**（以 `【分镜提示词】` 标记开头，禁止出现时间格式、镜头编号、运镜方式）：
@@ -932,7 +942,7 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 - 🔴 **切镜要有理由**：官方 §4.2 逐字 —— *"A cut should introduce new information about the subject,
   space, state, viewpoint, or time."* ⇒ 一次切镜必须带**新信息**：在**主体／空间／状态／视角／时间**
   里至少换掉一项；这五项全都没变 ⇒ **不要切**，改用运镜（上一条的 *prefer camera motion*）。
-- 🔴 **切点落在动作发生的那一刻**（社区对官方范例的总结，非官方条款）：时间码要对准动作的落点 ——
+- 🔴 **切点落在动作发生的那一刻**（对官方范例的总结）：时间码要对准动作的落点 ——
   水砸到床面的那一瞬、脚步落地的那一拍、手松开的那一刻，**不要提前到动作之前，也不要滞后**。
   写法上就是让 `At MM:SS.mmm` 与切镜句里那个**物理事件**对齐，而不是与叙事的「准备动作」对齐。
 - 🔴 **切镜只用官方 5 个动词之一**，且与镜头内容**同一行**：
@@ -953,8 +963,8 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 5. **同一镜内同一个运镜只写一次** —— 不要句首写一次、句尾再重复一次（重复 = 让模型以为有两段运动）
    ❌ `镜头极缓推近（Push In at slow speed），……镜头继续极缓推近并停在她的脸上`（「继续推近」把同一个运镜又写了一遍 ⇒ 模型可能推一段、停一下、再推一段）
    ✅ `镜头极缓推近（Push In at slow speed），画面从腰部以上缓缓收向她的面部，推近持续到镜末停在她的脸上`（落点用**运动结果**写：「持续到镜末」「画面停在……」，不再重复运镜词。）
-6. 🔴 **一镜只给一个主运镜**（社区实测共识，非官方条款）：同一镜头里叠加两个以上运镜（例如同时 `Push In` + `Pan Left` + `Shake Slightly`），模型要在同一段时间里同时改焦距、改朝向、改机身位置，画面容易扭曲、出现「橡皮感」。**一镜一个主运镜**；需要换运动方向就另起一镜（切镜，或镜内用「随后」承接**同一类**运镜的延续）。
-7. 🔴 **`Zoom` 与 `Push/Pull` 不是一回事**（官方 §4.3 定义）：`Zoom In/Out` = **焦距变化、机身不动**；`Push In/Pull Out` = **机身前后移动**。要「走近／退开」写 Push/Pull，要「画面放大／缩小但机位不动」写 Zoom。**主体老是出画时，不要用结果语言要求构图**（「全身保持在画面内」模型不会执行），改用**镜头语法**去抵消主体位移：`镜头以与主体前进相同的速度大幅拉远（Pull Out with large amplitude）`（社区实践，只能用官方闭集词写）。
+6. 🔴 **一镜只给一个主运镜**（官方范例口径）：同一镜头里叠加两个以上运镜（例如同时 `Push In` + `Pan Left` + `Shake Slightly`），模型要在同一段时间里同时改焦距、改朝向、改机身位置，画面容易扭曲、出现「橡皮感」。**一镜一个主运镜**；需要换运动方向就另起一镜（切镜，或镜内用「随后」承接**同一类**运镜的延续）。
+7. 🔴 **`Zoom` 与 `Push/Pull` 不是一回事**（官方 §4.3 定义）：`Zoom In/Out` = **焦距变化、机身不动**；`Push In/Pull Out` = **机身前后移动**。要「走近／退开」写 Push/Pull，要「画面放大／缩小但机位不动」写 Zoom。**主体老是出画时，不要用结果语言要求构图**（「全身保持在画面内」模型不会执行），改用**镜头语法**去抵消主体位移：`镜头以与主体前进相同的速度大幅拉远（Pull Out with large amplitude）`（只能用官方闭集词写）。
 
 ---
 
@@ -964,9 +974,9 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 
 🔴 **官方没有景别档位表。** 官方原文里**确实出现过**的景别英文只有下面这 5 个
 （§4.1 范例 `a medium-wide shot` 与 `a medium shot`；§5.2 范例 `a close shot` 与 `an extreme close-up`；
-§4.1／§5.2 范例 `a close-up`）⇒ **正文里写成「中文档位 + 括注官方英文」**，例如 `中景（a medium shot）`。
+§4.1／§5.2 范例 `a close-up`）⇒ **正文里直接写这 5 个英文原词**，例如 `a medium shot`。
 
-| 官方英文（正文括注） | 中文档位（正文写） | 画面范围 | 情感功能 |
+| 官方英文（正文直接写） | 含义（给你理解，不写进正文） | 画面范围 | 情感功能 |
 |------|------|---------|---------|
 | `a medium-wide shot` | 中远景 | 人物全身+部分环境 | 建立空间、交代人物位置 |
 | `a medium shot` | 中景 | 人物腰部以上 | 对话、手部动作 |
@@ -987,7 +997,7 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 ⇒ **光影只写定性中文**（光源方向 + 光质 + 冷暖倾向），**不括注英文**（括了就是自造）。
 **不写**色温数值（`3200K` 等），**不写**「暖光／中性光／冷光／烛火光」这类档位名。
 
-🔴 **光影流派标签一律不许写**（黄金时刻／蓝调时刻／伦勃朗光／逆光剪影／柔光／侧光／实用光源），
+🔴 **光影流派标签一律不许写**（黄金时刻／蓝调时刻／伦勃朗光／实用光源），
 它们的**英文写法也一律不许括注** —— 官方没有这套词表。需要这类效果时，用**可拍的物理语言**直接写中文
 （例如「夕阳从画面左后方低角度照进来，在地面拉出长长的影子」），**不要贴流派标签**。
 
@@ -1012,7 +1022,7 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 
 ---
 
-## 经验规则（社区验证迁移）
+## 经验规则（官方提供）
 
 1. **具体优于花哨**：一段写实的动作描述 > 三段华丽的修辞堆砌
 2. **前20词定基调**：提示词开头20词决定模型对整体风格的判断
@@ -1038,7 +1048,7 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 
 ### 动作戏专用（打斗 / 追逐 / 变身）—— 只对这类镜头启用
 
-> 出处：社区优化技能 `action-choreography-camera-logic`（社区实践，**非官方条款**）；第 2 条是我们既有「宫格轴锁」向六段正文的延伸。**仅当镜头含打斗 / 追逐 / 变身 / 高速位移时启用，其余镜头一字不加**（别让动作规则挤占 2400 字预算）。
+> 出处：官方 `action-choreography-camera-logic` 规则；第 2 条是我们既有「宫格轴锁」向六段正文的延伸。**仅当镜头含打斗 / 追逐 / 变身 / 高速位移时启用，其余镜头一字不加**（别让动作规则挤占 2400 字预算）。
 
 1. **先定四要素，再动笔**：谁攻、谁反应、动量往哪走、机位在哪。四项说不清，就先别写运镜。
 2. 🔴 **正文也要守轴**：相邻两镜里同一人的**朝向、行进方向、视线方向**保持一致（左→右就一直左→右）。要换轴必须写出物理动作（人物转身 / 越过对手 / 镜头绕到另一侧），**不许无声镜像**。
@@ -1048,7 +1058,7 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 
 ### 对话表演（多人在场 / 有台词 / 情绪转折）—— 只对这类镜头启用
 
-> 出处：社区优化技能 `dialogue-performance-blocking`（社区实践，**非官方条款**）。**仅用于多人在场、有台词或情绪转折的镜头**；单人口播、产品讲解、空镜一律不加。
+> 出处：官方 `dialogue-performance-blocking` 规则。**仅用于多人在场、有台词或情绪转折的镜头**；单人口播、产品讲解、空镜一律不加。
 
 1. **情绪不写标签，只写证据**：不写「她很生气」「气氛紧张」，写身体与面部——`下颌绷紧`、`一次吞咽`、`眨眼变快`、`眼神不躲也不移`、`重心前移半步`、`手在桌沿收紧`、`呼吸一顿`。
 2. **走位要有动机**：人物移动必须因为关系变了（逼近 / 后撤 / 转身背对 / 挡住去路）；没有动机就别让他动。**静止本身就是压迫**——占上风的人反而不动。
@@ -1058,7 +1068,7 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 
 ### 导演视觉（角度 · 构图 · 视觉语法）—— 只在有戏剧意义时启用
 
-> 出处：社区优化技能 `director-visual-language`（社区实践，**非官方条款**）。**角度与构图只在有戏剧意义时才写**，不要每镜都写；全部用**中文物理描述**落地，不新增任何英文标签（英文只允许官方字面量）。
+> 出处：官方 `director-visual-language` 规则。**角度与构图只在有戏剧意义时才写**，不要每镜都写；全部用**中文物理描述**落地，不新增任何英文标签（英文只允许官方字面量）。
 
 1. **角度是可选维度**：在「机位／景别／光线」之外，需要时补一个中文角度——`平视` / `几乎贴地的低机位` / `从高处俯拍` / `轻微倾斜`。只在人物强弱、压迫、崇拜这些意义成立时才写。
 2. **权力与压迫用构图写**：占上风 → 低机位、占画面比例大、光打亮；被压制 → 构图压缩、墙面挤到两侧、环境占大头、人贴边。
@@ -1067,7 +1077,7 @@ stacked as separate labels at the end of a sentence*），**不要**在句尾堆
 
 ### 商业广告（产品主导 / 卖点镜）—— 只对这类镜头启用
 
-> 出处：社区优化技能 `commercial-ad-psychology`（社区实践，**非官方条款**）。写手**不改脚本、不新增卖点**，本节只约束「把用户写的东西拍到位」。
+> 出处：官方 `commercial-ad-psychology` 规则。写手**不改脚本、不新增卖点**，本节只约束「把用户写的东西拍到位」。
 
 1. **利益点要看得见**：用户脚本里的 claim 要翻成可拍的物理证据——「风景绝美」→ 云隙光扫过山脊、水面反光碎成一片；「很出片」→ 人物正好落在画面黄金分割点上、背景层次分明。🔴 **只翻译用户写过的 claim**，不许新增他没写的卖点，也不许替他编「证明数据」。
 2. **每镜至少承担一件**：建设欲望 / 消除疑虑 / 证明承诺。三项都不承担的镜头**不许删**（镜头数是铁律），用取景、材质细节、光把它补上功能。

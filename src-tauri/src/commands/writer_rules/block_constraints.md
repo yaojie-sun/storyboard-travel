@@ -15,7 +15,7 @@
    （见【内容铁律】）。
    🔴 **不替参考图编外观**（官方中文使用手册：不能替一张自己没看到的图片编外观细节）：
    服装／材质／配饰这类「图里已经有答案」的，没有换装、改造型需求就**不要凭空写死**；
-   需要点名时写 `wearing the outfit shown in <Picture N>`。读图描述不确定的细节不许当成事实写进正文。
+   需要点名时，只写参考图里看得见的穿着，不编造款式与细节。读图描述不确定的细节不许当成事实写进正文。
 6. 遵守180度轴线规则，摄像机不越轴。
 7. 禁止使用"电影感""大片质感""高清摄影""顶级CG""史诗级"等抽象模板词。
 8. 提示词正文绝对禁止 @图N / Image N 语法指代参考图。
@@ -160,17 +160,15 @@
    🔴 闭唇句一律绑官方 §4.4 的「the corresponding **on-screen** character」= **画面里被看见的那个人**；
    **代词按那个人取，不按说话人取**。三种情形分开写：
    ① **说话人本人在画框内**（画外音但人还在画上）⇒ `while his/her/its lips remain completely closed.`
-   ② **说话人在画框外、画框里另有他人** ⇒ 闭唇句指向**画框里那个人**，代词按那个人取，并在闭唇句后
-   **紧跟一句英文划清声源**（`<Subject N> is the only person in frame; she never opens her mouth,
-   and this voice does not come from her.`）。
-   不写这句 = 模型会把 `<d>` 挂到画框里那张脸 ⇒ **画内那个人张嘴念旁白**。
+   ② **说话人在画框外、画框里另有他人** ⇒ 闭唇句的代词必须取**画框里被看见的那个人**
+   （官方 §4.4 绑定 the corresponding on-screen character），不取说话人。取错 = 模型会把 `<d>`
+   挂到画框里那张脸 ⇒ **画内那个人张嘴念旁白**。
    ③ **画框里根本没有人物**（空镜／风景／产品）⇒ 官方闭唇句需要一个 on-screen character 而本镜没有：
-   **不写闭唇句**，改用一句英文 `There is no person in this shot, so no one can open a mouth.`；
-   不得为此凭空造出人物。
+   **不写闭唇句**；不得为此凭空造出人物。
    落笔：声源那一套 + `says in an off-screen voiceover:` + 台词逐字进 `<d>[Language] …</d>` +
    按上面 ①②③ 收尾（**逐字照用官方英文**；`<Subject N> (Sx)` 两件套见上；主体上不加 `off-screen`）。
    完整示例（①）：`<Subject 1> (S1) says in an off-screen voiceover: <d>[Language] 台词原文</d> while her lips remain completely closed.`
-   完整示例（②）：`a low, unhurried male Chinese voice (S1) says in an off-screen voiceover: <d>[Language] …</d> while her lips remain completely closed. <Subject 1> is the only person in frame; she never opens her mouth, and this voice does not come from her.`
+   完整示例（②）：`a low, unhurried male Chinese voice (S1) says in an off-screen voiceover: <d>[Language] …</d> while her lips remain completely closed.`
    🔴 **人声一律写 `recitation` / `recites` / `speaks`，禁写 `chant` / `sing` / `intone`**：官方 §4.4 节名就是
    `Speakers, Dialogue, and Singing` —— 说话与歌唱是两个模式，唱腔词会把模型拉进歌唱模式，
    一句 `says in an off-screen voiceover` 压不住它。实测客户原稿写「旁白吟诵：蒹葭苍苍，白露为霜……」，
@@ -188,7 +186,7 @@
    模型改按 `<d>` 挂在画面里那张脸上 ⇒ **客户实测「内心独白出片女主张嘴说话」就是这个。**
    `off-screen` 只按官方 §5.4 用（*"If the same subject speaks off-screen"*：主体**本人不在画框内**发声）。
    ⚠️ **画面里根本没有人物**的纯解说镜（空镜／风景／产品）：按上面 ③ 处理 —— **不写闭唇句**，
-   改写 `There is no person in this shot, so no one can open a mouth.`；不得为此凭空造出人物
+   **本镜不写闭唇句**；不得为此凭空造出人物
    （红线以**脚本**为准：脚本里没有的人物／场面，一个字都不许加，见第 5 条与【内容铁律】）。
    🔴🔴 **画内台词与画外独白不许挤在同一个镜头里**：同一镜里给同一个人（同一个 `(Sx)`）既写
    `</d>` 之后「嘴唇随字句张动」、又写「双唇保持闭合」= 两条嘴部指令**互斥**，模型只会选张嘴
@@ -312,9 +310,9 @@
 ① 六段齐全、段名逐字、次序不变、段名独占一行、尾随半角冒号、段间空行；
 ② `[Shot N]` 从 1 连续，镜头数 = 用户脚本的镜头数；
 ③ 每条 `<d>` 成对，所在行带 `(Sx)`；
-④ 画外音行含官方英文 `says in an off-screen voiceover` 与闭唇句（画框里没人则写「本镜没有人」那句）；
+④ 画外音行含官方英文 `says in an off-screen voiceover` 与闭唇句（画框里没有人物时不写闭唇句）；
 ⑤ 全文无 `<Audio N>`；`summary` 首词是 `[reference generation]`；
-⑥ 六段正文合计 ≤ 5740 字；
+⑥ 六段正文合计 ≤ 2400 字；
 ⑦ 正文前后**除 `【选图】` 一行与 `【视频提示词】` 标记外没有任何解释文字**（不报数、不说明改动、不道歉、不写「以下是」）。
 
 🔴 **出门前反向核一遍**：正文里出现的**场面、出场的人、所在地点、故事走向与结局**，

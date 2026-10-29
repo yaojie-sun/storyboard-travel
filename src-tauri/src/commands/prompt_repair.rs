@@ -202,7 +202,7 @@ STRUCTURE THAT MUST HOLD
 - Every `<d>` has a matching `</d>`, and the dialogue inside stays byte-for-byte identical (including the `[Chinese]` tag).
 - Every line containing `<d>` carries a speaker id such as (S1) before the dialogue.
 - NEVER write `<Audio N>` and never write "+ audio reference": this task is given reference images only, with no audio asset.
-- Every line with `says in an off-screen voiceover` also states that the lips stay completely closed.
+- Every line with `says in an off-screen voiceover` that names an on-screen subject (`<Subject N>`) also states that the lips stay completely closed; when nobody is on screen, never add such a clause and never invent a person.
 - The line under `summary:` starts with a bracketed task-type tag, e.g. [reference generation]."#;
 
 /// 结构校验（**只判 error 级**，与前端 `promptShapeCheck.ts` 的 error 口径**逐条对齐**）。
@@ -239,7 +239,11 @@ fn check_voiceover_lips(text: &str) -> Result<(), String> {
     let mut bad = 0usize;
     for line in text.lines() {
         let trigger = line.contains("says in an off-screen voiceover") || line.contains("-voice-over");
-        if trigger && !has_closed_lips(line) {
+        // 🔴 官方 §4.4 的闭唇句只对「the corresponding on-screen character」成立：
+        //    只有**点名了画内主体**（`<Subject N>`）的画外音句才硬性要求闭唇句。
+        //    纯旁白／空镜（画框里没有人）不写闭唇句，也不许为此凭空造人。
+        let has_on_screen_subject = line.contains("<Subject ");
+        if trigger && has_on_screen_subject && !has_closed_lips(line) {
             bad += 1;
         }
     }
@@ -249,7 +253,9 @@ fn check_voiceover_lips(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 与前端 `CLOSED_LIPS` 同一组写法：画框里有人 ⇒ 闭唇；空镜 ⇒ 明说镜里没人。
+/// 与前端 `CLOSED_LIPS` 同一组写法：画框里有人 ⇒ 官方闭唇句。
+/// 后面 "no person …" 一类写法是**旧口径遗留**，只为兼容老会话保留匹配；
+/// 现行规则（画框里没人 ⇒ 不写闭唇句，见第 18 条③）不要求、也不鼓励再写。
 fn has_closed_lips(line: &str) -> bool {
     let l = line.to_ascii_lowercase();
     if l.contains("lips remain completely closed") || l.contains("lip remain completely closed") {
@@ -462,8 +468,8 @@ fn repair_hint(text: &str) -> String {
     let detailed = detailed_section(text);
     if let Err(e) = check_voiceover_lips(text) {
         hints.push(format!(
-            "- {e}: every line with `says in an off-screen voiceover` must also end with the closed-lips \
-             clause, e.g. `while his lips remain completely closed.`"
+            "- {e}: every line with `says in an off-screen voiceover` that names an on-screen subject \
+             must also end with the official closed-lips clause, e.g. `while his lips remain completely closed.`"
         ));
     }
     if let Err(e) = check_speaker_ids(detailed) {
