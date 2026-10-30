@@ -25,6 +25,10 @@
  * - 有画外音必须有 `says in an off-screen voiceover` + 闭唇句 —— 官方 §4.4
  * - 全文不得出现 `<Audio N>` —— 官方 §2.5（普通参考图不产生音频条目）+ 本产品入参只有参考图
  * - 景别只许 5 个官方原词 —— 官方正文范例里的全部写法（`SKILL.md` 景别表）
+ * - 每一镜都要交代景别 —— 官方 §5.3 *For each shot, clearly establish the current composition…*
+ *   ＋官方全部范例的每一镜都以景别开头（〔推导〕，见 `RULES_LEDGER.md` #12）
+ * - 同一镜内同一个说话人不许既画内开口又画外旁白 —— 官方 §4.4 闭唇句与画内口型互斥
+ *   （〔推导〕，见 `RULES_LEDGER.md` #13）
  *
  * 🔴 **只提示、不拦截**：扣费在服务器（CLAUDE.md §12.2），客户端不做拦截判断。
  */
@@ -125,6 +129,40 @@ function lineHasSilentMouth(text: string, re: RegExp): boolean {
 }
 
 const VOICEOVER_TRIGGERS = ['says in an off-screen voiceover', '-voice-over'];
+
+/**
+ * 这一行的画外音**需不需要**闭唇句。
+ *
+ * 🔴 官方 §4.4 原文：「Immediately after every voiceover `<d>` block, state that the
+ *    **corresponding on-screen character**'s lips remain closed.」—— 要求只落在
+ *    **说话人本人在画框里**的情况（范例：*The man (S1) says in an off-screen voiceover:
+ *    … while his lips remain completely closed.*）。说话人不在画框里（画外旁白／空镜），
+ *    就没有「对应的画内人物」，不写闭唇句、也不许为此凭空造人。
+ *
+ * 🔴 2026-10-30 实测（R11）：旧判据 `/<Subject\s*\d/` 把**说话人自己**（写成
+ *    `<Subject 1> (S1) off-screen says in an off-screen voiceover`）也算成「画框里有主体」，
+ *    于是一份**完全正确**的空镜旁白被判 `voiceoverLips` error；修复链又修不动
+ *    ⇒ `repairState='failed'` 静默失败，用户拿到的仍是原稿（它本来就对）。
+ *    同族误判还有 `<Subject 3>`（窗户／走廊这类**景物主体**）被当成「画内人物」。
+ *
+ * ⇒ 判据改成「**触发短语前面那个说话人**有没有被标 `off-screen`」：
+ *    - 触发短语前没有 `<Subject N>` —— 纯旁白，无要求；
+ *    - 说话人后面到触发短语之间出现 `off-screen` —— 说话人不在画框里，无要求；
+ *    - 其余 —— 说话人在画框里，必须有闭唇句。
+ */
+function voiceoverNeedsClosedLips(line: string): boolean {
+  const hits = VOICEOVER_TRIGGERS.map((t) => line.indexOf(t)).filter((i) => i >= 0);
+  if (hits.length === 0) return false;
+  const prefix = line.slice(0, Math.min(...hits));
+  const re = /<Subject\s*\d+>/g;
+  let last: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(prefix))) last = m;
+  if (!last) return false;
+  const between = prefix.slice(last.index + last[0].length);
+  // `off-screen` / `off screen` / `offscreen` 都算（写手三种都写过）
+  return !/off[-\s]?screen/i.test(between);
+}
 /**
  * 画外音行的合法收尾（官方 §4.4）：`while his/her/its lips remain completely closed`。
  * 画框里没人（空镜）⇒ 官方闭唇句没有指代对象，**不写**（判据见下方第 5 条）。
@@ -177,6 +215,45 @@ function hasOffVocabularyShotSize(text: string): boolean {
   return SHOT_SIZE_EN_OFFICIAL_ONLY.test(stripped);
 }
 
+/** 单条景别匹配（不带 `g`，`test()` 无状态；官方 5 个字面量）。 */
+const SHOT_SIZE_LITERAL = /a medium-wide shot|a medium shot|a close shot|a close-up|an extreme close-up/i;
+
+/**
+ * 把 `detailed_description` 段按 `[Shot N]` 切成**逐镜块**（不含标记本身）。
+ */
+function shotBlocks(detailed: string): string[] {
+  const parts = detailed.split(/\[Shot \d+\]/);
+  return parts.length > 1 ? parts.slice(1) : [];
+}
+
+/**
+ * 同一镜里「画内开口」与「画外旁白」是否落在**同一个说话人**身上。
+ *
+ * 🔴 出处：官方 §4.4 —— 画外音的说话人「lips remain completely closed」，
+ *    而 §5.4 / §4.4 的画内台词要求 *mouth movements naturally syncing to the new dialogue*。
+ *    同一个人在同一镜里两条都要 = 自相矛盾的指令，模型只剩「张嘴」一条路 ——
+ *    这正是客户反馈「旁白一直有听不懂的旁白」的成因（2026-10-30 R9 实测）。
+ *
+ * 判据刻意**只认同一个 `(Sx)`**：同一镜里 A 画内说话、B 画外旁白不矛盾，不判。
+ * `(Sx)` 缺失的情况交给第 4 条 `speakerId`，这里不重复报。
+ */
+const DIALOGUE_SPAN = /<d>[\s\S]*?<\/d>/g;
+function speakerModesInShot(block: string): { onCamera: Set<string>; voiceover: Set<string> } {
+  const onCamera = new Set<string>();
+  const voiceover = new Set<string>();
+  DIALOGUE_SPAN.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DIALOGUE_SPAN.exec(block))) {
+    const before = block.slice(Math.max(0, m.index - 200), m.index);
+    const ids = [...before.matchAll(/\((S\d+(?:\s*,\s*S\d+)*)\)/g)].map((x) => x[1].replace(/\s+/g, ''));
+    const id = ids.length > 0 ? ids[ids.length - 1] : '';
+    if (!id) continue;
+    if (VOICEOVER_TRIGGERS.some((t) => before.includes(t))) voiceover.add(id);
+    else onCamera.add(id);
+  }
+  return { onCamera, voiceover };
+}
+
 export type PromptIssueCode =
   | 'fields'
   | 'shots'
@@ -188,7 +265,9 @@ export type PromptIssueCode =
   | 'tooLong'
   | 'detailedTooLong'
   | 'silentMouth'
-  | 'shotSize';
+  | 'shotSize'
+  | 'shotSizeMissing'
+  | 'sameShotSplit';
 
 export interface PromptIssue {
   code: PromptIssueCode;
@@ -318,16 +397,11 @@ export function checkPromptShape(
     }
   }
 
-  // 5. 画外音必须配闭唇句（官方 §4.4）
+  // 5. 画外音必须配闭唇句（官方 §4.4；只在**说话人在画框里**时成立，见 voiceoverNeedsClosedLips）
   {
     let bad = 0;
     for (const line of text.split('\n')) {
-      const hasTrigger = VOICEOVER_TRIGGERS.some((t) => line.includes(t));
-      // 🔴 官方 §4.4 的闭唇句只对「the corresponding on-screen character」成立：
-      //    只有点名了画内主体（<Subject N>）的画外音句才要求闭唇句；
-      //    纯旁白／空镜不写闭唇句，也不许为此凭空造人。
-      const hasOnScreenSubject = /<Subject\s*\d/.test(line);
-      if (hasTrigger && hasOnScreenSubject && !CLOSED_LIPS.test(line)) bad += 1;
+      if (voiceoverNeedsClosedLips(line) && !CLOSED_LIPS.test(line)) bad += 1;
     }
     if (bad > 0) {
       issues.push({ code: 'voiceoverLips', level: 'error', params: { count: bad } });
@@ -404,6 +478,47 @@ export function checkPromptShape(
   //     要么被译丢、要么译成 `a full shot` 这类官方没有的写法）
   if (hasOffVocabularyShotSize(text)) {
     issues.push({ code: 'shotSize', level: 'error', hidden: true });
+  }
+
+  // 12. **每一镜都必须交代景别**（官方 §5.3 "For each shot, clearly establish the current
+  //     composition…"；官方全部范例的每一镜都以景别开头）。
+  //     🔴 与第 11 项互补：第 11 项查「写了但词不对」，这一项查「压根没写」。
+  //     2026-10-30 R7 实测：`[Shot 3] At 00:05.000, the shot cuts to <Subject 3> 的绷带表面…`
+  //     整镜没有景别，第 11 项判 ok、直接放行。
+  {
+    const missing = shotBlocks(detailed)
+      .map((b, i) => (SHOT_SIZE_LITERAL.test(b) ? 0 : i + 1))
+      .filter((n) => n > 0);
+    if (missing.length > 0) {
+      issues.push({
+        code: 'shotSizeMissing',
+        level: 'error',
+        hidden: true,
+        params: { shots: missing.join(',') },
+      });
+    }
+  }
+
+  // 13. 同一镜内，同一个说话人不许既画内开口、又画外旁白（见 speakerModesInShot 的出处说明）
+  {
+    const mixed: number[] = [];
+    shotBlocks(detailed).forEach((block, i) => {
+      const { onCamera, voiceover } = speakerModesInShot(block);
+      for (const id of voiceover) {
+        if (onCamera.has(id)) {
+          mixed.push(i + 1);
+          break;
+        }
+      }
+    });
+    if (mixed.length > 0) {
+      issues.push({
+        code: 'sameShotSplit',
+        level: 'error',
+        hidden: true,
+        params: { shots: mixed.join(',') },
+      });
+    }
   }
 
   const level: PromptShapeReport['level'] = issues.some((i) => i.level === 'error')

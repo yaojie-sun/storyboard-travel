@@ -240,7 +240,9 @@ STRUCTURE THAT MUST HOLD
 - Every `<d>` has a matching `</d>`, and the dialogue inside stays byte-for-byte identical (including the `[Chinese]` tag).
 - Every line containing `<d>` carries a speaker id such as (S1) before the dialogue.
 - NEVER write `<Audio N>` and never write "+ audio reference": this task is given reference images only, with no audio asset.
-- Every line with `says in an off-screen voiceover` that names an on-screen subject (`<Subject N>`) also states that the lips stay completely closed; when nobody is on screen, never add such a clause and never invent a person.
+- Every line with `says in an off-screen voiceover` whose SPEAKER is on screen (the `<Subject N>` in front of the trigger is NOT marked `off-screen`) also states that the lips stay completely closed, e.g. `while his lips remain completely closed.` When the speaker is marked `off-screen`, or no speaker is named at all (pure narration / an empty frame), never add such a clause and never invent a person.
+- Every `[Shot N]` states the shot size using one of these official literals and nothing else: `a medium-wide shot` / `a medium shot` / `a close shot` / `a close-up` / `an extreme close-up`. If a shot has none, add the one that best matches its framing. Never write a Chinese shot size (全景/中景/近景/特写) and never invent a size outside that list.
+- The same speaker id `(Sx)` never has an on-camera line and an off-screen voiceover line inside the SAME shot: an on-camera speaker's mouth moves, an off-screen voiceover speaker's lips stay closed. Fix it by moving the voiceover `<d>…</d>` clause, together with its own sentence, unchanged, into a different existing shot that has no on-camera dialogue. Never delete a `<d>` block, never merge two `<d>` blocks, and never add or remove shots.
 - The line under `summary:` starts with a bracketed task-type tag, e.g. [reference generation].
 - A shot without `<d>` never shows a mouth that moves. No 张合/开合, no "lips open and close", no "lips parting and closing", no 无声地动嘴, no "no sound comes out". Rewrite such actions as closed-lip wording only (official: "She closes her lips and guards the cookie."). Do not add dialogue; do not delete the shot.
 - `detailed_description` stays within 600 Chinese characters / 800 English words (official: normally 350-500 English words). Compress redundant adjectives and repeated clauses; never drop a [Shot N], a `<d>` line, or a retention line."#;
@@ -250,6 +252,7 @@ STRUCTURE THAT MUST HOLD
 /// 这里判的每一条都能指到官方原文：
 /// 六段字段名/次序 §5.1、`[Shot N]` 连续 §5.x、`<d>` 成对与 `(Sx)` §5.4、
 /// 画外音闭唇句 §4.4、无 `<Audio N>` §2.5 + 本产品入参、summary 任务类型标签，
+/// 每镜必须交代景别 §5.3（〔推导〕，台账 #12）、同镜同一说话人不许既画内又画外 §4.4（〔推导〕，台账 #13），
 /// 正文长度预算见 [`body_budget`]（中文 1050 汉字 / 英文 6500 字符，按正文语言二选一）。
 ///
 /// 🔴 **口径必须与前端一致**：前端 `checkPromptShape` 是最终裁判，它判 error 就会
@@ -281,6 +284,8 @@ pub(crate) fn validate_structure(text: &str) -> Result<(), String> {
     check_voiceover_lips(text)?;
     check_summary_tag(text)?;
     check_silent_mouth(text)?;
+    check_shot_sizes(&detailed_section(text))?;
+    check_same_shot_split(&detailed_section(text))?;
     Ok(())
 }
 
@@ -330,12 +335,7 @@ fn check_silent_mouth(text: &str) -> Result<(), String> {
 fn check_voiceover_lips(text: &str) -> Result<(), String> {
     let mut bad = 0usize;
     for line in text.lines() {
-        let trigger = line.contains("says in an off-screen voiceover") || line.contains("-voice-over");
-        // 🔴 官方 §4.4 的闭唇句只对「the corresponding on-screen character」成立：
-        //    只有**点名了画内主体**（`<Subject N>`）的画外音句才硬性要求闭唇句。
-        //    纯旁白／空镜（画框里没有人）不写闭唇句，也不许为此凭空造人。
-        let has_on_screen_subject = line.contains("<Subject ");
-        if trigger && has_on_screen_subject && !has_closed_lips(line) {
+        if needs_closed_lips(line) && !has_closed_lips(line) {
             bad += 1;
         }
     }
@@ -343,6 +343,54 @@ fn check_voiceover_lips(text: &str) -> Result<(), String> {
         return Err(format!("{bad} 条画外音句缺闭唇句"));
     }
     Ok(())
+}
+
+/// 这一行的画外音**需不需要**闭唇句 —— 与前端 `voiceoverNeedsClosedLips` 同口径。
+///
+/// 🔴 官方 §4.4 的闭唇句只对「the corresponding **on-screen character**」成立：
+///    只有**说话人本人在画框里**时才要求。
+///    纯旁白／空镜（画框里没有对应的画内人物）不写闭唇句，也不许为此凭空造人。
+///
+/// 🔴 2026-10-30 实测（R11）：旧判据 `line.contains("<Subject ")` 把**说话人自己**
+///    （`<Subject 1> (S1) off-screen says in an off-screen voiceover`）与**景物主体**
+///    （`<Subject 3>` 窗户／走廊）都当成「画框里有主体」，于是一份完全正确的空镜旁白
+///    被判 red，修不动 ⇒ 前端 `failed` 静默失败（正文本来就对，白跑一轮）。
+/// ⇒ 改判「触发短语前面那个说话人有没有被标 `off-screen`」。
+fn needs_closed_lips(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let triggers = ["says in an off-screen voiceover", "-voice-over"];
+    let Some(at) = triggers.iter().filter_map(|t| lower.find(t)).min() else {
+        return false;
+    };
+    // `to_ascii_lowercase` 只动 ASCII 字节 ⇒ 字节偏移与原串一致，且必落在字符边界上
+    let prefix = &line[..at];
+    let Some(pos) = last_subject_start(prefix) else {
+        return false;
+    };
+    // `off-screen` / `off screen` / `offscreen` 都算（写手三种都写过）
+    let between = prefix[pos..].to_ascii_lowercase();
+    !(between.contains("off-screen") || between.contains("off screen") || between.contains("offscreen"))
+}
+
+/// 找最后一个 `<Subject N>` 的起始字节位置（只认后面真跟数字的）。
+fn last_subject_start(text: &str) -> Option<usize> {
+    let mut found = None;
+    let mut start = 0usize;
+    while let Some(i) = text[start..].find("<Subject") {
+        let abs = start + i;
+        let after = &text[abs + "<Subject".len()..];
+        let has_digits = after
+            .trim_start()
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false);
+        if has_digits {
+            found = Some(abs);
+        }
+        start = abs + "<Subject".len();
+    }
+    found
 }
 
 /// 与前端 `CLOSED_LIPS` 同一组写法：画框里有人 ⇒ 官方闭唇句。
@@ -365,6 +413,132 @@ fn has_closed_lips(line: &str) -> bool {
     l.contains("remain completely closed")
 }
 
+/// 官方正文范例里出现过的**全部**景别字面量。
+const SHOT_SIZE_LITERALS: [&str; 5] = [
+    "a medium-wide shot",
+    "a medium shot",
+    "a close shot",
+    "a close-up",
+    "an extreme close-up",
+];
+
+/// 把 `detailed_description` 段按 `[Shot N]` 切成 (镜号, 块)。
+///
+/// 与前端 `shotBlocks` 同一刀法：前端拆出来的是**块**，镜号取块首数字。
+fn shot_blocks(detailed: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    for block in detailed.split("[Shot ").skip(1) {
+        let digits: String = block.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let n = digits.parse::<usize>().unwrap_or(0);
+        out.push((n, block));
+    }
+    out
+}
+
+/// **每一镜都必须交代景别**（与前端第 12 项 `shotSizeMissing` 同口径）。
+///
+/// 出处：官方 §5.3 *For each shot, clearly establish the current composition…*，
+/// 且官方全部范例的每一镜都以景别开头（*A medium shot* / *a medium-wide shot* /
+/// *an extreme close-up*）—— 属〔推导〕，登记在 `docs/official/RULES_LEDGER.md` #12。
+///
+/// 🔴 第 11 项（前端 `shotSize`）只查「写了但词不对」，本项查「压根没写」：
+///    2026-10-30 R7 的 `[Shot 3] At 00:05.000, the shot cuts to <Subject 3> 的绷带表面…`
+///    整镜没有景别，旧闸门判 ok 直接放行。
+fn check_shot_sizes(detailed: &str) -> Result<(), String> {
+    let mut missing: Vec<String> = Vec::new();
+    for (n, block) in shot_blocks(detailed) {
+        let lower = block.to_ascii_lowercase();
+        if !SHOT_SIZE_LITERALS.iter().any(|l| lower.contains(l)) {
+            missing.push(n.to_string());
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "镜头 {} 没有交代景别：官方 §5.3 要求每一镜先立构图，景别只能写 a medium-wide shot / a medium shot / a close shot / a close-up / an extreme close-up 之一（前端同口径）",
+        missing.join(",")
+    ))
+}
+
+/// 同一镜内，**同一个说话人**不许既画内开口、又画外旁白（与前端第 13 项同口径）。
+///
+/// 出处〔推导〕：官方 §4.4 画外音的说话人 *lips remain completely closed*，
+/// 与画内台词的 *mouth movements naturally syncing to the new dialogue* 互斥 ——
+/// 同一个人在同一镜里两条都写，模型只剩「张嘴」一条路（2026-10-30 R9 实测，
+/// 正是客户「旁白一直有听不懂的旁白」的成因）。
+///
+/// 🔴 刻意**只认同一个 `(Sx)`**：同一镜里 A 画内说话、B 画外旁白不矛盾，不判；
+///    `(Sx)` 缺失交给 [`check_speaker_ids`]，这里不重复报。
+fn check_same_shot_split(detailed: &str) -> Result<(), String> {
+    let mut mixed: Vec<String> = Vec::new();
+    for (n, block) in shot_blocks(detailed) {
+        let mut on_camera: Vec<String> = Vec::new();
+        let mut voiceover: Vec<String> = Vec::new();
+        let mut pos = 0usize;
+        while let Some(a) = block[pos..].find("<d>") {
+            let start = pos + a;
+            let Some(b) = block[start..].find("</d>") else { break };
+            let end = start + b + 4;
+            let from = char_floor(block, start.saturating_sub(200));
+            let before = &block[from..start];
+            if let Some(id) = last_speaker_id(before) {
+                let is_vo =
+                    before.contains("says in an off-screen voiceover") || before.contains("-voice-over");
+                let bucket = if is_vo { &mut voiceover } else { &mut on_camera };
+                if !bucket.contains(&id) {
+                    bucket.push(id);
+                }
+            }
+            pos = end;
+        }
+        if voiceover.iter().any(|id| on_camera.contains(id)) {
+            mixed.push(n.to_string());
+        }
+    }
+    if mixed.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "镜头 {} 里同一个说话人既画内开口又画外旁白：官方 §4.4 画外音要求「嘴唇保持完全闭合」，画内台词要求「口型随台词」，同一镜写两条自相矛盾（前端同口径）",
+        mixed.join(",")
+    ))
+}
+
+/// 往前 200 字节处往回退到字符边界（中文是多字节，按字节切会 panic）。
+fn char_floor(s: &str, mut i: usize) -> usize {
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// 句子里的最后一个 `(Sx)` / `(S1,S2)`（说话人编号）。
+fn last_speaker_id(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut found: Option<String> = None;
+    let mut i = 0usize;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'(' && bytes[i + 1] == b'S' && bytes[i + 2].is_ascii_digit() {
+            let mut j = i + 1;
+            let mut id = String::new();
+            while j < bytes.len()
+                && (bytes[j] == b'S' || bytes[j].is_ascii_digit() || bytes[j] == b',' || bytes[j] == b' ')
+            {
+                if bytes[j] != b' ' {
+                    id.push(bytes[j] as char);
+                }
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b')' {
+                found = Some(id);
+            }
+        }
+        i += 1;
+    }
+    found
+}
+
 /// 一句话里出现这些就**不许删**：删了六段结构、台词或官方闭集字面量就没了。
 const PROTECTED: &[&str] = &[
     "<d>",
@@ -383,7 +557,13 @@ const PROTECTED: &[&str] = &[
 ];
 
 fn is_protected(sentence: &str) -> bool {
-    PROTECTED.iter().any(|p| sentence.contains(p))
+    if PROTECTED.iter().any(|p| sentence.contains(p)) {
+        return true;
+    }
+    // 🔴 夹景别的那句同样不许删：2026-10-30 起「每一镜都要交代景别」是硬闸门
+    //    （`check_shot_sizes`），兜底压缩把景别句删了 ⇒ 压完照样过不了校验、白压一趟。
+    let lower = sentence.to_ascii_lowercase();
+    SHOT_SIZE_LITERALS.iter().any(|l| lower.contains(l))
 }
 
 /// 一行按句切开（**`<d>…</d>` 里不切**：台词里的句号不是句子边界）。
@@ -587,8 +767,21 @@ fn repair_hint(text: &str) -> String {
     let detailed = detailed_section(text);
     if let Err(e) = check_voiceover_lips(text) {
         hints.push(format!(
-            "- {e}: every line with `says in an off-screen voiceover` that names an on-screen subject \
-             must also end with the official closed-lips clause, e.g. `while his lips remain completely closed.`"
+            "- {e}: every line with `says in an off-screen voiceover` whose speaker is on screen \
+             must also end with the official closed-lips clause, e.g. `while his lips remain completely closed.` \
+             When the speaker is marked off-screen, or nobody is named, do not add the clause."
+        ));
+    }
+    if let Err(e) = check_shot_sizes(detailed) {
+        hints.push(format!(
+            "- {e}: every [Shot N] must state the shot size with one of a medium-wide shot / a medium shot / \
+             a close shot / a close-up / an extreme close-up."
+        ));
+    }
+    if let Err(e) = check_same_shot_split(detailed) {
+        hints.push(format!(
+            "- {e}: move the off-screen voiceover <d>…</d> clause into a different existing shot that has no \
+             on-camera dialogue; keep every <d> block and every shot."
         ));
     }
     if let Err(e) = check_speaker_ids(detailed) {
@@ -1064,11 +1257,62 @@ mod tests {
         assert!(err.contains("任务类型"), "{err}");
     }
 
+    /// 🔴 2026-10-30 R11 实测：说话人自己标了 `off-screen`（画框里没有对应的人物）
+    ///    就不该要求闭唇句。旧判据把「说话人自己是 `<Subject N>`」当成「画框里有主体」，
+    ///    于是一份完全正确的空镜旁白被判红，修复链又修不动 ⇒ 静默失败（正文本来就对，白跑一轮）。
     #[test]
-    fn accepts_empty_shot_voiceover_with_no_person() {
+    fn accepts_off_screen_speaker_without_closed_lips() {
         let ok = OK.replace(
             "<Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 回去。</d> while her lips remain completely closed.",
-            "There is no person in this shot, so no one can open a mouth. <Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 回去。</d>",
+            "<Subject 1> (S1) off-screen says in an off-screen voiceover: <d>[Chinese] 回去。</d>",
+        );
+        assert_ne!(ok, OK);
+        assert!(validate_prompt_shape(&ok).is_ok(), "{:?}", validate_prompt_shape(&ok));
+    }
+
+    /// 纯旁白（触发短语前没有点名任何 `<Subject N>`）同样不要求闭唇句。
+    #[test]
+    fn accepts_pure_narration_without_closed_lips() {
+        let ok = OK.replace(
+            "<Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 回去。</d> while her lips remain completely closed.",
+            "The narrator with a low, slow voice (S1) says in an off-screen voiceover: <d>[Chinese] 回去。</d>",
+        );
+        assert_ne!(ok, OK);
+        assert!(validate_prompt_shape(&ok).is_ok(), "{:?}", validate_prompt_shape(&ok));
+    }
+
+    /// 官方 §5.3 每一镜先立构图 ⇒ 每一镜都要交代景别（2026-10-30 R7 两镜无景别被放行）。
+    #[test]
+    fn catches_shot_without_shot_size() {
+        let bad = OK.replace(
+            "[Shot 2] At 00:04.000, a close-up of her hands.",
+            "[Shot 2] At 00:04.000, the shot cuts to her hands.",
+        );
+        assert_ne!(bad, OK);
+        let err = validate_prompt_shape(&bad).unwrap_err();
+        assert!(err.contains("景别"), "{err}");
+        assert!(repair_hint(&bad).contains("shot size"), "{}", repair_hint(&bad));
+    }
+
+    /// 2026-10-30 R9：同一镜里同一个人既「口型随台词」又「双唇闭合」= 自相矛盾
+    /// （客户「旁白一直有听不懂的旁白」的成因）。
+    #[test]
+    fn catches_same_speaker_on_camera_and_voiceover_in_one_shot() {
+        let bad = OK.replace(
+            "<Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 回去。</d> while her lips remain completely closed.",
+            "<Subject 1> (S1) says, <d>[Chinese] 坐下。</d>, her mouth movements naturally syncing to the new dialogue. Then <Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 回去。</d> while her lips remain completely closed.",
+        );
+        assert_ne!(bad, OK);
+        let err = validate_prompt_shape(&bad).unwrap_err();
+        assert!(err.contains("同一镜"), "{err}");
+    }
+
+    /// 两个不同说话人（A 画内、B 画外）同镜**不矛盾**，不许误判。
+    #[test]
+    fn accepts_two_speakers_mixed_in_one_shot() {
+        let ok = OK.replace(
+            "<Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 回去。</d> while her lips remain completely closed.",
+            "<Subject 1> (S1) says, <d>[Chinese] 坐下。</d>, her mouth movements naturally syncing to the new dialogue. Then <Subject 2> (S2) says in an off-screen voiceover: <d>[Chinese] 回去。</d> while his lips remain completely closed.",
         );
         assert_ne!(ok, OK);
         assert!(validate_prompt_shape(&ok).is_ok(), "{:?}", validate_prompt_shape(&ok));

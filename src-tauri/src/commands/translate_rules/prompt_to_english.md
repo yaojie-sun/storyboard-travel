@@ -24,11 +24,20 @@ COPY UNCHANGED, byte for byte:
 TRANSLATE INTO ENGLISH the prose: subject definitions, summary, retention explanations, the style opening, every shot description, the sound description, the music description.
 
 OFFICIAL ENGLISH VOCABULARY — use exactly these words:
-- Camera moves: Zoom In, Zoom Out, Push In, Pull Out, Pan Left, Pan Right, Truck Left, Truck Right, Tilt Up, Tilt Down, Pedestal Up, Pedestal Down, Arc Shot, Tracking Shot, Static Shot, Shake Slightly, Shake Strongly, POV, Roll Clockwise, Roll Counterclockwise, with small amplitude, with large amplitude, at slow speed, at fast speed. Write the move as a natural English action inside the shot sentence; never stack it as a label at the end of the sentence.
+- Camera moves: the official closed set is Zoom In / Zoom Out / Push In / Pull Out / Pan Left / Pan Right / Truck Left / Truck Right / Tilt Up / Tilt Down / Pedestal Up / Pedestal Down / Arc Shot / Tracking Shot / Static Shot / Shake Slightly / Shake Strongly / POV / Roll Clockwise / Roll Counterclockwise, plus the modifiers with small amplitude / with large amplitude / at slow speed / at fast speed. Write the move as a natural English action inside the shot sentence, exactly the way the official material does:
+  `The camera pushes in with small amplitude at slow speed toward the folded letter in her hands.`
+  `The camera pans right with large amplitude at fast speed, revealing the open doorway.`
+  `The camera holds a static shot as the runner exits the frame.`
+  Chinese 镜头推近 / 缓慢推近 / 镜头后拉 / 固定镜头 all become that shape — the camera is the subject of an ordinary verb (pushes in, pulls out, pans right, holds a static shot).
+  NEVER write the move as a noun after a generic verb (`The camera performs a Push In at slow speed`), never capitalize the closed-set words mid-sentence, and never stack them as a label at the end of the sentence.
 - Shot cuts: the camera cuts to / the shot cuts to / the shot transitions to / the shot changes to / the shot switches to
 - Shot sizes: an extreme close-up / a close-up / a close shot / a medium shot / a medium-wide shot
 - Picture roles: first frame / keyframe / last frame / edited keyframe / composition anchor (never invent a role such as "spatial and compositional benchmark" / "spatial and compositional anchor"; if the Chinese says 构图基准 / 空间基准 / 空间与构图锚点, write `composition anchor`)
-- Off-screen voiceover: that line MUST contain the exact words `says in an off-screen voiceover`. If it names an on-screen subject (`<Subject N>`), it MUST also state that the lips stay closed, e.g. `while his lips remain completely closed.` If nobody is on screen in that shot, do not add a closed-lips clause and do not invent a person.
+- Who the voiceover voice is: copy the Chinese speaker head exactly as written. If the Chinese gives a stable voice description followed by the id (`a low, unhurried male Chinese voice (S1)`), keep that voice description as the subject of `says` and NEVER wrap it in `<Subject N>`, never insert `<Subject N>` in front of it, and never move the id onto a subject (official §5.4: "When the speaker does not correspond to a defined subject, use a stable voice description followed by `(Sx)`" — adding a subject tag points the model at a face and makes that person mouth the narration). The closed-lips clause is separate: keep it as written, pointing at the on-screen character.
+- Off-screen voiceover: that line MUST contain the exact words `says in an off-screen voiceover`, spelled exactly like that. Two cases, decided by whether the speaker is visible in the frame:
+  * speaker visible in the frame ⇒ the line MUST also state that the lips stay closed, e.g. `while his lips remain completely closed.`
+  * speaker not in the frame (pure narration, an empty frame) ⇒ state that once, right after the speaker id — `<Subject 1> (S1), off screen, says in an off-screen voiceover:` — and do NOT add a closed-lips clause, and never invent a person.
+  Never spell `off-screen` anywhere else, and never repeat it in front of the verb.
 - On-camera speaking: `mouth movements naturally syncing to the new dialogue` (never a Chinese mouth sentence)
 - Human voice: use `says` / `speaks` / `recites`. Never `chant`, `sing`, or `intone` unless the original explicitly asks for singing. Chinese 开口 / 张嘴 / 开腔 / 开口介绍 / 正要说话 before a `<d>` block all become `says` — keep the official §5.4 shape `<Subject N> (Sx) says, <d>…</d>`, never a substitute verb such as `opens his mouth to introduce`.
 

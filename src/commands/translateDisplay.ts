@@ -10,7 +10,11 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
  *   回译成英文再交给视频模型。翻译规则是独立文件
  *   `src-tauri/src/commands/translate_rules/prompt_to_english.md`。
  *
- * 🔴 **翻译失败绝不能挡住生成**：拿不到英文就退回原文照常提交。
+ * 🔴 **中 → 英失败会挡住提交**（**不是**退回原文）：`VideoGenDialog` 拿到 `null` 就
+ *    `setError` 后 return —— 提交流程在**扣费之前**就结束了。原因：视频模型只吃英文，
+ *    把中文正文原样送去等于白扣一次费、出一支听不懂的片子。
+ *    想改这条行为，先想清楚「中文原文能喂给视频模型吗」。
+ * 🔴 **英 → 中失败只是没镜像**：`getPromptMirror` 拿不到中文就显示英文原文，不挡任何事。
  * 🔴 **不扣费**：两条都走不带 `billing_tag` 的网关调用。
  */
 
@@ -224,7 +228,8 @@ export function clearPromptMirrorCache(): void {
  *
  * - 正文本来就是英文（老会话 / 手写英文）⇒ 返回 `null`，调用方直接用原文；
  * - 中文 ⇒ 调 `translate_prompt_to_english`，同一份正文**只翻一次**（进程内缓存）；
- * - 翻不出来 ⇒ 返回 `null`，调用方退回原文提交 —— **绝不能因为翻译失败挡住生成**。
+ * - 翻不出来 ⇒ 返回 `null`，而 `VideoGenDialog` 会把 `null` 当成**提交失败**（拦截、不扣费），
+ *   **不会**把中文原文直接送去出片 —— 视频模型只吃英文。
  *
  * 🔴 不扣费：后端不传 `billing_tag`（与结构校正、中文对照同一条路）。
  */
