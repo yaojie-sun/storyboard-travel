@@ -10,6 +10,7 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useAssetStore } from '@/stores/assetStore';
 import { resolveImageDisplayUrl, imageUrlToDataUrl } from '@/features/canvas/application/imageData';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
+import { CANVAS_NODE_TYPES } from '@/features/canvas/domain/canvasNodes';
 import { bananaSubmitVideoJob, bananaPollVideoJob, bananaCheckCredits, bananaReportUsage, bananaRefundCredits, bananaVideoQueueStatus, bananaCancelQueuedVideoJob } from '@/commands/ai';
 import { enhanceVideo, enhanceVideoAi, probeSrCapability, type SrCapability } from '@/commands/enhance';
 
@@ -157,11 +158,62 @@ const VOICE_REF_MAX_SECS = 15;
 const VOICE_REF_MAX_COUNT = 3;
 const VOICE_REF_TOTAL_SECS = 15;
 const VOICE_REF_ACCEPT = 'audio/wav,audio/mpeg,audio/mp3,.wav,.mp3';
+/**
+ * 画幅 chip 的 **title 提示**文案 key。
+ *
+ * chip 里面只画比例数字（五个挤一行，带「横屏/竖屏」后缀会撑破按钮），
+ * 悬停时再用这句解释这个比例是横是竖 —— 所以这里仍要走 i18n，英文界面不能出中文。
+ */
+const ASPECT_LABEL_KEYS: Record<string, string> = {
+  '9:16': 'videoGen.aspect.portrait',
+  '16:9': 'videoGen.aspect.landscape',
+  '1:1': 'videoGen.aspect.square',
+  '4:3': 'videoGen.aspect.landscape43',
+  '3:4': 'videoGen.aspect.portrait34',
+};
 
 /** 换行、空白都清掉，避免角色名把提示词行撑破 */
 function sanitizeCharacterName(name: string | undefined): string | undefined {
   const trimmed = (name ?? '').replace(/\s+/g, ' ').trim();
   return trimmed ? trimmed.slice(0, 24) : undefined;
+}
+
+/**
+ * 名字比对用的归一化：去掉括注（「孙二娘（孙总）」→「孙二娘」）、空白、常见标点，统一小写。
+ * 人物资产名由用户自己起，写手按剧本写人名，两边常常差一个括注或一个空格。
+ */
+function normalizeVoiceName(text: string): string {
+  return text
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/[\s·・\-—_：:、，,。.]+/g, '')
+    .toLowerCase();
+}
+
+/**
+ * 角色名 → `<Subject N>`（音频归属按官方 §2.4 的标签写法给后端）。
+ *
+ * 🔴 必须在**回译之前**解析：正文一旦译成英文，中文角色名往往只剩 `<d>` 台词里的那一次出现，
+ *    后端再按名字找标签就会张冠李戴（实测把「孙二娘」的声线绑到了演播厅 `<Subject 3>` 上）。
+ *    这里在（中文）正文的 `subject_definitions` 段里按名字找标签；找不到原样返回，
+ *    旁白（画外音）由后端按官方措辞识别，实在对不上的由后端退回 `the target speaker`。
+ */
+function resolveVoiceSubject(content: string, name: string | undefined): string | undefined {
+  const clean = sanitizeCharacterName(name);
+  if (!clean) return undefined;
+  const start = content.indexOf('subject_definitions:');
+  if (start < 0) return clean;
+  const nexts = ['summary:', 'retention_analysis:', 'detailed_description:']
+    .map((header) => content.indexOf(header, start + 1))
+    .filter((index) => index > start);
+  const end = nexts.length > 0 ? Math.min(...nexts) : content.length;
+  const key = normalizeVoiceName(clean);
+  if (key.length >= 2) {
+    for (const line of content.slice(start, end).split('\n')) {
+      const label = /<(Subject\s+\d+)>/.exec(line);
+      if (label && normalizeVoiceName(line).includes(key)) return `<${label[1]}>`;
+    }
+  }
+  return clean;
 }
 
 /** 只认官方允许的 WAV / MP3 */
@@ -407,10 +459,14 @@ export function VideoGenDialog() {
       let gridFrames: string[] = [];
       let gridImageUrl: string | undefined;
       let shotFrameMap: Record<string, unknown> | undefined;
+      let isStoryboardComposite = false;
       if (clickedNode) {
         const d = clickedNode.data as any;
         gridImageUrl = d.imageUrl || d.previewImageUrl;
         shotFrameMap = d.shotFrameMap;
+        isStoryboardComposite =
+          clickedNode.type === CANVAS_NODE_TYPES.storyboardGen ||
+          d.resultKind === 'storyboardGenOutput';
 
         // Extract per-frame grid prompts from node data (StoryboardGenNodeData.frames)
         if (Array.isArray(d.frames)) {
@@ -426,6 +482,10 @@ export function VideoGenDialog() {
           if (incomingEdge) {
             const sourceNode = allNodes.find((n: any) => n.id === incomingEdge.source);
             if (sourceNode && Array.isArray((sourceNode.data as any).frames)) {
+              // 老项目里导出节点可能没有 `resultKind`：按入边源节点类型补判一次
+              isStoryboardComposite =
+                isStoryboardComposite ||
+                sourceNode.type === CANVAS_NODE_TYPES.storyboardGen;
               gridFrames = ((sourceNode.data as any).frames as any[])
                 .map((f: any) => f.description?.trim())
                 .filter((s: string) => s && s.length > 0);
@@ -454,7 +514,10 @@ export function VideoGenDialog() {
         initialImages: images.slice(0, 5),
         initialGridFrames: gridFrames,
         shotFrameMap,
-        mode: clickedNode?.type === 'videoGenNode' ? 'direct' : 'grid',
+        mode:
+          clickedNode?.type === CANVAS_NODE_TYPES.videoGen || !isStoryboardComposite
+            ? 'direct'
+            : 'grid',
       });
       // 用户又点了**同一个**节点的「生成」：弹窗形态会覆盖侧栏形态（见下面的槽位表），
       // 实例本来就不会重挂载，但小窗数组里会残留一份过期 payload ——
@@ -1434,17 +1497,21 @@ function VideoGenDialogInner({
       // 🔴 提交闸口（2026-10-28 用户定调）：视频模型对**整段提交内容**（规则头 + 正文）
       //    的硬限是 7000 字符，超了任务根本建不出来（`Params [Prompt], should be in [1, 7000]`）。
       //    这里在**扣费之前**拦住，直接告诉用户去缩减提示词，别让他花了钱才看到失败。
-      if (finalPrompt.length > PROMPT_HARD_LIMIT) {
-        console.warn('[VideoGenDialog] 提示词超过硬限，已拦截提交:', finalPrompt.length);
+      //    带音色参考时，后端还要往六段里插 `<Audio N>` 声明 / reference 标记 / 内联从句，
+      //    这部分字数不在 finalPrompt 里 —— 必须一起算进去，否则「正文接近上限 + 2~3 段音色」
+      //    会在扣费之后才被上游 7000 拦下。
+      const submittedLen = finalPrompt.length + audioReserve;
+      if (submittedLen > PROMPT_HARD_LIMIT) {
+        console.warn('[VideoGenDialog] 提示词超过硬限，已拦截提交:', submittedLen);
         setIsGenerating(false);
         setGenerationPhase(null);
         setQueueAhead(0);
         queueTokenRef.current = null;
         setError(
           t('videoGen.promptTooLongGate', {
-            len: finalPrompt.length,
+            len: submittedLen,
             limit: PROMPT_HARD_LIMIT,
-            defaultValue: `提示词共 ${finalPrompt.length} 字，超过 ${PROMPT_HARD_LIMIT} 字上限，容易导致生成失败，建议缩减提示词后重试。`,
+            defaultValue: `提示词共 ${submittedLen} 字，超过 ${PROMPT_HARD_LIMIT} 字上限，容易导致生成失败，建议缩减提示词后重试。`,
           })
         );
         return;
@@ -1453,7 +1520,10 @@ function VideoGenDialogInner({
       // 4. 准备参考图 — 直接用 base64
       const imageInput: string[] = [];
       // 传入宫格参考图（compshare 直连，≤9 张）
-      for (const img of referenceImages) {
+      // 🔴 少传一张，正文里的 `<Picture N>` 会整体错位（N 按**提交顺序**对齐，
+      //    官方 §2 要求每个 `<Picture N>` 都指到真实那几张图），所以转换失败必须中止，
+      //    不能像以前那样 `continue` 静默跳过。
+      for (const [index, img] of referenceImages.entries()) {
         try {
           const dataUrl = img.rawUrl.startsWith('data:')
             ? img.rawUrl
@@ -1461,6 +1531,17 @@ function VideoGenDialogInner({
           imageInput.push(dataUrl);
         } catch (e) {
           console.warn('[VideoGenDialog] failed to convert to base64:', img.rawUrl, e);
+          setIsGenerating(false);
+          setGenerationPhase(null);
+          setQueueAhead(0);
+          queueTokenRef.current = null;
+          setError(
+            t('videoGen.referenceImageLoadFailed', {
+              index: index + 1,
+              defaultValue: `第 ${index + 1} 张参考图读取失败，已取消提交。请重新添加这张图后再生成。`,
+            })
+          );
+          return;
         }
       }
 
@@ -1483,7 +1564,8 @@ function VideoGenDialogInner({
               reader.readAsDataURL(blob);
             });
           }
-          voiceRefs.push({ dataUrl, character: sanitizeCharacterName(voice.character) });
+          // 名字先解析成 `<Subject N>`，再交给后端（回译后正文里已无中文角色名可对）
+          voiceRefs.push({ dataUrl, character: resolveVoiceSubject(rawContent, voice.character) });
         } catch (e) {
           console.warn('[VideoGenDialog] failed to read voice file:', e);
         }
@@ -1857,25 +1939,7 @@ function VideoGenDialogInner({
           </div>
 
           <div className="ui-scrollbar flex-1 space-y-5 overflow-y-auto p-5">
-            {/* Aspect ratio */}
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-text-muted">
-                {t('videoGen.aspectRatio', '画幅')}
-              </label>
-              <select
-                value={aspectRatio}
-                onChange={(e) => setAspectRatio(e.target.value)}
-                className="h-9 w-full rounded-lg border border-[rgba(255,255,255,0.12)] bg-bg-dark px-3 text-sm text-text-dark focus:outline-none focus:ring-1 focus:ring-purple-400/50"
-              >
-                {ASPECT_RATIO_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Duration */}
+            {/* Duration —— 第一行：用户最先定的是「多长」 */}
             <div>
               <label className="mb-2 block text-xs font-medium text-text-muted">
                 {t('videoGen.duration', '时长')}
@@ -1893,6 +1957,35 @@ function VideoGenDialogInner({
                     }`}
                   >
                     {d}s
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Aspect ratio —— 第二行：与时长同一套 chip 交互。
+                画幅原来是下拉框，用户经常会漏点（下拉框看不出当前选项、也不占视觉权重）。
+                改成并排 chip 后五个选项一眼可见，默认值也直接显出来。 */}
+            <div>
+              <label className="mb-2 block text-xs font-medium text-text-muted">
+                {t('videoGen.aspectRatio', '画幅')}
+              </label>
+              {/* 五档挤一行：标签只写比例（`9:16`），横屏/竖屏的解释放 title 提示里；
+                  chip 里不留横向内边距，靠 `flex-1` 平分宽度 */}
+              <div className="flex gap-2">
+                {ASPECT_RATIO_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setAspectRatio(opt.value)}
+                    aria-pressed={aspectRatio === opt.value}
+                    title={t(ASPECT_LABEL_KEYS[opt.value] ?? 'videoGen.aspectRatio', opt.label)}
+                    className={`flex-1 rounded-lg border px-1 py-2 text-sm font-medium transition-colors ${
+                      aspectRatio === opt.value
+                        ? 'border-purple-400/60 bg-purple-500/20 text-purple-200'
+                        : 'border-[rgba(255,255,255,0.1)] bg-bg-dark text-text-muted hover:border-purple-400/30'
+                    }`}
+                  >
+                    {opt.value}
                   </button>
                 ))}
               </div>
@@ -1982,7 +2075,9 @@ function VideoGenDialogInner({
                       ? t('chat.prompt.mirrorPending')
                       : t('videoGen.promptPlaceholder', '描述你想要生成的视频内容...')
                   }
-                  rows={13}
+                  // 15 行：比原来的 13 行多两行，但不把下面的「音色参考」挤出第一屏
+                  //（20 行实测会把音色参考压到折叠线以下）。
+                  rows={15}
                   className="relative w-full resize-none rounded-lg border border-[rgba(255,255,255,0.12)] bg-transparent px-3 py-2 text-sm placeholder-text-muted focus:outline-none"
                   style={{ lineHeight: '1.5', wordBreak: 'break-word' }}
                   onScroll={(e) => {

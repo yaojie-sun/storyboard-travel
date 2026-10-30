@@ -55,7 +55,7 @@
    🔴 **短语型闭集**（运镜类型/幅度/速度、景别、切镜 5 动词）直接写官方英文原词，
    嵌进中文叙述里写成一整句自然动作（见第 14 条），**不写中文档位名**。
    官方**没有**字面量的地方（光影、质感、动作细节）用**中文**写，不要为它们另造英文标签。
-   🔴 **有台词**的画内说话镜头，`</d>` 之后逐字写官方口型串
+   🔴 **有台词**的画内说话镜头，`</d>` 之后**先写逗号**再逐字写官方口型串
    `his/her/its mouth movements naturally syncing to the new dialogue`（见第 18 条）。
    🔴🔴 **全文禁止出现 `<Audio N>`**：音色参考的 `<Audio N>` 声明 / `reference` 标记 /
    `+ audio reference` 由客户端在提交前自动补（2026-10-28 实测生效），写手写了会撞号。
@@ -76,6 +76,14 @@
    （写「片中唯一的人声是旁白的朗诵」即可），
    **不许**写 `only wind, water, and fabric`——
    那是告诉模型人声不该出现，会把旁白压掉或吞掉。反过来，也**不许**在这两段复述台词原文。
+   🔴 **逐镜声音与声音两段按官方 §6 分工，不许重复**：官方向：
+   *Dialogue, singing, and sound events synchronized to a particular shot remain in
+   `detailed_description`.* ⇒ 正文逐镜只写**跟本镜某个动作直接同步的那一声**，
+   **必须织进产生它的那个动作句里**（例：「他放下杯子，杯底磕在桌面上发出一声轻响」）；
+   **禁止**给每镜套一句「本镜听得见……／This shot carries……」的模板句，也**禁止**在镜头末尾
+   另起一句罗列声音（「木地板上脚步声低沉回响，披风布料沙沙作响。」就是这一种）——
+   另起一句等于把 `overall_soundscape` 的活儿在镜内先干一遍，官方的「summarize」就变成了重复。
+   🔴 `overall_soundscape` 按官方 §4.6 写全片 1–4 句**概述**：环境声 + **物理动作声**（脚步、衣料、碰撞）+ 非语言人声（呼吸、笑、喘）—— 这些**官方点名要写**；但既然是 *summarize*，就**不许把镜内某一句原样搬进来**（换措辞再概述）。**只有**对白／歌声／画内音乐 *should not be repeated here*，一句都不许进 `overall_soundscape`。
 14. 🔴 运镜只能取自官方 `Available Expression` 表：12 类 motion type（Zoom In/Out、Push In/Pull Out、
    Pan Left/Right、Truck Left/Right、Tilt Up/Down、Pedestal Up/Down、Arc Shot、Tracking Shot、
    Static Shot、Shake Slightly/Strongly、POV、Roll Clockwise/Counterclockwise）
@@ -97,6 +105,11 @@
    🔴 景别直接写官方英文原词，**优先用官方原文里出现过的这 5 个**：
    `a medium-wide shot` / `a medium shot` / `a close shot` / `a close-up` / `an extreme close-up`
    （正文里不写中文档位名）。
+   🔴 **景别写进句子，不许单独成句**：官方范例是
+   `[Shot 1] Live-action, cinematic, a medium-wide shot frames a baker opening the shutters…`
+   —— 景别是句子成分。**禁止**写成「[Shot 1] 一个 a medium-wide shot。」这种孤立名词句
+   （回译后只剩 `A medium-wide shot.`，模型读不到它修饰谁）。写成
+   「[Shot 1] a medium-wide shot 框住 <Subject 2>，他从画面右侧…」这类把景别当句子主语的写法。
    官方**没有景别档位表**；需要更宽的取景时，用构图描述把范围写清楚
    （谁在画面什么位置、占多大、环境露出多少），不要只换一个档位名词。
    🔴 **`detailed_description` 的第一行是「风格 + 光影」锚定句，写在 `[Shot 1]` 之前**：
@@ -127,6 +140,29 @@
    🔴 选图判断顺序：① 先按「可用参考图」行里的**名称逐字比对**（名称是用户按剧本命名的身份锚点，优先级最高）；
    ② 名称对不上才看「视觉描述」；③ 名称与视觉描述冲突一律以名称为准；④ 多张同类且外观接近时必须靠名称区分；
    ⑤ 名称和描述都指不出的不选。@图N 的 N 是项目全局资产编号（按上传先后固定），以资产行为准，不要自己数。
+   🔴🔴 **每条 `<Subject N>` 定义里都必须 cite 它的来源图**。官方 §2 原句：*name the corresponding
+   source asset when its provenance needs to be made explicit … If `<Picture N>` … only identifies the
+   source of another referenced item and will not be analyzed or used separately later, cite it inside
+   that item's definition without adding a separate line.*
+   ⇒ 写成 `<Subject 1> 是 <Picture 1> 里的年轻女子：黑色长直发、蓝色开衫…`（官方范例同形：
+   `<Subject 1> is the young woman in <Picture 1>, with …`）。
+   不写 = 正文里一个字都没提到那张图，模型收到一张**没有任何身份声明**的参考图，只能自己猜它是首帧、
+   风格板还是素材。
+   🔴 **宫格路（本轮 `【模式】宫格`）提交的参考图只有那一张 2×3 六宫格图** ⇒ 正文**只许出现 `<Picture 1>`**，
+   且按官方 §2.2「故事板」写法单列一行、点明映射到哪几个 Shot（官方原句：*When an image acts as a storyboard
+   or shot-planning reference, state which shots it maps to and what planning information it provides:* →
+   范例 `<Picture 3> is a storyboard reference for [Shot 1] and [Shot 2], defining their viewpoint, subject
+   placement, and shot order.`）。🔴 这一行**直接用英文逐字写进中文正文**，冠词与物主代词不许换：
+   是 `is a storyboard reference`（不是 `is the storyboard reference`）、`defining their viewpoint`
+   （不是 `defining the viewpoint`）。**不要**写成「空间基准 / 构图基准 / 场景参考」（官方 §2.2：*If an image is
+   used only to define a character, scene, costume, or style, do not create a standalone picture entry.*），
+   也**禁止**出现 `<Picture 2>` 及以后的编号（那几张图根本没提交，官方 §2 的 `<Picture N>` 只能指真实提交的图）。
+   直出路按【选图】顺序照常写 `<Picture 1..N>`；单列 `<Picture N>` 时角色**只许用官方 §2.2 那五个英文词**
+   （`first frame` / `keyframe` / `last frame` / `edited keyframe` / `composition anchor`，官方原句见 §2.2
+   *Use a standalone `<Picture N>` when the reference image itself serves as a shot's first frame, keyframe,
+   last frame, edited keyframe, or composition anchor*），**不许**自造 `spatial and compositional benchmark` /
+   `spatial and compositional anchor` 或「空间基准／构图基准／空间与构图锚点」这类说法
+   —— 要表达这个意思就用官方原词 `composition anchor`。
 17. 🔴 时间戳三条：[Shot 1] 不带时间戳；第 2 镜起 At MM:SS.mmm 严格递增且落在总时长内；
    镜头标记与镜头内容必须在同一行。
 18. 🔴 说话与嘴部（官方 §4.4 原句逐字 + 本仓【产品接线】）：
@@ -141,7 +177,10 @@
    `<Subject 2> (S1) turns toward the woman and says, <d>[English] …</d>`）；
    **禁止用「她／他／它」这类代词顶替 `<Subject N>`** —— 代词不带参考锁定，模型会另起一张脸去配嘴。
    说话人不属于任何已定义 `<Subject N>`（例如纯旁白）时，先给一句**稳定的声线描述**再接 `(Sx)`。
-   🔴 **画内说话在 `</d>` 之后逐字写官方口型串**
+   🔴 画内说话的动作动词**就用官方的 `says`**（官方 §5.4 范例同上）。**禁止**改写成
+   「开口介绍 / 张嘴讲述 / 开腔 / 正要说话」这类替代说法 —— 回译成 `opens his mouth to introduce`
+   之后，音色参考从句找不到可挂的 `says`，只能退到编号后面，绑不到这句话上。
+   🔴 **画内说话在 `</d>` 之后先写逗号、再逐字写官方口型串**
    `his/her/its mouth movements naturally syncing to the new dialogue`
    （主语按实际说话人换成 his / her / its / their，其余逐字不动）。出处：官方 README 的全参考
    改写范例逐字原句，**不是本仓自造**；2026-10-16 曾按旧口径换掉，2026-10-28 定调 A 起一律用它。漏写 = 输出不合格。
@@ -231,10 +270,14 @@
    很多口型问题来自这里」）：按正常语速念不完 ⇒ ① 拉长这一镜（调整 At MM:SS.mmm 给够时间），
    或 ② 拆到相邻镜头（跨镜台词用 `<scenetrans>` 在切口两侧各标一处并写明声音跨切连续）。
    不许在 2–3 秒的镜头里塞一长段话 —— 必然吞字或嘴型乱动。
-   🔴 没有用户发声事件的镜头，一律不许写成"正在说话"。二选一：
-   ① 这一镜必须有台词 ⇒ 按内容铁律回问用户要台词（问完就停），拿到后逐字进 <d>[Language] 台词原文</d>；
-   ② 这一镜不需要台词 ⇒ **不给 `(Sx)`、不写 `<d>`**，按官方只写**不发声的嘴部动作**
-   （官方范例逐字：*She closes her lips and guards the cookie.*），不要为它另开一条人声轨道。
+   🔴 没有用户发声事件的镜头，一律不许写成"正在说话"。**用户没给台词，这一镜就没有台词**：
+   **不给 `(Sx)`、不写 `<d>`**，**不许回问用户要台词**（大量镜头本来就不需要台词），
+   不许自己补，也不许在回复里写「本镜无台词」「用户尚未给出旁白」这类判断。
+   🔴🔴 **没有台词的嘴，只写「闭唇」一类动作**：官方范例逐字 *She closes her lips and guards the cookie.*
+   —— 双唇闭合／抿紧／咬住下唇／嘴角绷住都可以。
+   **禁止**写「嘴唇张合」「嘴型开合」「嘴张开一点又抿住」「双唇随呼吸轻轻分开又合上」「无声地动嘴」「嘴里没有发出任何声音」——**任何开→合的唇部循环都算嘴在动**，连「轻轻分开」也不许；需要呼吸时写胸口起伏，不写嘴
+   这类**正在说话却没有声音**的描述：画面上有人在动嘴、正文里又没有 `<d>`，模型只会自己配一段听不懂的人声。
+   `overall_soundscape` 里**也不许**补一句「他张合嘴型时透出的气声」—— 那是同一条人声轨道从后门溜回来。
    🔴 背景人群的人声只写声层：overall_soundscape 里可以写
    `low murmuring conversation from the crowd behind her` 这类**非语言人声**英文描述（声源+质感），
    但不许给这些背景人物写跟字同步的嘴部描述、也不给 `(Sx)` —— 那等于给背景另开一条人声轨道。
@@ -274,15 +317,18 @@
    用户看到 `Params [Prompt], should be in [1, 7000]`。
    ⇒ **六段正文合计 ≤ 6900 字**。规则头已于 2026-10-28 整段置空（version 16），6900 全部留给正文；
    6900 是客户端安全线，7000 是上游硬限，留 100 字余量。
-   🔴 **中文正文按 2400 字控制**（提交前回译规则会把中文译成英文，英文上限 6200 字符，
+   🔴 **六段正文按 1050 汉字控制（单位是汉字数，不是整段字符数），目标 1000**（提交前回译规则会把中文译成英文，英文上限 6500 字符，
    由回译命令按官方结构 + 字数双重校验兜底）。中文写超了，回译时只能压散文硬塞、画面细节会被压掉
-   —— **中文这一侧就要写到 2400 字以内，不要把活儿留给兜底**（实测中文→英文倍率 2.25–2.69）。
+   —— **中文这一侧就要把整段压到 1050 汉字以内，不要把活儿留给兜底**
+   （2026-10-30 实测三份：1157 汉字→6449 字符、798→4888、812→4704 ⇒ **英文字符 = 5.57~6.13 × 汉字数**；
+   按保守的 6.2 折算，1050 汉字约 6510 字符，离 6500 只剩一线 ⇒ **目标写 1000 汉字**，留 400 以上余量）。
    🔴 **每镜写多少字，照官方示例的密度写**：官方 §5.2 说 `detailed_description` *"normally 350-500
    English words"*，官方 §7 的完整示例是 **3 镜 311 词（首镜 140 / 第二镜 76 / 第三镜 82）**。
-   折算成中文（1 个英文词 ≈ 1.6 个汉字）：**首镜约 220 字、其余每镜约 130 字（参考值、非硬顶），
-   整段 ≤ 800 字（硬顶）**。官方同段：*distribute detail across multiple shots according to their
-   information load* —— 镜少则每镜写厚，镜多则每镜写短（6 镜以上按 `(800 − 首镜) ÷ (镜数 − 1)` 再压一档）。
-   五段非 `detailed_description` 的固定段各 60–120 字 ⇒ 4 镜按上表约 520–650 字，六段合计约 1200–1600 字。
+   实测汉字数与英文词数基本 **1:1**（1157 汉字 → 1124 词）⇒ 官方那组示例的中文当量约 310 字。
+   **首镜约 160 字、其余每镜约 100 字（参考值、非硬顶），整段 ≤ 600 字（硬顶，
+   实测有稿子把这一段写到 1250 字／779 词，把整段预算一个人吃光）**。官方同段：*distribute detail across multiple shots according to their
+   information load* —— 镜少则每镜写厚，镜多则每镜写短（6 镜以上按 `(600 − 首镜) ÷ (镜数 − 1)` 再压一档）。
+   其余五段合计 ≤ 400 字 ⇒ 3 镜约 760 字、4 镜约 860 字，**六段合计 ≤ 1050 汉字（硬顶，目标 1000）**。
    ⚠️ 实测反例（2026-10-28 冒烟）：8 秒 4 镜写成 733 词 / 7813 字符，撞 7000 硬限提交失败。
    **病根不是固定段写多了，是每镜都写到官方示例的两倍。**
    🔴 **超长时精简的是措辞，不是信息**：先砍形容词堆砌与同义复述，再合并同机位同主体的重复描述。
@@ -312,8 +358,12 @@
 ③ 每条 `<d>` 成对，所在行带 `(Sx)`；
 ④ 画外音行含官方英文 `says in an off-screen voiceover` 与闭唇句（画框里没有人物时不写闭唇句）；
 ⑤ 全文无 `<Audio N>`；`summary` 首词是 `[reference generation]`；
-⑥ 六段正文合计 ≤ 2400 字；
-⑦ 正文前后**除 `【选图】` 一行与 `【视频提示词】` 标记外没有任何解释文字**（不报数、不说明改动、不道歉、不写「以下是」）。
+⑥ 六段正文合计 ≤ 1050 汉字（目标 1000）；`detailed_description` 单段 ≤ 600 汉字；其余五段合计 ≤ 400 汉字；
+⑦ 正文前后**除 `【选图】` 一行与 `【视频提示词】` 标记外没有任何解释文字**（不报数、不说明改动、不道歉、不写「以下是」）；
+⑧ 每条 `<Subject N>` 定义里都 cite 了来源参考图（`<Subject 1> 是 <Picture 1> 里的…`）；
+⑨ 全文无「张合／开合／嘴型张开／双唇分开又合上／无声地动嘴／没有发出任何声音」—— 没有 `<d>` 的镜只写闭唇（连「轻轻分开」都不许）；
+⑩ 每镜没有「本镜听得见……／This shot carries……」模板句，环境声只在 `overall_soundscape` 出现一次；
+⑪ 景别是句子成分，没有「[Shot 1] 一个 a medium-wide shot。」这类孤立名词句。
 
 🔴 **出门前反向核一遍**：正文里出现的**场面、出场的人、所在地点、故事走向与结局**，
 都要能在「用户脚本 ＋ 仪表盘（【项目全局上下文】）里用户已填的内容 ＋ 参考图（同一段里的 `@图N` 资产行）」

@@ -129,30 +129,100 @@ fn detect_single_speaker_id(prompt: &str) -> Option<String> {
     }
 }
 
-/// 在正文里按名字找它对应的 `<Subject N>` 标签（用于把音频绑到某个角色）。
-fn find_subject_label(prompt: &str, name: &str) -> Option<String> {
-    for line in prompt.lines() {
-        if !line.contains(name) {
+/// 是否是 `<Subject N>` 形式的标签（前端已把角色名解析成标签时直接透传）。
+fn is_subject_label(value: &str) -> bool {
+    let v = value.trim();
+    let Some(rest) = v.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
+        return false;
+    };
+    let Some(num) = rest.trim().strip_prefix("Subject") else {
+        return false;
+    };
+    let num = num.trim();
+    !num.is_empty() && num.chars().all(|c| c.is_ascii_digit())
+}
+
+/// 名字比对用的归一化：去掉括注（「孙二娘（孙总）」→「孙二娘」）、空白与常见标点，统一小写。
+/// 与前端 `normalizeVoiceName` 同口径 —— 人物资产名由用户自己起，写手按剧本写人名，
+/// 两边常常差一个括注或一个空格。
+fn normalize_voice_name(text: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '（' | '(' => {
+                depth += 1;
+                continue;
+            }
+            '）' | ')' => {
+                depth = depth.saturating_sub(1);
+                continue;
+            }
+            _ if depth > 0 => continue,
+            _ => {}
+        }
+        if ch.is_whitespace() || "·・-—_：:、，,。.".contains(ch) {
             continue;
         }
-        let start = line.find("<Subject ")?;
+        out.extend(ch.to_lowercase());
+    }
+    out
+}
+
+/// 在正文里按名字找它对应的 `<Subject N>` 标签（用于把音频绑到某个角色）。
+///
+/// 🔴 只在 `subject_definitions` 段里找，且**跳过没有标签的行继续往下找**。
+///    旧实现从第一行命中的行取「行内第一个 `<Subject N>`」：正文是英文时，中文角色名往往
+///    只出现在 `<d>` 台词行里，那里第一个标签可能属于**别的角色**（实测把「孙二娘」的声线
+///    绑到了演播厅 `<Subject 3>` 上）；行内没有标签时 `?` 还会直接终止整个搜索。
+fn find_subject_label(prompt: &str, name: &str) -> Option<String> {
+    let key = normalize_voice_name(name);
+    if key.chars().count() < 2 {
+        return None;
+    }
+    let mut in_definitions = false;
+    for line in prompt.lines() {
+        if is_section_header(line) {
+            in_definitions = line.trim() == "subject_definitions:";
+            continue;
+        }
+        if !in_definitions || !normalize_voice_name(line).contains(&key) {
+            continue;
+        }
+        let Some(start) = line.find("<Subject ") else {
+            continue;
+        };
         let rest = &line[start..];
-        let end = rest.find('>')?;
+        let Some(end) = rest.find('>') else {
+            continue;
+        };
         return Some(rest[..=end].to_string());
     }
     None
 }
 
 /// 「这段声音属于谁」→ 官方口径里的说话人描述。
+/// - 已是 `<Subject N>`（前端按 `subject_definitions` 解析好的）→ 原样透传，官方 §2.4 写法
 /// - 旁白 / 画外音 → `the off-screen narrator`
-/// - 角色名 → 能对上 `<Subject N>` 就用标签，否则用稳定描述 `the character named X`
-/// - 未绑定 → `the target speaker`（官方 §4.2 原文用词）
+/// - 角色名 → 能在 `subject_definitions` 里对上 `<Subject N>` 就用标签
+/// - 其余一律 → `the target speaker`（官方 §4.2 原文用词）
+///
+/// 🔴 对不上时**不再拼** `the character named X`：正文此刻已是英文，中文角色名夹在里面
+///    既不是官方写法，也会让模型以为画外还有一个人。
+/// 旁白 / 画外音在正文里的称呼（官方 §4.4 用词）。单独提出来：
+/// 声明里写这个称呼、正文内联时又要按它决定落在哪一行，两处必须同源。
+const OFFSCREEN_NARRATOR: &str = "the off-screen narrator";
+
 fn speaker_description(prompt: &str, character: Option<&str>) -> String {
-    match character_phrase(character) {
-        None => "the target speaker".to_string(),
-        Some(phrase) if phrase == "off-screen voiceover" => "the off-screen narrator".to_string(),
-        Some(name) => find_subject_label(prompt, &name)
-            .unwrap_or_else(|| format!("the character named {}", name)),
+    let Some(raw) = character.map(str::trim).filter(|name| !name.is_empty()) else {
+        return "the target speaker".to_string();
+    };
+    if is_subject_label(raw) {
+        return raw.to_string();
+    }
+    match character_phrase(Some(raw)) {
+        Some(phrase) if phrase == "off-screen voiceover" => OFFSCREEN_NARRATOR.to_string(),
+        _ => find_subject_label(prompt, raw).unwrap_or_else(|| "the target speaker".to_string()),
     }
 }
 
@@ -248,46 +318,221 @@ fn cite_audio_inline(lines: &mut [String]) {
 
 /// 画内说话那一路没有 `says in an off-screen voiceover` 触发句可用，
 /// 但官方 §7 范例的声线从句仍要在正文里落一次（否则整段正文没有任何一处引用 `<Audio 1>`，
-/// `subject_definitions` 里的声线声明就悬空）。落点是说话人标签之后：
-/// `<Subject 1> (S1), using the voice timbre referenced from <Audio 1>, says, <d>…</d>`
-fn cite_audio_inline_on_screen(lines: &mut [String]) {
+/// `subject_definitions` 里的声线声明就悬空）。落点是**发声动词前**，与官方范例同形：
+/// `<Subject 1> (S1) raises the mic and, using the voice timbre referenced from <Audio 1>, says, <d>…</d>`
+///
+/// 🔴 **2026-10-30 修正落点**：旧实现一律插在 `(Sx)` 之后。写手常把编号挂在句首的动作上
+/// （`<Subject 2> (S1) stands …, … , and he says, <d>`），这时从句被绑到「站着」这种非发声动作上，
+/// 和官方范例 *"…jerks her hand back and, using the clear youthful voice timbre referenced from
+/// `<Audio 1>`, exclaims …"* 不一致。现在先找 `<d>` 之前最后一个发声动词，插在它前面；
+/// 找不到动词才退回编号后。
+///
+/// 🔴 **只挂在这段声音所属对象的台词行上**：
+///    - 绑定的是 `<Subject N>` ⇒ 只认「她本人开口」的那一行；她本段没有台词就**不写内联**
+///      （退回第一条台词行 = 把她的声线记到别人头上，官方 §7 的从句说的是这句话的说话人）；
+///    - 绑定的是旁白 ⇒ 只认 `says in an off-screen voiceover` 那一行；正文没有画外音就不写；
+///    - 通用声线（没指定归属）⇒ 退回第一条台词行。
+fn cite_audio_inline_on_screen(lines: &mut [String], who: Option<&str>) {
     const CLAUSE: &str = "using the voice timbre referenced from <Audio 1>";
-    let mut in_detailed = false;
-    for line in lines.iter_mut() {
-        if is_section_header(line) {
-            in_detailed = line.trim() == "detailed_description:";
-            continue;
-        }
-        if !in_detailed || !line.contains("<d>") {
-            continue;
-        }
-        // 说话人标签形如 `(S1)` —— 从句跟在它后面，动词与台词仍然紧邻
-        let bytes = line.as_bytes();
-        let Some(mut i) = line.find("(S") else {
-            continue;
-        };
-        let mut end = i + 2;
-        while end < bytes.len() && bytes[end].is_ascii_digit() {
-            end += 1;
-        }
-        if end >= bytes.len() || bytes[end] != b')' {
-            // 不是编号，往后找一个真正的 `(Sx)`
-            let Some(next) = line[end..].find("(S") else {
-                continue;
-            };
-            i = end + next;
-            end = i + 2;
-            while end < bytes.len() && bytes[end].is_ascii_digit() {
-                end += 1;
-            }
-            if end >= bytes.len() || bytes[end] != b')' {
+    let preferred = who.filter(|w| is_subject_label(w));
+    let narrator = who == Some(OFFSCREEN_NARRATOR);
+
+    let pick = {
+        let mut in_detailed = false;
+        let mut first_dialogue: Option<usize> = None;
+        let mut on_screen: Option<usize> = None;
+        let mut voiceover: Option<usize> = None;
+        for (index, line) in lines.iter().enumerate() {
+            if is_section_header(line) {
+                in_detailed = line.trim() == "detailed_description:";
                 continue;
             }
+            if !in_detailed || !line.contains("<d>") {
+                continue;
+            }
+            if first_dialogue.is_none() {
+                first_dialogue = Some(index);
+            }
+            // 命中的行必须满足「这个主体**自己开口**」：标签后面紧跟它的 `(Sx)`，
+            // 且编号在台词之前。只在画面里出现（`<Subject 2> 站在旁边`）不算发声。
+            if let Some(label) = preferred {
+                if label_speaks_on_line(line, label) {
+                    on_screen = Some(index);
+                    break;
+                }
+            } else if narrator && voiceover.is_none() && is_voiceover_line(line) {
+                voiceover = Some(index);
+            }
         }
-        let insert_at = end + 1;
-        *line = format!("{}, {},{}", &line[..insert_at], CLAUSE, &line[insert_at..]);
+        if preferred.is_some() {
+            on_screen
+        } else if narrator {
+            voiceover
+        } else {
+            first_dialogue
+        }
+    };
+    let Some(pick) = pick else {
+        return;
+    };
+    let line = &mut lines[pick];
+    // 从句落在**这段声音所属说话人**的编号之后；正文没写标签时才退回行内第一个 `(Sx)`。
+    // `(Sx)` 必须是官方 §5.4 的「贴住说话人」形式 —— 挂在逗号后面的裸 `(S1)` 不接从句，
+    // 否则会写出 `says, (S1), using …` 这种谁都不认的句子。
+    let found = preferred
+        .and_then(|label| attached_speaker_id_after(line, label))
+        .or_else(|| find_speaker_id(line, 0));
+    let Some((start, end)) = found else {
+        return;
+    };
+    if !speaker_id_is_attached(line, start) {
         return;
     }
+    // 官方范例把声线从句放在**发声动词前**；编号与动词之间隔着一整段描写时，
+    // 挂在编号后会把从句绑到「站着 / 看着」这类非发声动作上（2026-10-30 实测）。
+    if let Some(verb_at) = speech_verb_before_dialogue(line, end) {
+        let head = line[..verb_at].trim_end();
+        let head = head.strip_suffix(',').or_else(|| head.strip_suffix('，')).unwrap_or(head);
+        let head = head.trim_end();
+        // 动词前什么都没有（极端行，如整行以 `says, <d>…` 开头）时不前插，避免写出前导逗号。
+        if !head.is_empty() {
+            *line = format!("{}, {}, {}", head, CLAUSE, &line[verb_at..]);
+            return;
+        }
+    }
+    let insert_at = end + 1;
+    *line = format!("{}, {},{}", &line[..insert_at], CLAUSE, &line[insert_at..]);
+}
+
+/// `<d>` 之前、`from` 之后的最后一个**发声动词**位置。
+///
+/// 英文正文（回译规则只允许 `says` / `speaks` / `recites`；官方范例另有 `exclaims`）。
+/// 词边界两侧都要判，避免 `essays` / `saysong` 这类误命中。
+fn speech_verb_before_dialogue(line: &str, from: usize) -> Option<usize> {
+    let dial = line.find("<d>")?;
+    let start = from.min(dial);
+    let head = &line[start..dial];
+    let mut best: Option<usize> = None;
+    for verb in ["says", "speaks", "recites", "exclaims", "whispers", "shouts"] {
+        let mut cursor = 0;
+        while let Some(p) = head[cursor..].find(verb) {
+            let abs = start + cursor + p;
+            let before_ok = line[..abs]
+                .chars()
+                .next_back()
+                .map(|c| !c.is_alphanumeric())
+                .unwrap_or(true);
+            let after_ok = line[abs + verb.len()..]
+                .chars()
+                .next()
+                .map(|c| !c.is_alphanumeric() && c != '\'')
+                .unwrap_or(true);
+            if before_ok && after_ok && best.map(|b| abs > b).unwrap_or(true) {
+                best = Some(abs);
+            }
+            cursor += p + verb.len();
+        }
+    }
+    best
+}
+
+/// 行内 `label` 的全部出现位置。
+///
+/// 🔴 必须扫全部：同一镜里主体常常先以「在场的谁」出现（`stands <Subject 1>, facing …`），
+///    开口时才写 `<Subject 1> (S1)`。只看第一处会判成「她没说话」，
+///    结果声明和正文都不引用这段声线（2026-10-30 实测漏挂）。
+fn label_positions(line: &str, label: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(p) = line[from..].find(label) {
+        let abs = from + p;
+        out.push(abs);
+        from = abs + label.len();
+    }
+    out
+}
+
+/// 行内 `label` 的挂接编号：标签后紧跟它自己的 `(Sx)`（官方 §5.4 `<Subject N> (Sx)`）。
+fn attached_speaker_id_after(line: &str, label: &str) -> Option<(usize, usize)> {
+    for pos in label_positions(line, label) {
+        let start = pos + label.len();
+        let Some((id_start, id_end)) = find_speaker_id(line, start) else {
+            continue;
+        };
+        if line[start..id_start].trim().is_empty() {
+            return Some((id_start, id_end));
+        }
+    }
+    None
+}
+
+/// 这一行里 `label` 自己是不是开口的人：标签后紧跟它的 `(Sx)`（官方 §5.4
+/// `<Subject N> (Sx)`），且这个编号出现在 `<d>` 之前。
+fn label_speaks_on_line(line: &str, label: &str) -> bool {
+    let Some((id_start, _)) = attached_speaker_id_after(line, label) else {
+        return false;
+    };
+    match line.find("<d>") {
+        Some(d_pos) => id_start < d_pos,
+        None => false,
+    }
+}
+
+/// `(Sx)` 是否直接贴在说话人后面（官方 §5.4 `<Subject N> (Sx)`）。
+/// 前面是逗号/分号/冒号/顿号/左括号的，都是「裸编号」，不接声线从句。
+fn speaker_id_is_attached(line: &str, start: usize) -> bool {
+    let before = line[..start].trim_end();
+    match before.chars().last() {
+        Some(c) => !matches!(c, ',' | ';' | ':' | '，' | '；' | '：' | '、' | '（' | '('),
+        None => false,
+    }
+}
+
+fn is_voiceover_line(line: &str) -> bool {
+    line.contains("says in an off-screen voiceover") || line.contains("says in an off-screen voice-over")
+}
+
+/// 从 `from` 字节位置起找第一个合法的说话人编号 `(Sx)`，返回其字节区间。
+fn find_speaker_id(line: &str, from: usize) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut i = from;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'(' && bytes[i + 1] == b'S' && bytes[i + 2].is_ascii_digit() {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b')' {
+                return Some((i, j));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `<Subject N>` 自己那份 `(Sx)`（官方 §5.4 `<Subject N> (Sx)`），没有就 `None`。
+/// 🔴 不能用「全文只有一个 (Sx) 就贴上去」：本段只有主持人开口时，
+///    给没台词的 `<Subject 1>`（孙二娘）贴上 `(S1)`，等于把她标成了说话人。
+fn subject_speaker_id(prompt: &str, label: &str) -> Option<String> {
+    for line in prompt.lines() {
+        if let Some((id_start, id_end)) = attached_speaker_id_after(line, label) {
+            return Some(line[id_start..=id_end].to_string());
+        }
+    }
+    None
+}
+
+/// 画外音那句的 `(Sx)`（官方 §4.4 的画外音行）。没有画外音行就 `None`。
+fn voiceover_speaker_id(prompt: &str) -> Option<String> {
+    for line in prompt.lines() {
+        if !is_voiceover_line(line) {
+            continue;
+        }
+        let (start, end) = find_speaker_id(line, 0)?;
+        return Some(line[start..=end].to_string());
+    }
+    None
 }
 
 /// 正文里是否已经有 `<Audio 1>` 的引用（有就不再补画内引用，避免同一段引两次）。
@@ -312,14 +557,34 @@ fn apply_audio_reference(prompt: &str, voices: &[ReferenceAudio]) -> String {
     }
 
     // 全部基于**原始**提示词推导（后面的行插改不影响判定）
-    let speaker_id = detect_single_speaker_id(prompt);
-    let id_suffix = speaker_id.map(|id| format!(" {}", id)).unwrap_or_default();
+    let single_id = detect_single_speaker_id(prompt);
 
     let mut definitions: Vec<String> = Vec::new();
     let mut retention: Vec<String> = Vec::new();
+    // 第一段音频的归属 —— 正文里的内联声线从句要挂到它的台词行上
+    let mut first_who: Option<String> = None;
     for (index, voice) in voices.iter().enumerate() {
         let n = index + 1;
         let who = speaker_description(prompt, voice.character.as_deref());
+        if index == 0 {
+            first_who = Some(who.clone());
+        }
+        // `(Sx)` 只属于**真的在这场视频里发过声**的对象（官方 §5.4：
+        // "Assign `(Sx)` once according to the order of actual vocal events"）。
+        let id_suffix = if is_subject_label(&who) {
+            subject_speaker_id(prompt, &who)
+                .map(|id| format!(" {}", id))
+                .unwrap_or_default()
+        } else if who == OFFSCREEN_NARRATOR {
+            voiceover_speaker_id(prompt)
+                .map(|id| format!(" {}", id))
+                .unwrap_or_default()
+        } else {
+            single_id
+                .as_ref()
+                .map(|id| format!(" {}", id))
+                .unwrap_or_default()
+        };
         definitions.push(format!(
             "<Audio {}> is the voice-timbre reference for {}{}, containing a spoken vocal layer.",
             n, who, id_suffix
@@ -341,7 +606,7 @@ fn apply_audio_reference(prompt: &str, voices: &[ReferenceAudio]) -> String {
         cite_audio_inline(&mut lines);
         // 画内说话（没有画外音触发句）时补一次声线从句，保证正文里真的引用了 `<Audio 1>`
         if !detailed_cites_audio(&lines) {
-            cite_audio_inline_on_screen(&mut lines);
+            cite_audio_inline_on_screen(&mut lines, first_who.as_deref());
         }
     }
 
@@ -1091,7 +1356,7 @@ mod tests {
         }];
         let out = apply_audio_reference(&prompt, &voices);
         assert!(
-            out.contains("<Subject 1> (S1), using the voice timbre referenced from <Audio 1>, turns toward the window and says, <d>"),
+            out.contains("<Subject 1> (S1) turns toward the window and, using the voice timbre referenced from <Audio 1>, says, <d>"),
             "missing on-screen citation:\n{out}"
         );
         // 画内台词的官方口型串必须原样保留（2026-10-28 定调 A：改用官方英文串）
@@ -1131,9 +1396,10 @@ mod tests {
         assert!(out.contains("the target speaker"), "{out}");
     }
 
-    /// 多个说话人编号时无法确定归属，声明里不硬写 (Sx)。
+    /// 旁白的编号取自**画外音那一行**（官方 §2.4：`<Audio N>` 明确对应某个目标说话人时
+    /// 复用它的全局编号）。全文有多个编号也不会再「一律不写」。
     #[test]
-    fn audio_reference_omits_speaker_id_when_ambiguous() {
+    fn audio_reference_narrator_uses_voiceover_speaker_id() {
         let mut prompt = sample_prompt();
         prompt.push_str("\n[Shot 2] <Subject 1> (S2) 回话。");
         let voices = vec![ReferenceAudio {
@@ -1142,8 +1408,138 @@ mod tests {
         }];
         let out = apply_audio_reference(&prompt, &voices);
         assert!(
-            out.contains("<Audio 1> is the voice-timbre reference for the off-screen narrator, containing a spoken vocal layer."),
+            out.contains("<Audio 1> is the voice-timbre reference for the off-screen narrator (S1), containing a spoken vocal layer."),
             "{out}"
+        );
+    }
+
+    /// 正文没有画外音时，旁白拿不到编号，也不许占用别人的编号（官方 §5.4：
+    /// 编号按**真实发声事件**分配）。
+    #[test]
+    fn audio_reference_narrator_without_voiceover_gets_no_id() {
+        let prompt = sample_prompt().replace("says in an off-screen voiceover: ", "says, ");
+        let voices = vec![ReferenceAudio {
+            url: "data:audio/wav;base64,AAA".to_string(),
+            character: Some("旁白".to_string()),
+        }];
+        let out = apply_audio_reference(&prompt, &voices);
+        assert!(
+            out.contains("<Audio 1> is the voice-timbre reference for the off-screen narrator, containing"),
+            "{out}"
+        );
+        assert!(!out.contains("off-screen narrator (S1)"), "{out}");
+    }
+
+    /// 绑定的人物在本段**没有台词**时：声明不贴别人的 `(Sx)`，正文也不把声线从句
+    /// 挂到别的说话人身上（旧实现退回第一条台词行 ⇒「主持人用孙二娘的声线说话」）。
+    #[test]
+    fn audio_reference_skips_inline_when_subject_never_speaks() {
+        let prompt = [
+            "subject_definitions:",
+            "<Subject 1> is the host in <Picture 1>.",
+            "<Subject 2> is the guest in <Picture 2>.",
+            "",
+            "summary:",
+            "[reference generation] The target video is a one-shot fragment.",
+            "",
+            "retention_analysis:",
+            "<Subject 2> (appears in [Shot 1]): fully_preserved - costume unchanged.",
+            "",
+            "detailed_description:",
+            "[Shot 1] A medium-wide shot frames <Subject 1> and <Subject 2>. <Subject 1> (S1) says, <d>[Chinese] 欢迎。</d>, his mouth movements naturally syncing to the new dialogue.",
+            "",
+            "overall_soundscape:",
+            "Applause throughout.",
+            "",
+            "non_diegetic_music:",
+            "N/A",
+        ]
+        .join("\n");
+        let voices = vec![ReferenceAudio {
+            url: "data:audio/wav;base64,AAA".to_string(),
+            character: Some("<Subject 2>".to_string()),
+        }];
+        let out = apply_audio_reference(&prompt, &voices);
+        assert!(
+            out.contains("<Audio 1> is the voice-timbre reference for <Subject 2>, containing"),
+            "must not claim (S1) for a silent subject:\n{out}"
+        );
+        assert!(
+            !out.contains("using the voice timbre referenced from <Audio 1>"),
+            "must not attach the timbre clause to another speaker:\n{out}"
+        );
+    }
+
+    /// 同一镜里主体先以「在场的谁」出现、后以 `<Subject N> (Sx)` 开口：
+    /// 只看行内第一处会判成「她没说话」，声明和正文都不引用这段声线（2026-10-30 实测漏挂）。
+    #[test]
+    fn audio_reference_cites_when_subject_speaks_later_in_line() {
+        let prompt = [
+            "subject_definitions:",
+            "<Subject 1> is the host in <Picture 1>.",
+            "",
+            "summary:",
+            "[reference generation] The target video is a one-shot fragment.",
+            "",
+            "retention_analysis:",
+            "<Subject 1> (appears in [Shot 1]): fully_preserved - appearance unchanged.",
+            "",
+            "detailed_description:",
+            "[Shot 1] A medium-wide shot frames the studio. <Subject 1>, facing the camera, raises the mic; <Subject 1> (S1) says, <d>[Chinese] 欢迎。</d>",
+            "",
+            "overall_soundscape:",
+            "Applause throughout.",
+            "",
+            "non_diegetic_music:",
+            "N/A",
+        ]
+        .join("\n");
+        let voices = vec![ReferenceAudio {
+            url: "data:audio/wav;base64,AAA".to_string(),
+            character: Some("<Subject 1>".to_string()),
+        }];
+        let out = apply_audio_reference(&prompt, &voices);
+        assert!(
+            out.contains("<Audio 1> is the voice-timbre reference for <Subject 1> (S1), containing"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<Subject 1> (S1), using the voice timbre referenced from <Audio 1>, says"),
+            "{out}"
+        );
+    }
+
+    /// 裸编号（`说，(S1) <d>`）不是官方 §5.4 形式，声线从句不往它后面塞。
+    #[test]
+    fn audio_reference_skips_inline_on_bare_speaker_id() {
+        let prompt = [
+            "subject_definitions:",
+            "<Subject 1> is the host in <Picture 1>.",
+            "",
+            "summary:",
+            "[reference generation] The target video is a one-shot fragment.",
+            "",
+            "retention_analysis:",
+            "<Subject 1> (appears in [Shot 1]): fully_preserved - appearance unchanged.",
+            "",
+            "detailed_description:",
+            "[Shot 1] A medium-wide shot frames <Subject 1>. He says, (S1) <d>[Chinese] 欢迎。</d>",
+            "",
+            "overall_soundscape:",
+            "Applause throughout.",
+            "",
+            "non_diegetic_music:",
+            "N/A",
+        ]
+        .join("\n");
+        let voices = vec![ReferenceAudio {
+            url: "data:audio/wav;base64,AAA".to_string(),
+            character: Some("<Subject 1>".to_string()),
+        }];
+        let out = apply_audio_reference(&prompt, &voices);
+        assert!(
+            !out.contains("using the voice timbre referenced from <Audio 1>"),
+            "must not cite inside a bare (S1):\n{out}"
         );
     }
 
@@ -1179,4 +1575,154 @@ mod tests {
             .iter()
             .all(|c| c.get("type").and_then(|t| t.as_str()) != Some("audio_url")));
     }
+
+    /// 前端把角色名解析成 `<Subject N>` 后，声明与内联从句都要落到**这个**标签上，
+    /// 而不是第一条台词行的说话人（旧实现恒挂第一行，声线张冠李戴）。
+    #[test]
+    fn audio_reference_accepts_subject_label() {
+        let prompt = [
+            "subject_definitions:",
+            "<Subject 1> is the host in <Picture 1>.",
+            "<Subject 2> is the guest in <Picture 2>.",
+            "",
+            "summary:",
+            "[reference generation] The target video is a two-shot fragment.",
+            "",
+            "retention_analysis:",
+            "<Subject 1> (appears in [Shot 1]): fully_preserved - appearance unchanged.",
+            "",
+            "detailed_description:",
+            "[Shot 1] A medium shot. <Subject 1> (S1) raises the mic and says, <d>[Chinese] 欢迎。</d>, her mouth movements naturally syncing to the new dialogue.",
+            "[Shot 2] A close shot. <Subject 2> (S2) leans in and says, <d>[Chinese] 谢谢。</d>, her mouth movements naturally syncing to the new dialogue.",
+            "",
+            "overall_soundscape:",
+            "Low studio hum continues throughout.",
+            "",
+            "non_diegetic_music:",
+            "N/A",
+        ]
+        .join("\n");
+        let voices = vec![ReferenceAudio {
+            url: "data:audio/wav;base64,AAA".to_string(),
+            character: Some("<Subject 2>".to_string()),
+        }];
+        let out = apply_audio_reference(&prompt, &voices);
+
+        assert!(
+            out.contains("<Audio 1> is the voice-timbre reference for <Subject 2> (S2), containing a spoken vocal layer."),
+            "declaration not bound to the label:\n{out}"
+        );
+        assert!(
+            out.contains("<Audio 1>: reference - its vocal timbre guides the delivery of <Subject 2> without copying"),
+            "retention marker not bound to the label:\n{out}"
+        );
+        assert!(
+            out.contains("<Subject 2> (S2) leans in and, using the voice timbre referenced from <Audio 1>, says"),
+            "citation not attached to the right speaker:\n{out}"
+        );
+        assert!(
+            !out.contains("<Subject 1> (S1), using the voice timbre"),
+            "citation leaked onto the wrong speaker:\n{out}"
+        );
+    }
+
+    /// 编号挂在句首动作上、发声动词在很远之后时，从句要贴到**发声动词前**，
+    /// 而不是编号后（否则读成 "<Subject 2> (S1), using … , stands"，把声线绑到「站着」）。
+    #[test]
+    fn audio_reference_cites_before_speech_verb_when_id_is_far() {
+        let prompt = [
+            "subject_definitions:",
+            "<Subject 1> is the host in <Picture 1>.",
+            "",
+            "summary:",
+            "[reference generation] The target video is a one-shot fragment.",
+            "",
+            "retention_analysis:",
+            "<Subject 1> (appears in [Shot 1]): fully_preserved - appearance unchanged.",
+            "",
+            "detailed_description:",
+            "[Shot 1] A medium-wide shot. <Subject 1> (S1) stands center-right facing the camera, raises the mic to his chest, and says, <d>[Chinese] 欢迎。</d>, his mouth movements naturally syncing to the new dialogue.",
+            "",
+            "overall_soundscape:",
+            "Applause throughout.",
+            "",
+            "non_diegetic_music:",
+            "N/A",
+        ]
+        .join("\n");
+        let voices = vec![ReferenceAudio {
+            url: "data:audio/wav;base64,AAA".to_string(),
+            character: Some("<Subject 1>".to_string()),
+        }];
+        let out = apply_audio_reference(&prompt, &voices);
+        assert!(
+            out.contains("<Subject 1> (S1) stands center-right facing the camera, raises the mic to his chest, and, using the voice timbre referenced from <Audio 1>, says, <d>"),
+            "citation not placed before the speech verb:\n{out}"
+        );
+        assert!(
+            !out.contains("<Subject 1> (S1), using the voice timbre"),
+            "citation still glued to the non-speaking action:\n{out}"
+        );
+    }
+
+    /// 人物资产名与正文里的写法人名差一个括注 / 空格时，仍要能对上同一个 `<Subject N>`。
+    #[test]
+    fn audio_reference_matches_name_with_annotation() {
+        let voices = vec![ReferenceAudio {
+            url: "data:audio/wav;base64,AAA".to_string(),
+            character: Some("年轻女子（女主）".to_string()),
+        }];
+        let out = apply_audio_reference(&sample_prompt(), &voices);
+        assert!(
+            out.contains("<Audio 1> is the voice-timbre reference for <Subject 2>"),
+            "annotated name must still resolve:\n{out}"
+        );
+    }
+
+    /// 正文是英文时，中文角色名往往只出现在 `<d>` 台词里 —— 不许拿它去绑台词行上第一个标签
+    /// （实测把「孙二娘」的声线绑到了演播厅 `<Subject 3>` 上），也不许把中文名塞进英文正文。
+    #[test]
+    fn audio_reference_ignores_names_outside_subject_definitions() {
+        let prompt = [
+            "subject_definitions:",
+            "<Subject 1> is the host from <Picture 2>: a deep navy suit.",
+            "<Subject 2> is the guest from <Picture 3>: a black period costume.",
+            "<Subject 3> is the studio stage from <Picture 1>.",
+            "",
+            "summary:",
+            "[reference generation] The target video is a one-shot fragment.",
+            "",
+            "retention_analysis:",
+            "<Subject 1> (appears in [Shot 1]): fully_preserved - appearance unchanged.",
+            "",
+            "detailed_description:",
+            "[Shot 1] A medium-wide shot frames <Subject 3>, <Subject 1> standing right of center and saying, <d>[Chinese] 欢迎孙二娘 孙总</d>, his mouth movements naturally syncing to the new dialogue.",
+            "",
+            "overall_soundscape:",
+            "Applause from the seating area.",
+            "",
+            "non_diegetic_music:",
+            "N/A",
+        ]
+        .join("\n");
+        let voices = vec![ReferenceAudio {
+            url: "data:audio/wav;base64,AAA".to_string(),
+            character: Some("孙二娘".to_string()),
+        }];
+        let out = apply_audio_reference(&prompt, &voices);
+
+        assert!(
+            out.contains("<Audio 1> is the voice-timbre reference for the target speaker"),
+            "unresolvable name must fall back to the official wording:\n{out}"
+        );
+        assert!(
+            !out.contains("<Audio 1> is the voice-timbre reference for <Subject 3>"),
+            "name must not be bound to an unrelated subject:\n{out}"
+        );
+        assert!(
+            !out.contains("the character named"),
+            "invented phrase leaked into the prompt:\n{out}"
+        );
+    }
+
 }

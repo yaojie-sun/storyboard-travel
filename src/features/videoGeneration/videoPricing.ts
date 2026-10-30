@@ -30,10 +30,21 @@ export function computeVideoCost(duration: VideoDuration, hasVideoInput: boolean
   return Math.ceil(VIDEO_PRICING[duration] * (hasVideoInput ? 1.5 : 1));
 }
 
+/**
+ * 画幅候选。**取值必须落在上游白名单里**：
+ * `minimax/mod.rs::normalize_ratio` 的白名单是
+ * `adaptive / 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16`，白名单外的值会被上游静默改成
+ * `adaptive`（跟着参考图跑）—— 那等于用户选的画幅没生效，所以这里一个都不能自造。
+ *
+ * 标签只写比例数字 —— 五个 chip 要挤在一行里，`16:9 横屏` 这种后缀会把按钮撑破；
+ * 「横屏/竖屏」的解释放在 `title` 提示里（见 `VideoGenDialog` 的 `ASPECT_LABEL_KEYS`）。
+ */
 export const ASPECT_RATIO_OPTIONS = [
-  { value: '16:9', label: '16:9 横屏' },
-  { value: '9:16', label: '9:16 竖屏' },
-  { value: '1:1', label: '1:1 方形' },
+  { value: '9:16', label: '9:16' },
+  { value: '16:9', label: '16:9' },
+  { value: '1:1', label: '1:1' },
+  { value: '4:3', label: '4:3' },
+  { value: '3:4', label: '3:4' },
 ] as const;
 
 export const MAX_REFERENCE_IMAGES = 9;

@@ -23,7 +23,9 @@ function describe(issue: PromptIssue): string {
     case 'dialoguePairs':
       return `Unbalanced <d> tags: ${p.open ?? '?'} open / ${p.close ?? '?'} close`;
     case 'speakerId':
-      return `Shot(s) ${p.shots ?? '?'} contain <d> but carry no speaker id such as (S1)`;
+      return `Shot(s) ${p.shots ?? '?'} contain <d> but carry no speaker id attached to the speaker. Official §5.4: write \`<Subject N> (Sx)\` — the id sits directly after the speaker reference, as in \`<Subject 2> (S1) turns toward the woman and says, <d>[English] …</d>\`. When the speaker is not a defined subject, put the (Sx) directly after a stable voice description. Never leave a bare \`(S1)\` on its own after a comma or after the verb.`;
+    case 'shotSize':
+      return 'Shot sizes must use one of the five official literals — `a medium-wide shot` / `a medium shot` / `a close shot` / `a close-up` / `an extreme close-up` — written in English inside the sentence. The official examples never use any other shot-size wording. Replace the non-official wording (Chinese 全景/中景/近景/特写, or English `a full shot` / `a wide shot` / `a medium close-up`) with the closest of the five; keep every shot, its marker and its dialogue.';
     case 'voiceoverLips':
       return `${p.count ?? 1} voiceover line(s) are missing the closed-lips clause`;
     case 'audioTag':
@@ -31,7 +33,11 @@ function describe(issue: PromptIssue): string {
     case 'summaryTag':
       return 'The line under summary: does not start with a bracketed task-type tag such as [reference generation]';
     case 'tooLong':
-      return `The body is ${p.len ?? '?'} characters but must be under ${p.limit ?? 6200}. Tighten the wording (merge redundant clauses, drop repeated adjectives) without dropping any shot, tag, retention marker or dialogue. Keep all six sections and the exact field names.`;
+      return `The body is ${p.len ?? '?'} ${p.unit ?? 'characters'} but must be under ${p.limit ?? 6200}. Tighten the wording (merge redundant clauses, drop repeated adjectives) without dropping any shot, tag, retention marker or dialogue. Keep all six sections and the exact field names.`;
+    case 'detailedTooLong':
+      return `detailed_description is ${p.len ?? '?'} (characters in Chinese / words in English) but must be under ${p.limit ?? 800}. Compress each shot to the official example density: keep every shot marker, every reference label, every retention statement and every dialogue line; only remove redundant adjectives and repeated clauses.`;
+    case 'silentMouth':
+      return 'The body describes a mouth that keeps opening and closing while producing no sound (e.g. "lips open and close", "mouth opening and closing", 张合/开合/无声地). A shot without <d> must never describe a speaking mouth. Rewrite those sentences as closed-lip actions only (official wording: "She closes her lips and guards the cookie."). Do not add dialogue and do not remove the shot.';
     default:
       return String(issue.code);
   }

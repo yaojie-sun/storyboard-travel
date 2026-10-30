@@ -38,7 +38,10 @@ export interface VideoGenRules {
 }
 
 // 最小兜底规则 — 仅网络故障时使用。完整规则见服务端 video_gen_rules_minimax_h3.json
-const DEFAULT_PROMPT_RULE = '';
+const DEFAULT_PROMPT_RULE =
+  '<Picture 1> is a storyboard reference for every [Shot N] in this prompt, defining their ' +
+  'viewpoint, subject placement, and shot order. It is a 2x3 grid of six consecutive frames ' +
+  'that form one continuous timeline.';
 
 const DEFAULT_RULES_NEGATIVE_PROMPT = 'chromatic aberration, motion blur excess, morphing, distortion, warping, flicker, unnatural physics, floating objects, anti-gravity, product shape drift, product color shift, invented objects, disappearing objects, object deformation, bad anatomy, deformed hands, extra fingers, distorted faces, identity shift, oversharpening, plastic skin, waxy skin, blurry, jitter, noise, ghosting, frame skipping, lowres, overexposure, text artifacts, AI watermark, AI subtitle, empty frame, grid lines, split screen, static image, abrupt transition, doll-like, wax figure, dead eyes, lifeless eyes, frozen expression, fixed smile, uncanny valley, robotic movement, mechanical motion, exaggerated gesture, over-smooth skin, stiffness, waxiness, gibberish text, random invented lettering, invented speech bubbles, AI-generated watermark overlay, AI-generated subtitles, hallucinated on-screen captions, distorted existing lettering, misspelled existing signage text, landmark distortion, landscape morphing, building warping, perspective distortion, color bleeding, plastic texture, CG look, 3D render, video game graphics, oversaturated colors, wrong scale, cloning artifacts';
 
@@ -64,7 +67,7 @@ const DEFAULT_RULES: VideoGenRules = {
       '视频提示词正文恒为六段式，段名逐字、次序固定、段名独占一行、尾随半角冒号、段间空行；主字段 detailed_description',
       '六段之外不再添加任何工程约束段（规则头已于 2026-10-28 整段置空，客户端不再注入任何附加条款）',
       '两段声音正文用中文正面写「有什么」；overall_soundscape 写 N/A 只有「用户明确要求全片静音」一个前提（官方 §4.6），有一点声音就必须正面写；non_diegetic_music 没有非剧情配乐写 N/A（官方 §4.7）',
-      '六段散文正文一律用中文写（提交前由回译规则译成官方英文）；<d> 内台词按台词原语言逐字保留；官方字面量（段名 / [Shot N] / At MM:SS.mmm / N/A / retention 标记 / 各类标签 / 画外音句 / 双唇闭合句 / 运镜闭集 / 景别 5 档 / 切镜 5 动词）直接写英文原文，不再加中文括注；不许自造官方没有的英文（a wide shot / a full shot / a medium close-up / an extreme wide shot 一律不写）；光影只做英文定性描述，不贴 golden hour / Rembrandt lighting 这类流派标签；人声写 recitation / recites / speaks，不许写 chant / sing / intone（用户明确要求唱歌时才用 sing）；有台词画内说话镜在 </d> 之后逐字写官方口型串 `his/her/its mouth movements naturally syncing to the new dialogue`（2026-10-28 起撤回中文口型句，正文不再有任何中文内容句）',
+      '六段散文正文一律用中文写（提交前由回译规则译成官方英文）；<d> 内台词按台词原语言逐字保留；官方字面量（段名 / [Shot N] / At MM:SS.mmm / N/A / retention 标记 / 各类标签 / 画外音句 / 双唇闭合句 / 运镜闭集 / 景别 5 档 / 切镜 5 动词）直接写英文原文，不再加中文括注；不许自造官方没有的英文（a wide shot / a full shot / a medium close-up / an extreme wide shot 一律不写）；光影只做英文定性描述，不贴 golden hour / Rembrandt lighting 这类流派标签；人声写 recitation / recites / speaks，不许写 chant / sing / intone（用户明确要求唱歌时才用 sing）；有台词画内说话镜在 </d> 之后先写逗号、再逐字写官方口型串 `his/her/its mouth movements naturally syncing to the new dialogue`（2026-10-28 起撤回中文口型句，正文不再有任何中文内容句）',
       '全文禁止出现 <Audio N>；summary 恒为 [reference generation]，不许加 + audio reuse / + audio reference（本产品入参只有参考图，官方 §2.4 / §2.5）',
       '宫格1-6是连续时间线，顺序不变，不添加/不删减/不修改画面内容',
       '参考图里看得见的活物/道具/环境，其运动与状态变化必须逐项写出；禁止新增的理由只有一条：用户脚本里没有的场面/人物/地点/故事走向一个字都不加（官方 §4.2：参考图不是负面清单）',
@@ -115,7 +118,7 @@ const DEFAULT_RULES_DIRECT: VideoGenRules = {
       '视频提示词正文恒为六段式，段名逐字、次序固定、段名独占一行、尾随半角冒号、段间空行；主字段 detailed_description',
       '六段之外不再添加任何工程约束段（规则头已于 2026-10-28 整段置空，客户端不再注入任何附加条款）',
       '两段声音正文用中文正面写「有什么」；overall_soundscape 写 N/A 只有「用户明确要求全片静音」一个前提（官方 §4.6），有一点声音就必须正面写；non_diegetic_music 没有非剧情配乐写 N/A（官方 §4.7）',
-      '六段散文正文一律用中文写（提交前由回译规则译成官方英文）；<d> 内台词按台词原语言逐字保留；官方字面量（段名 / [Shot N] / At MM:SS.mmm / N/A / retention 标记 / 各类标签 / 画外音句 / 双唇闭合句 / 运镜闭集 / 景别 5 档 / 切镜 5 动词）直接写英文原文，不再加中文括注；不许自造官方没有的英文（a wide shot / a full shot / a medium close-up / an extreme wide shot 一律不写）；光影只做英文定性描述，不贴 golden hour / Rembrandt lighting 这类流派标签；人声写 recitation / recites / speaks，不许写 chant / sing / intone（用户明确要求唱歌时才用 sing）；有台词画内说话镜在 </d> 之后逐字写官方口型串 `his/her/its mouth movements naturally syncing to the new dialogue`（2026-10-28 起撤回中文口型句，正文不再有任何中文内容句）',
+      '六段散文正文一律用中文写（提交前由回译规则译成官方英文）；<d> 内台词按台词原语言逐字保留；官方字面量（段名 / [Shot N] / At MM:SS.mmm / N/A / retention 标记 / 各类标签 / 画外音句 / 双唇闭合句 / 运镜闭集 / 景别 5 档 / 切镜 5 动词）直接写英文原文，不再加中文括注；不许自造官方没有的英文（a wide shot / a full shot / a medium close-up / an extreme wide shot 一律不写）；光影只做英文定性描述，不贴 golden hour / Rembrandt lighting 这类流派标签；人声写 recitation / recites / speaks，不许写 chant / sing / intone（用户明确要求唱歌时才用 sing）；有台词画内说话镜在 </d> 之后先写逗号、再逐字写官方口型串 `his/her/its mouth movements naturally syncing to the new dialogue`（2026-10-28 起撤回中文口型句，正文不再有任何中文内容句）',
       '全文禁止出现 <Audio N>；summary 恒为 [reference generation]，不许加 + audio reuse / + audio reference（本产品入参只有参考图，官方 §2.4 / §2.5）',
       '参考图是若干张相互独立的素材，不假设它们之间存在宫格或时间线顺序',
       '参考图里看得见的活物/道具/环境，其运动与状态变化必须逐项写出；禁止新增的理由只有一条：用户脚本里没有的场面/人物/地点/故事走向一个字都不加（官方 §4.2：参考图不是负面清单）',

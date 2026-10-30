@@ -602,7 +602,9 @@
         "voiceoverLips": "{{count}} 处画外音缺“嘴唇保持完全闭合”",
         "audioTag": "正文出现了音频条目（本任务只挂了参考图）",
         "summaryTag": "summary 首项缺任务类型标签",
-        "tooLong": "正文 {{len}} 字，超出长度预算"
+        "tooLong": "正文 {{len}} 字，超出长度预算",
+        "detailedTooLong": "detailed_description {{len}} 字，超出单段预算 {{limit}}",
+        "silentMouth": "没有台词的镜写了「张合口型／无声动嘴」，模型会自己配一段听不懂的人声"
       }
     },
     "copyPrompt": "复制",
@@ -693,6 +695,13 @@
   "videoGen": {
     "title": "视频生成",
     "aspectRatio": "画幅",
+    "aspect": {
+      "landscape": "16:9 横屏",
+      "portrait": "9:16 竖屏",
+      "square": "1:1 方形",
+      "landscape43": "4:3 横屏",
+      "portrait34": "3:4 竖屏"
+    },
     "resolution": "分辨率",
     "duration": "时长",
     "prompt": "提示词",
@@ -701,6 +710,7 @@
     "promptEditableHint": "提示词可以手改；点「生成视频」时自动按官方规范译成英文交给视频模型。",
     "promptTooLongGate": "提示词共 {{len}} 字，超过 {{limit}} 字上限，容易导致生成失败，建议缩减提示词后重试。",
     "promptTranslateFailed": "提示词翻译成英文失败，请稍后重试（本次不会扣费）。",
+    "referenceImageLoadFailed": "第 {{index}} 张参考图读取失败，已取消提交。请重新添加这张图后再生成。",
     "extractFromStoryboard": "从分镜提取",
     "referenceImages": "参考图",
     "clickToEnlarge": "点击放大",

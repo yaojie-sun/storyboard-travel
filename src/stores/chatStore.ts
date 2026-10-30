@@ -11,7 +11,8 @@ import {
 } from '@/commands/chat';
 import { useEpisodeStore } from '@/stores/episodeStore';
 import { splitGridPromptIntoFrames } from '@/utils/gridPromptParser';
-import { enrichGridRequest } from '@/utils/gridWindowHint';
+import { enrichGridRequest, isGridRequest } from '@/utils/gridWindowHint';
+import { normalizeGridPictureRefs } from '@/utils/gridPictureRefs';
 import { buildProjectChatContext } from '@/features/chat/projectContext';
 import {
   parseStageAnchor,
@@ -85,6 +86,17 @@ export interface ChatMessage {
    * ⚠️ **optional**：老会话没有这个字段 ⇒ 不渲染任何卡片，显示行为逐字退回改动前（§12.4）。
    */
   stage?: string;
+  /**
+   * 这条回复是**宫格轮**的产物（用户那条请求带 `【模式】宫格`）。
+   *
+   * 收尾时由 `isGridRequest(用户请求)` 落位；`updateMessage` 重解析与
+   * `updatePromptBlock` 回写都靠它判断要不要跑宫格图号兜底 ——
+   * **不能靠「有没有 grid 块」**：两阶段流程下 STEP6 那条只出六段正文（没有宫格块），
+   * 而宫格块的按稿出格那一轮又只有宫格块、没有正文。
+   *
+   * ⚠️ **optional**：老会话没有这个字段 ⇒ 不跑兜底，行为与改动前一致（§12.4）。
+   */
+  gridTurn?: boolean;
 }
 
 export interface Conversation {
@@ -468,11 +480,37 @@ function parseStorySynopsis(text: string): string | undefined {
 }
 
 /**
+ * 宫格路的图号兜底（见 `utils/gridPictureRefs.ts`）。
+ *
+ * 🔴 **只在宫格轮才动手**：宫格路只上传一张合并图，正文里的 `<Picture 2/3/4>`
+ *    全是幽灵图；直出路的 `<Picture 1..N>` 是真的 N 张图，一个字不许动。
+ *
+ * 判据是 `gridTurn`（本轮请求带 `【模式】宫格`），**不是「有没有 grid 块」** ——
+ * 两阶段流程下 STEP6 那条只出六段正文、根本没有宫格块；而「按稿出格」那一轮
+ * 只有宫格块、没有正文。所以给定 `gridTurn` 时一律照办，没给定（老调用）才退回
+ * 「有 grid 块」这个近似判据（直出轮的回复里从不出 `【分镜提示词】`，见 `step6_直出_*`）。
+ */
+function applyGridPictureGuard(blocks: PromptBlock[], gridTurn = false): PromptBlock[] {
+  if (!gridTurn && !blocks.some((b) => b.type === 'grid')) return blocks;
+  let changed = false;
+  const next = blocks.map((b) => {
+    if (b.type !== 'video') return b;
+    const content = normalizeGridPictureRefs(b.content);
+    if (content === b.content) return b;
+    changed = true;
+    return { ...b, content };
+  });
+  return changed ? next : blocks;
+}
+
+/**
  * 解析 AI 回复，切出 video / grid 块。
  *
  * @param content AI 回复原文
  * @param inheritSelectedRefImages 前一轮写手的选图（三级兜底的最后一级）；
  *        本轮既没写【选图】也没在正文引用 `<Picture N>` 时用它。
+ * @param gridTurn 本轮用户请求是宫格轮（`【模式】宫格`）⇒ 正文要过图号兜底
+ *        （见 `applyGridPictureGuard`）。
  *
  * 🔴 参考图编号必须**视频块也带一份**。原先只有 grid 块带它，直出路因此拿不到参考图 ——
  * 直出按钮会发出 undefined，视频生成页打开时一张参考图都没勾。
@@ -481,6 +519,7 @@ function parseStorySynopsis(text: string): string | undefined {
 function parsePromptBlocks(
   content: string,
   inheritSelectedRefImages?: number[],
+  gridTurn = false,
 ): { blocks: PromptBlock[]; continuationPrompt?: string; shotFrameMap?: ShotFrameMap } {
   const blocks: PromptBlock[] = [];
   let continuationPrompt: string | undefined;
@@ -566,7 +605,11 @@ function parsePromptBlocks(
       }
     }
     if (produced) {
-      return { blocks, continuationPrompt, shotFrameMap };
+      return {
+        blocks: applyGridPictureGuard(blocks, gridTurn),
+        continuationPrompt,
+        shotFrameMap,
+      };
     }
     // 六段式界桩命中了但两侧都没产出有效块（例如宫格只有 1 格）——继续走标记路径兜底
   }
@@ -637,7 +680,7 @@ function parsePromptBlocks(
     });
   }
 
-  return { blocks, continuationPrompt, shotFrameMap };
+  return { blocks: applyGridPictureGuard(blocks, gridTurn), continuationPrompt, shotFrameMap };
 }
 
 function buildMessages(conversation: Conversation): ChatMessageDto[] {
@@ -1214,6 +1257,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const { blocks, continuationPrompt, shotFrameMap } = parsePromptBlocks(
           displayedText,
           inheritedRefImages,
+          isGridRequest(content),
         );
         // 「换源不换字段」：宫格块缺的 sceneContext / storySynopsis / characterContext
         // 由 STEP2 / STEP3 / STEP5 那几轮产物补上（见 `attachStageContext`）。
@@ -1226,6 +1270,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           continuationPrompt,
           shotFrameMap,
           stage: askedStage,
+          // 宫格轮标记：正文块的图号兜底、以及后续编辑/校正回写都靠它
+          gridTurn: isGridRequest(content) || undefined,
         };
       });
 
@@ -1343,6 +1389,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const { blocks, continuationPrompt, shotFrameMap } = parsePromptBlocks(
             text,
             inheritedRefImages,
+            // 宫格轮标记随消息存着（老会话没有 ⇒ false，行为退回改动前）
+            msg.gridTurn === true,
           );
           const replyBlocks = attachStageContext(
             blocks,
@@ -1391,11 +1439,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (msg.id !== messageId || !msg.promptBlocks) {
             return msg;
           }
+          // 宫格路：用户编辑 / 自动校正回写都走这里，图号兜底必须同样兜住
+          // （校正那一步会把整段正文重写，声明句可能被它改掉）。
+          const hasGrid = msg.gridTurn === true || msg.promptBlocks.some((b) => b.type === 'grid');
           return {
             ...msg,
             promptBlocks: msg.promptBlocks.map((block) =>
               block.id === blockId
-                ? { ...block, content: newContent, frames: block.type === 'grid' ? parseGridFrames(newContent) : block.frames }
+                ? {
+                    ...block,
+                    content:
+                      block.type === 'video' && hasGrid
+                        ? normalizeGridPictureRefs(newContent)
+                        : newContent,
+                    frames: block.type === 'grid' ? parseGridFrames(newContent) : block.frames,
+                  }
                 : block,
             ),
           };

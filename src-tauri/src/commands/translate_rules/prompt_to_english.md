@@ -14,6 +14,7 @@ COPY UNCHANGED, byte for byte:
 - every `[Shot N]` marker and every `At MM:SS.mmm` timestamp
 - every `<d> ... </d>` block, and `<scenetrans>` / `<cutoff>` / `[unclear]`
 - the tags `<Subject N>` and `<Picture N>`
+- a storyboard declaration that is already written in English — `<Picture N> is a storyboard reference for [Shot …], defining their viewpoint, subject placement, and shot order.` Keep it exactly: `is a storyboard reference` (not `is the storyboard reference`), `defining their viewpoint` (not `defining the viewpoint`), and leave the listed shots as they are
 - the speaker ids `(S1)` `(S2)` `(S1,S2)`
 - the retention markers: fully_preserved / partially_preserved / attribute_transfer / weak_reference, the `appears in` list, and the ` - ` that follows the marker
 - the bracketed task-type tag in summary, e.g. [reference generation]
@@ -26,12 +27,13 @@ OFFICIAL ENGLISH VOCABULARY — use exactly these words:
 - Camera moves: Zoom In, Zoom Out, Push In, Pull Out, Pan Left, Pan Right, Truck Left, Truck Right, Tilt Up, Tilt Down, Pedestal Up, Pedestal Down, Arc Shot, Tracking Shot, Static Shot, Shake Slightly, Shake Strongly, POV, Roll Clockwise, Roll Counterclockwise, with small amplitude, with large amplitude, at slow speed, at fast speed. Write the move as a natural English action inside the shot sentence; never stack it as a label at the end of the sentence.
 - Shot cuts: the camera cuts to / the shot cuts to / the shot transitions to / the shot changes to / the shot switches to
 - Shot sizes: an extreme close-up / a close-up / a close shot / a medium shot / a medium-wide shot
+- Picture roles: first frame / keyframe / last frame / edited keyframe / composition anchor (never invent a role such as "spatial and compositional benchmark" / "spatial and compositional anchor"; if the Chinese says 构图基准 / 空间基准 / 空间与构图锚点, write `composition anchor`)
 - Off-screen voiceover: that line MUST contain the exact words `says in an off-screen voiceover`. If it names an on-screen subject (`<Subject N>`), it MUST also state that the lips stay closed, e.g. `while his lips remain completely closed.` If nobody is on screen in that shot, do not add a closed-lips clause and do not invent a person.
 - On-camera speaking: `mouth movements naturally syncing to the new dialogue` (never a Chinese mouth sentence)
-- Human voice: use `says` / `speaks` / `recites`. Never `chant`, `sing`, or `intone` unless the original explicitly asks for singing.
+- Human voice: use `says` / `speaks` / `recites`. Never `chant`, `sing`, or `intone` unless the original explicitly asks for singing. Chinese 开口 / 张嘴 / 开腔 / 开口介绍 / 正要说话 before a `<d>` block all become `says` — keep the official §5.4 shape `<Subject N> (Sx) says, <d>…</d>`, never a substitute verb such as `opens his mouth to introduce`.
 
 NEVER write `<Audio N>` and never write "+ audio reference": this task is given reference images only, with no audio asset.
 
 KEEP THE SHAPE: the same number of shots, the same timestamps, the same tags, the same `<d>` lines in the same order, one `[Shot N]` per shot running consecutively from [Shot 1]. Never add or remove a shot, a tag, a timestamp or a line, and never invent content that is not in the Chinese original.
 
-LENGTH: the finished English body must be at most 6200 characters. English runs longer than Chinese — keep every visual fact, but state each fact once, keep one clause per fact, and drop decorative adjectives rather than dropping shots or dialogue.
+LENGTH: the finished English body must be at most 6500 characters. English runs longer than Chinese — keep every visual fact, but state each fact once, keep one clause per fact, and drop decorative adjectives rather than dropping shots or dialogue.

@@ -29,27 +29,44 @@ const MAX_ATTEMPTS: usize = 3;
 
 /// 正文字符预算（**英文**），与前端 `promptShapeCheck.ts` 的 `BODY_SOFT_LIMIT` 同一个数。
 ///
-/// 出处：视频模型硬限 `[1, 7000]` 字符（**含规则头**），客户端安全线 6900，
-/// 规则头约 700 字 ⇒ 正文真正能用的额度 ≈ 6200。
-/// 🔴 低于 6200 才算修好，否则前端 `checkPromptShape` 仍会判 error、把正文退回原文。
-pub(crate) const MAX_BODY_CHARS: usize = 6200;
-/// 正文字符预算（**中文**），与前端 `BODY_SOFT_LIMIT_ZH` 同一个数。
+/// 出处：视频模型硬限 `[1, 7000]` 字符（**含规则头**），客户端安全线 6900。
+/// 规则头现在只剩宫格路 211 字的取图说明（直出 0 字）⇒ 正文额度按 **6500** 算
+/// （2026-10-30 由 6200 上调：6500 + 211 + 2 < 6900，离 7000 硬限还留 280）。
+/// 🔴 超过 6500 才算修好不了，否则前端 `checkPromptShape` 仍会判 error、把正文退回原文。
+pub(crate) const MAX_BODY_CHARS: usize = 6500;
+/// 正文字数预算（**中文，单位是汉字数**），与前端 `BODY_SOFT_LIMIT_ZH` 同一个数。
 ///
 /// 🔴 为什么中文要和英文分开算：2026-10-28 用户定调「写手全程中文，提交时才译英文」，
 ///    写手出的正文从此是**中文**。官方 §5.1 的英文正文预算直接套到中文上等于白送
-///    一倍额度。中文→英文的实测倍率是 **2.25 ~ 2.69**（四份官方示例走
-///    [`super::translate_display::translate_prompt_to_english`] 实测量到），
-///    按 2.6 折算 ⇒ 中文这一侧卡 2400 字，回译后约 6200 英文字符，正好贴着英文预算。
-pub(crate) const MAX_BODY_CHARS_ZH: usize = 2400;
-/// 让人（模型）往 6000 压，别压到 6199 这种擦边球 —— 留 200 字余量。
-const TARGET_BODY_CHARS: usize = 6000;
-/// 中文侧同理留 100 字余量。
-const TARGET_BODY_CHARS_ZH: usize = 2300;
+///    一倍额度。
+///
+/// 🔴 为什么单位必须是**汉字数**而不是「整段字符数」（2026-10-30 实测改口径）：
+///    写手看的是 SKILL.md 里那张「每镜写多少字」的表（单位是**字**），按表写完
+///    1 万字符不到的表折算，落笔就是 2400 多字符＝1100 多个汉字。旧口径「2000 字符」
+///    与表里的「1200–1600 字」**互相打架** —— 写手照着表写，必然越过字符门，
+///    每一次生成都要白跑一轮自动校正。两边统一成「汉字数」后，规则表、字数门、
+///    校正提示是同一个数，写手第一次就能落进预算。
+///
+/// 倍率：实测三份中文正文的 **英文字符 / 汉字数 = 5.57 ~ 6.13**
+/// （1157→6449、798→4888、812→4704；正文越短，固定开销占比越高），
+/// 另测得 **英文词数 ≈ 0.97 × 汉字数**（1124 词 / 1157 汉字）。
+/// 按保守的 6.2 折算 ⇒ 中文这一侧卡 **1050 汉字**（约 6510 英文字符），
+/// 目标压到 1000（实测约 5700~6100，留 400 以上余量）。
+pub(crate) const MAX_BODY_CJK_ZH: usize = 1050;
+/// 让人（模型）往 6200 压，别压到 6499 这种擦边球 —— 留 300 字余量。
+const TARGET_BODY_CHARS: usize = 6200;
+/// 中文侧同理留 50 字余量。
+const TARGET_BODY_CJK_ZH: usize = 1000;
 
 /// 字符数用 `chars()` 而不是 `len()`：`len()` 是字节数，`<d>` 里的中文一句就 3 倍暴涨，
 /// 会跟前端 `text.length` 的口径对不上（前端才是最终裁判）。
 fn char_count(text: &str) -> usize {
     text.chars().count()
+}
+
+/// 汉字数 —— 中文正文的预算单位（判据与前端 `promptShapeCheck.ts` 的 `汉字数` 一致）。
+fn cjk_count(text: &str) -> usize {
+    text.chars().filter(|c| is_cjk(*c)).count()
 }
 
 fn is_cjk(c: char) -> bool {
@@ -157,10 +174,31 @@ fn first_meaningful_char(s: &str) -> Option<char> {
     }
 }
 
-/// 按正文语言取预算：中文 2400 / 英文 6200。
+/// `detailed_description` 单段上限（中文按汉字、英文按词）—— 官方 §5.2 *normally 350-500 English words*。
+///
+/// 与前端 `promptShapeCheck.ts` 的 `DETAILED_SOFT_LIMIT_ZH / DETAILED_SOFT_LIMIT_WORDS` 同一组数：
+/// 前端是最终裁判，这里少判一条就等于放行一份前端一定会打回的正文。
+/// 英文 800 词是官方上限（500 词）再留一档；中文 600 汉字 ≈ 英文 580 词（实测英文词数 ≈ 0.97 × 汉字数），
+/// 落在官方 350–500 词的区间里，同时给「其余五段」留下 400 汉字的余量。
+const DETAILED_LIMIT_ZH: usize = 600;
+const DETAILED_LIMIT_WORDS: usize = 800;
+
+/// 「这个数」（长度）按哪种单位量 —— 中文按**汉字数**、英文按**字符数**。
+///
+/// 🔴 预算和量法必须一起换：`MAX_BODY_CJK_ZH` 是汉字数，若这里仍用 `char_count`，
+///    一份 1500 汉字 / 3000 字符的中文正文会被判成 3000 字，永远压不进 1050 的预算。
+fn body_len(text: &str) -> usize {
+    if body_is_chinese(text) {
+        cjk_count(text)
+    } else {
+        char_count(text)
+    }
+}
+
+/// 按正文语言取预算：中文 1050 汉字 / 英文 6500 字符。
 fn body_budget(text: &str) -> usize {
     if body_is_chinese(text) {
-        MAX_BODY_CHARS_ZH
+        MAX_BODY_CJK_ZH
     } else {
         MAX_BODY_CHARS
     }
@@ -169,7 +207,7 @@ fn body_budget(text: &str) -> usize {
 /// 按正文语言取「建议压到多少」。
 fn target_budget(text: &str) -> usize {
     if body_is_chinese(text) {
-        TARGET_BODY_CHARS_ZH
+        TARGET_BODY_CJK_ZH
     } else {
         TARGET_BODY_CHARS
     }
@@ -203,14 +241,16 @@ STRUCTURE THAT MUST HOLD
 - Every line containing `<d>` carries a speaker id such as (S1) before the dialogue.
 - NEVER write `<Audio N>` and never write "+ audio reference": this task is given reference images only, with no audio asset.
 - Every line with `says in an off-screen voiceover` that names an on-screen subject (`<Subject N>`) also states that the lips stay completely closed; when nobody is on screen, never add such a clause and never invent a person.
-- The line under `summary:` starts with a bracketed task-type tag, e.g. [reference generation]."#;
+- The line under `summary:` starts with a bracketed task-type tag, e.g. [reference generation].
+- A shot without `<d>` never shows a mouth that moves. No 张合/开合, no "lips open and close", no "lips parting and closing", no 无声地动嘴, no "no sound comes out". Rewrite such actions as closed-lip wording only (official: "She closes her lips and guards the cookie."). Do not add dialogue; do not delete the shot.
+- `detailed_description` stays within 600 Chinese characters / 800 English words (official: normally 350-500 English words). Compress redundant adjectives and repeated clauses; never drop a [Shot N], a `<d>` line, or a retention line."#;
 
 /// 结构校验（**只判 error 级**，与前端 `promptShapeCheck.ts` 的 error 口径**逐条对齐**）。
 ///
 /// 这里判的每一条都能指到官方原文：
 /// 六段字段名/次序 §5.1、`[Shot N]` 连续 §5.x、`<d>` 成对与 `(Sx)` §5.4、
 /// 画外音闭唇句 §4.4、无 `<Audio N>` §2.5 + 本产品入参、summary 任务类型标签，
-/// 正文长度预算见 [`body_budget`]（中文 2400 / 英文 6200，按正文语言二选一）。
+/// 正文长度预算见 [`body_budget`]（中文 1050 汉字 / 英文 6500 字符，按正文语言二选一）。
 ///
 /// 🔴 **口径必须与前端一致**：前端 `checkPromptShape` 是最终裁判，它判 error 就会
 ///    把这里返回的正文丢掉、界面照样报「自动校正未成功」—— 少判一条等于白修一轮。
@@ -221,6 +261,7 @@ STRUCTURE THAT MUST HOLD
 pub fn validate_prompt_shape(text: &str) -> Result<(), String> {
     validate_structure(text)?;
     check_length(text)?;
+    check_detailed_length(text)?;
     Ok(())
 }
 
@@ -239,6 +280,45 @@ pub(crate) fn validate_structure(text: &str) -> Result<(), String> {
     check_speaker_ids(&detailed_section(text))?;
     check_voiceover_lips(text)?;
     check_summary_tag(text)?;
+    check_silent_mouth(text)?;
+    Ok(())
+}
+
+/// 没有 `<d>` 的行**不许写「会动的嘴」**（官方 §4.4 只给了闭唇一种不说话的写法）。
+///
+/// 🔴 判据与前端 `promptShapeCheck.ts` 的 `SILENT_MOUTH_ZH/EN` **逐条对齐**：
+///    「张合／开合／无声地动嘴／没有发出任何声音」＋「分开/张开 … 合上/闭上」这类**开→合循环**。
+///    2026-10-30 实测：写手写「双唇随一次呼吸轻轻分开又合上」，回译成
+///    *her lips parting and closing lightly with a breath* —— 直出与宫格两份稿子都这么写，
+///    模型收到「有人在动嘴、却没有 `<d>`」只会自己配一段听不懂的人声（客户投诉的那个病根）。
+///
+/// 有台词的行（含 `<d>`）不判：那里的口型就是官方要求的
+/// `his mouth movements naturally syncing to the new dialogue`。
+fn check_silent_mouth(text: &str) -> Result<(), String> {
+    let zh = regex::Regex::new(concat!(
+        "张合|开合|无声地|",
+        r"(?:嘴|双唇|嘴唇|唇角?)[^。；\n]{0,12}(?:没有|未)(?:发出)?(?:任何)?(?:声音|出声)|",
+        r"(?:嘴|双唇|嘴唇|唇角?)[^。；\n]{0,10}(?:分开|张开|开启)[^。；\n]{0,10}(?:合上|合拢|合起来|闭上|抿住)"
+    ))
+    .expect("silent mouth zh regex");
+    let en = regex::Regex::new(concat!(
+        r"(?i)lips? open(?:s|ing)? and clos(?:e|es|ing)|",
+        r"mouth (?:continuing to |still )?open(?:s|ing)? (?:and clos(?:e|ing)|wider)|",
+        r"no sound comes out|",
+        r"(?:lips?|mouth)[^.;]{0,30}\b(?:part|open)(?:s|ing|ed)?\b[^.;]{0,20}\b(?:and|then)\b[^.;]{0,20}\b(?:clos|shut)"
+    ))
+    .expect("silent mouth en regex");
+    for line in text.lines() {
+        if line.contains("<d>") || line.to_ascii_lowercase().contains("syncing to the new dialogue") {
+            continue;
+        }
+        if zh.is_match(line) || en.is_match(line) {
+            return Err(
+                "没有 <d> 的镜头写了「会动的嘴」（张合／开合／无声地动嘴），官方 §4.4 只允许闭唇"
+                    .to_string(),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -360,7 +440,9 @@ fn split_sentences(line: &str) -> Vec<String> {
 /// **每行至少留第一句**（`[Shot N]` 标记、retention 标记、`appears in` 都在第一句里）；
 /// 带 `<d>`／闭唇句／官方标记的句子一律不删。
 pub(crate) fn force_fit_budget(text: &str, budget: usize) -> Option<String> {
-    if char_count(text) <= budget {
+    // 量法与预算走同一套单位（中文汉字 / 英文字符），否则中文正文永远压不进中文预算。
+    let measure: fn(&str) -> usize = if body_is_chinese(text) { cjk_count } else { char_count };
+    if measure(text) <= budget && detailed_within_limit(text) {
         return Some(text.to_string());
     }
     struct Line {
@@ -402,7 +484,14 @@ pub(crate) fn force_fit_budget(text: &str, budget: usize) -> Option<String> {
     };
     // 🔴 必须拿**拼起来的真实长度**判，不能各句字数相加 —— 句子之间还有空格，
     //    按相加算会低估几百字，压完仍然超（2026-10-28 单测实测 6329 > 6200）。
-    let total = |lines: &[Line]| -> usize { char_count(&rebuild(lines)) };
+    //
+    // 🔴 收口条件有**两条**：总长度落进 budget，**并且** `detailed_description` 单段落进它的上限。
+    //    只看总长度会出现「总长已经合规、单段还超」的假成功 —— 前端 `checkPromptShape`
+    //    判的正是那一条，于是这一版兜底稿照样被打回、用户看到「自动校正未成功」。
+    let fits = |lines: &[Line]| -> bool {
+        let text = rebuild(lines);
+        measure(&text) <= budget && detailed_within_limit(&text)
+    };
 
     // 删的顺序：最后出现的最先删（音乐段在最后）
     let mut cut_order: Vec<String> = order.clone();
@@ -412,7 +501,7 @@ pub(crate) fn force_fit_budget(text: &str, budget: usize) -> Option<String> {
         let idxs: Vec<usize> = (0..lines.len()).filter(|i| lines[*i].section == sec).collect();
         for li in idxs.into_iter().rev() {
             loop {
-                if total(&lines) <= budget {
+                if fits(&lines) {
                     return Some(rebuild(&lines));
                 }
                 if lines[li].sentences.len() <= 1 {
@@ -426,7 +515,7 @@ pub(crate) fn force_fit_budget(text: &str, budget: usize) -> Option<String> {
                 lines[li].sentences.remove(pos);
             }
         }
-        if total(&lines) <= budget {
+        if fits(&lines) {
             return Some(rebuild(&lines));
         }
     }
@@ -448,16 +537,34 @@ fn check_speaker_ids(detailed: &str) -> Result<(), String> {
     }
     if !missing.is_empty() {
         let list: Vec<String> = missing.iter().map(|n| n.to_string()).collect();
-        return Err(format!("镜头 {} 的台词缺说话人编号 (S1)", list.join(",")));
+        return Err(format!(
+            "镜头 {} 的台词缺说话人编号：官方 §5.4 写 `<Subject N> (Sx)`，编号要贴在说话人后面（前端同口径）",
+            list.join(",")
+        ));
     }
     Ok(())
 }
 
+/// 官方 §5.4：`<Subject N> (Sx)` —— 编号是**说话人描述的一部分**。
+/// 挂在逗号/分号/冒号/顿号/左括号后面的裸编号（`说，(S1) <d>`）不算，
+/// 🔴 必须与前端 `promptShapeCheck.ts::hasAttachedSpeakerId` 同口径：
+///    两边量法不一致时，Rust 认为修好了、前端仍判红，而校正记录已经落盘 ⇒ 永远修不好。
 fn has_speaker_id(line: &str) -> bool {
-    // (S1) (S12) 都算；前端判据是 /\(S\d/
-    line.as_bytes()
-        .windows(3)
-        .any(|w| w[0] == b'(' && w[1] == b'S' && w[2].is_ascii_digit())
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'(' && bytes[i + 1] == b'S' && bytes[i + 2].is_ascii_digit() {
+            let before = line[..i].trim_end();
+            match before.chars().last() {
+                Some(c) if !matches!(c, ',' | ';' | ':' | '，' | '；' | '：' | '、' | '（' | '(') => {
+                    return true
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 fn check_summary_tag(text: &str) -> Result<(), String> {
@@ -493,7 +600,7 @@ fn repair_hint(text: &str) -> String {
     if let Err(e) = check_no_audio(text) {
         hints.push(format!("- {e}: remove every <Audio N> entry."));
     }
-    if char_count(text) > body_budget(text) {
+    if body_len(text) > body_budget(text) {
         hints.push(length_advice(text).trim_start_matches('\n').to_string());
     }
     if hints.is_empty() {
@@ -504,26 +611,65 @@ fn repair_hint(text: &str) -> String {
 }
 
 fn check_length(text: &str) -> Result<(), String> {
-    let n = char_count(text);
+    let n = body_len(text);
     let budget = body_budget(text);
     if n > budget {
-        return Err(format!("正文 {n} 字，超出 {budget} 字预算"));
+        let unit = if body_is_chinese(text) { "汉字" } else { "字符" };
+        return Err(format!("正文 {n} {unit}，超出 {budget} {unit}预算"));
+    }
+    Ok(())
+}
+
+/// 英文词数（与前端 `promptShapeCheck.ts` 第 9 条同一个切法）。
+fn word_count(text: &str) -> usize {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '\'' || c == '-'))
+        .filter(|w| !w.is_empty())
+        .count()
+}
+
+/// `detailed_description` 那一段是否落在单段上限内 —— [`force_fit_budget`] 的收口条件之一。
+fn detailed_within_limit(text: &str) -> bool {
+    let seg = detailed_section(text);
+    if body_is_chinese(text) {
+        cjk_count(seg) <= DETAILED_LIMIT_ZH
+    } else {
+        word_count(seg) <= DETAILED_LIMIT_WORDS
+    }
+}
+
+/// `detailed_description` 单段预算（官方 §5.2 *normally 350-500 English words*）。
+///
+/// 中文按汉字数（实测英文词数 ≈ 0.97 × 汉字数 ⇒ 600 汉字 ≈ 580 词，落在官方区间内），
+/// 英文按词数（800，官方上限再留一档）。
+/// 与前端第 9 条同一口径；实测有稿子把这一段写到 779 词 / 1250 汉字，六段预算被它一个人吃光。
+fn check_detailed_length(text: &str) -> Result<(), String> {
+    let seg = detailed_section(text);
+    let (n, limit) = if body_is_chinese(text) {
+        (cjk_count(seg), DETAILED_LIMIT_ZH)
+    } else {
+        (word_count(seg), DETAILED_LIMIT_WORDS)
+    };
+    if n > limit {
+        return Err(format!(
+            "detailed_description 有 {n}（中文按汉字 / 英文按词），超出 {limit} 的预算"
+        ));
     }
     Ok(())
 }
 
 /// 给模型的「还差多少、砍哪儿」——只对超长有用，其它缺陷返回空串。
 fn length_advice(text: &str) -> String {
-    let n = char_count(text);
+    let n = body_len(text);
     let budget = body_budget(text);
     if n <= budget {
         return String::new();
     }
     let target = target_budget(text);
     let cut = n - target;
+    let unit = if body_is_chinese(text) { "Chinese characters" } else { "characters" };
     format!(
-        "\nLENGTH: the body is {n} characters but the hard budget is {budget}. \
-         Cut at least {cut} characters of prose (target {target} or less) by shortening \
+        "\nLENGTH: the body is {n} {unit} but the hard budget is {budget}. \
+         Cut at least {cut} {unit} of prose (target {target} or less) by shortening \
          adjectives, merging clauses and stating each visual fact once. Do not drop any [Shot N], \
          any <d>…</d> line, any retention line, or any of the six field names."
     )
@@ -753,23 +899,25 @@ mod tests {
     fn detects_which_language_the_body_is_written_in() {
         assert!(body_is_chinese(OK_ZH), "中文正文必须判成中文");
         assert!(!body_is_chinese(OK), "英文正文不能被判成中文");
-        assert_eq!(body_budget(OK_ZH), MAX_BODY_CHARS_ZH);
+        assert_eq!(body_budget(OK_ZH), MAX_BODY_CJK_ZH);
         assert_eq!(body_budget(OK), MAX_BODY_CHARS);
     }
 
     #[test]
     fn chinese_body_uses_the_chinese_budget() {
-        // 3400 字中文：结构全对，但回译后约 8800 英文字符 ⇒ 必须在中文这一关就拦下。
+        // 🔴 中文预算的单位是**汉字数**（1050），不是整段字符数：
+        //    写手照 SKILL.md 的「每镜写多少字」表写出来的一条真实正文是 1157 汉字 / 2425 字符，
+        //    回译成 6449 英文字符 —— 必须在中文这一关就拦下，不能拖到回译之后。
         let pad = "远处的车流贴着湿漉漉的沥青低鸣。".repeat(200);
         let long = OK_ZH.replace("风声。", &format!("风声。{pad}"));
-        let n = char_count(&long);
-        assert!(n > MAX_BODY_CHARS_ZH && n < MAX_BODY_CHARS, "{n}");
+        let n = cjk_count(&long);
+        assert!(n > MAX_BODY_CJK_ZH, "{n}");
         let err = validate_prompt_shape(&long).unwrap_err();
-        assert!(err.contains(&MAX_BODY_CHARS_ZH.to_string()), "{err}");
+        assert!(err.contains(&MAX_BODY_CJK_ZH.to_string()), "{err}");
 
-        // 代码兜底也必须按中文预算压（不是 6200）
+        // 代码兜底也必须按**汉字**预算压（不是 6500 字符，也不是 1050 字符）
         let fitted = force_fit_budget(&long, body_budget(&long)).expect("应当能压进中文预算");
-        assert!(char_count(&fitted) <= MAX_BODY_CHARS_ZH, "{}", char_count(&fitted));
+        assert!(cjk_count(&fitted) <= MAX_BODY_CJK_ZH, "{}", cjk_count(&fitted));
         assert!(validate_prompt_shape(&fitted).is_ok(), "{:?}", validate_prompt_shape(&fitted));
         assert!(fitted.contains("<d>[Chinese] 回去。</d>"));
     }
@@ -856,7 +1004,7 @@ mod tests {
         let bad = OK.replace("Wind.", &format!("Wind. {}", "word ".repeat(MAX_BODY_CHARS / 5)));
         assert_ne!(bad, OK);
         let err = validate_prompt_shape(&bad).unwrap_err();
-        assert!(err.contains("字预算"), "{err}");
+        assert!(err.contains("6500"), "{err}");
         assert!(length_advice(&bad).contains("Cut at least"), "{}", length_advice(&bad));
     }
 
@@ -893,6 +1041,15 @@ mod tests {
     #[test]
     fn catches_dialogue_without_speaker_id() {
         let bad = OK.replace(" (S1) says", " says");
+        assert_ne!(bad, OK);
+        let err = validate_prompt_shape(&bad).unwrap_err();
+        assert!(err.contains("说话人编号"), "{err}");
+    }
+
+    /// 裸编号（`说，(S1) <d>`）不是官方 §5.4 的 `<Subject N> (Sx)`，同样算缺编号。
+    #[test]
+    fn catches_bare_speaker_id_after_comma() {
+        let bad = OK.replace("<Subject 1> (S1) says", "<Subject 1> says, (S1)");
         assert_ne!(bad, OK);
         let err = validate_prompt_shape(&bad).unwrap_err();
         assert!(err.contains("说话人编号"), "{err}");

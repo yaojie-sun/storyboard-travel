@@ -23,15 +23,27 @@ interface PromptEntry {
 
 /** Strip grid-question tail from video prompts before extracting */
 function stripGridQuestionTail(prompt: string): string {
-  return prompt
+  const stripped = prompt
     .replace(/[\s\n]*🎬\s*视频提示词已生成[\s\S]*$/, '')
     .replace(/[\s\n]*---\s*\n[\s\S]*$/, '')
     .replace(/[\s\n]*需要.*?宫格.*?A-生成[\s\S]*$/, '')
     .replace(/[\s\n]*是否需要生成宫格分镜图[\s\S]*$/, '')
     .replace(/[\s\n]*请确认是否需要生成[\s\S]*$/, '')
-    .replace(/[\s\n]*-\s*A[：:][\s\S]*$/, '')
-    .replace(/[\s\n]*A[\.\s、：:][\s\S]*$/, '')
-    .trim();
+    .replace(/[\s\n]*-\s*A[：:][\s\S]*$/, '');
+  // 尾部的「A 选项」只认**整行**（`A.` / `A、` / `A：` / 单独的 `A`）。
+  // 🔴 旧写法是 `/[\s\n]*A[\.\s、：:][\s\S]*$/` —— 字符类里含 `\s`，
+  //    于是英文正文里任何一个「 A 」（例如 ` A medium shot …`）都会把后面整段截掉：
+  //    实测一份 5196 字的英文正文被切成 2482 字，用户从「从分镜提取」拿到的提示词缺了一半。
+  // ⚠️ 字符类里**不能**有 `\s`：英文行首的 `A medium shot …` 会被误判成选项。
+  //    只认 `A.` / `A、` / `A：` / `A 中文…` / 单独一个 `A`。
+  const lines = stripped.trimEnd().split('\n');
+  while (
+    lines.length > 0
+    && /^\s*(?:[-*•·]\s*)?A(?:\s*[一-龥]|[.、：:]|$)/.test(lines[lines.length - 1])
+  ) {
+    lines.pop();
+  }
+  return lines.join('\n').trim();
 }
 
 function buildEntryFromBlock(block: PromptBlock, msgIndex: number, blockIndex: number, allBlocks: PromptBlock[], convIndex: number): PromptEntry | null {
