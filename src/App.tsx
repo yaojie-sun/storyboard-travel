@@ -46,6 +46,9 @@ import {
   type GlobalErrorDialogDetail,
 } from './features/app/errorDialogEvents';
 import { checkForUpdate } from './features/update/application/checkForUpdate';
+import { BroadcastToastHost } from './features/notification/BroadcastToastHost';
+import { NotificationBell } from './features/notification/NotificationBell';
+import { useNotificationPolling } from './features/notification/useNotificationPolling';
 import {
   subscribeOpenSettingsDialog,
   type SettingsCategory,
@@ -109,6 +112,9 @@ function App() {
   const closeProject = useProjectStore((state) => state.closeProject);
   const resetProjectStore = useProjectStore((state) => state.reset);
   const setView = useProjectStore((state) => state.setView);
+
+  // 广播通知全局轮询：登录与否都要跑（未登录也能看广播、提反馈）
+  useNotificationPolling();
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -1027,6 +1033,9 @@ function App() {
                 <LoginRequiredPanel onLogin={() => setShowLoginDialog(true)} />
               )}
             </div>
+            {/* 未登录也有标题栏之外的入口：广播与反馈对未登录用户同样开放 */}
+            <NotificationBell variant="floating" />
+            <BroadcastToastHost />
           </div>
         </ReactFlowProvider>
       );
@@ -1115,6 +1124,7 @@ function App() {
             onClose={handlePaymentClose}
             onRecharged={async () => { try { const u = await bananaGetCurrentUser(); setUserInfo(u); } catch {} }}
           />
+          <BroadcastToastHost />
         </div>
       </ReactFlowProvider>
     );
@@ -1167,6 +1177,9 @@ function App() {
             copyText={globalError?.copyText}
             onClose={() => setGlobalError(null)}
           />
+          {/* 未登录也有标题栏之外的入口：广播与反馈对未登录用户同样开放 */}
+          <NotificationBell variant="floating" />
+          <BroadcastToastHost />
         </div>
       </ReactFlowProvider>
     );
@@ -1267,6 +1280,7 @@ function App() {
           onCancel={() => setSyncConflicts([])}
         />
         <VideoGenDialog />
+        <BroadcastToastHost />
       </div>
     </ReactFlowProvider>
   );

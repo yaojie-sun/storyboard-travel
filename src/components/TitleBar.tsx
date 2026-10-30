@@ -5,6 +5,7 @@ import { Minus, X, Maximize2, Settings, ArrowLeft, CloudUpload } from 'lucide-re
 import { useTranslation } from 'react-i18next';
 import { Moon, Sun, Languages } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
+import { NotificationBell } from '@/features/notification/NotificationBell';
 import { useProjectStore } from '@/stores/projectStore';
 import { useEpisodeStore } from '@/stores/episodeStore';
 import { syncPush } from '@/commands/ai';
@@ -226,6 +227,8 @@ export function TitleBar({ onSettingsClick, showBackButton, onBackClick }: Title
             <Moon className="w-4 h-4 text-text-muted" />
           )}
         </button>
+
+        <NotificationBell />
 
         <button
           type="button"

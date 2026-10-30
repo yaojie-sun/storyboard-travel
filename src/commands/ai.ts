@@ -454,12 +454,25 @@ export interface ConsumptionHistoryResponse {
 
 /**
  * 获取积分消费记录
+ *
+ * 年月筛选在**服务端**做（传 `year`/`month`）：客户端只加载前几页数据，
+ * 本地过滤会让用户以为历史账单丢了。
  */
-export async function bananaGetConsumptionHistory(page = 1, limit = 20): Promise<ConsumptionHistoryResponse> {
+export async function bananaGetConsumptionHistory(
+  page = 1,
+  limit = 20,
+  year?: number | null,
+  month?: number | null,
+): Promise<ConsumptionHistoryResponse> {
   if (!isTauri()) {
     throw new Error('当前不是 Tauri 容器环境');
   }
-  return await invoke<ConsumptionHistoryResponse>('banana_get_consumption_history', { page, limit });
+  return await invoke<ConsumptionHistoryResponse>('banana_get_consumption_history', {
+    page,
+    limit,
+    year: year ?? null,
+    month: month ?? null,
+  });
 }
 
 /**

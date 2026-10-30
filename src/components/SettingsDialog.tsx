@@ -17,6 +17,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { hydrateVideoGenStore, useVideoGenStore } from '@/features/videoGeneration/videoGenStore';
 import { RechargeDialog } from '@/components/RechargeDialog';
 import { ConsumptionHistoryDialog } from '@/components/ConsumptionHistoryDialog';
+import { InvoiceDialog } from '@/components/InvoiceDialog';
 
 interface SettingsDialogProps {
   isOpen: boolean;
@@ -120,6 +121,7 @@ export function SettingsDialog({
   const [syncProgress, setSyncProgress] = useState<{ current: number; total: number; label: string; direction: string } | null>(null);
   const [showSyncRestartHint, setShowSyncRestartHint] = useState(false);
   const [isConsumptionOpen, setIsConsumptionOpen] = useState(false);
+  const [isInvoiceOpen, setIsInvoiceOpen] = useState(false);
   const [_appVersion, setAppVersion] = useState<string>('');
   const [localGrsaiNanoBananaProModel, setLocalGrsaiNanoBananaProModel] = useState(
     grsaiNanoBananaProModel
@@ -980,6 +982,12 @@ export function SettingsDialog({
     <ConsumptionHistoryDialog
       isOpen={isConsumptionOpen}
       onClose={() => setIsConsumptionOpen(false)}
+      onOpenInvoice={() => setIsInvoiceOpen(true)}
+    />
+    {/* 发票弹窗渲染在消费清单之后，同层级 DOM 顺序靠后 ⇒ 叠在清单之上 */}
+    <InvoiceDialog
+      isOpen={isInvoiceOpen}
+      onClose={() => setIsInvoiceOpen(false)}
     />
     <RechargeDialog
       isOpen={isRechargeOpen}

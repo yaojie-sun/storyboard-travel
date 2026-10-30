@@ -12,6 +12,8 @@ use commands::chat;
 use commands::enhance;
 use commands::enhance_ai;
 use commands::image;
+use commands::invoice_api;
+use commands::notification_api;
 use commands::project_state;
 use commands::prompt_repair;
 use commands::seedance_integration;
@@ -247,6 +249,12 @@ pub fn run() {
             banana_api::banana_get_active_video_model,
             banana_api::baidu_upscale_video,
             banana_api::banana_get_consumption_history,
+            notification_api::notification_fetch_announcements,
+            notification_api::notification_submit_feedback,
+            notification_api::notification_list_my_feedback,
+            invoice_api::invoice_get_summary,
+            invoice_api::invoice_submit,
+            invoice_api::invoice_list_mine,
             banana_api::copy_file_to_path,
             banana_api::download_video_to_local,
             usage_report::banana_report_usage,

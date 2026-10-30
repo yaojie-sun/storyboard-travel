@@ -1538,9 +1538,21 @@ pub async fn banana_get_consumption_history(
     app: AppHandle,
     page: i32,
     limit: i32,
+    year: Option<i32>,
+    month: Option<i32>,
 ) -> Result<ConsumptionHistoryResponse, String> {
-    info!("获取积分消费记录 page={} limit={}", page, limit);
-    let endpoint = format!("/jy/api/v1/credits/consumption?page={}&limit={}", page, limit);
+    info!(
+        "获取积分消费记录 page={} limit={} year={:?} month={:?}",
+        page, limit, year, month
+    );
+    // 年月筛选必须交给服务端：客户端只加载前几页，本地过滤会让历史账单「看起来丢了」
+    let mut endpoint = format!("/jy/api/v1/credits/consumption?page={}&limit={}", page, limit);
+    if let Some(y) = year {
+        endpoint.push_str(&format!("&year={}", y));
+    }
+    if let Some(m) = month {
+        endpoint.push_str(&format!("&month={}", m));
+    }
     send_banana_api_request("GET", &endpoint, None::<serde_json::Value>, true, Some(app)).await
 }
 

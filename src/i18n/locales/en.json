@@ -785,6 +785,100 @@
     "title": "Consumption History",
     "allYears": "All Years",
     "allMonths": "All Months",
+    "monthOption": "Month {{month}}",
+    "emptyRange": "No records in this period",
+    "loadFailed": "Failed to load, please try again later",
     "close": "Close"
+  },
+  "invoice": {
+    "entry": "Request Invoice",
+    "title": "Request Invoice",
+    "totalPaid": "Total Paid",
+    "used": "Invoiced / Requested",
+    "available": "Available",
+    "hint": "The e-invoice will be sent to the email below, usually within 1–3 business days. The quota is deducted on submission and returned automatically if the request is rejected.",
+    "noQuota": "No invoice quota available",
+    "submit": "Submit Request",
+    "submitting": "Submitting...",
+    "submitSuccess": "Request submitted. We will issue the invoice and email it to you shortly.",
+    "myRequests": "My Requests",
+    "field": {
+      "company": "Company Name",
+      "taxId": "Tax ID",
+      "phone": "Phone",
+      "email": "Email",
+      "type": "Invoice Type",
+      "amount": "Amount"
+    },
+    "type": {
+      "normal": "VAT General Invoice",
+      "special": "VAT Special Invoice"
+    },
+    "status": {
+      "pending": "Pending",
+      "issued": "Issued",
+      "rejected": "Rejected"
+    },
+    "error": {
+      "company": "Please enter the company name",
+      "taxId": "Please enter a valid tax ID",
+      "email": "Please enter a valid email",
+      "phone": "Please enter a valid phone number",
+      "amountRange": "Amount must be greater than 0 and no more than the available quota"
+    }
+  },
+  "notification": {
+    "bell": {
+      "title": "Notices & Feedback"
+    },
+    "tab": {
+      "notifications": "Notices",
+      "feedback": "Feedback"
+    },
+    "level": {
+      "info": "Notice",
+      "warning": "Reminder",
+      "important": "Important"
+    },
+    "action": {
+      "markAllRead": "Mark all read",
+      "close": "Close"
+    },
+    "empty": {
+      "announcements": "No notices yet",
+      "feedback": "You haven't sent any feedback yet"
+    },
+    "toast": {
+      "open": "View",
+      "dismiss": "Dismiss",
+      "replyTitle": "New reply to your feedback"
+    },
+    "feedback": {
+      "categoryLabel": "Category",
+      "category": {
+        "bug": "Bug",
+        "experience": "Usability",
+        "feature": "Feature request",
+        "other": "Other"
+      },
+      "contentLabel": "Description",
+      "contentPlaceholder": "Describe the problem or suggestion (at least 2 characters)",
+      "contactLabel": "Contact (optional)",
+      "contactPlaceholder": "Email / WeChat / QQ so we can reply to you",
+      "submit": "Submit",
+      "submitting": "Submitting...",
+      "success": "Submitted. We'll reply as soon as possible.",
+      "myThreads": "My feedback",
+      "replyFrom": "Reply from us",
+      "status": {
+        "pending": "Pending",
+        "answered": "Answered",
+        "closed": "Closed"
+      },
+      "error": {
+        "tooShort": "Description is too short (at least 2 characters)",
+        "submitFailed": "Submission failed, please try again later"
+      }
+    }
   }
 }
