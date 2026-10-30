@@ -188,6 +188,8 @@ pub async fn translate_prompt_to_english(prompt: String) -> Result<String, Strin
 
     let mut last_err = String::new();
     let mut draft = String::new();
+    // 结构全绿、只差字数的草稿：这份才压得动，留着给代码兜底用。
+    let mut best: Option<String> = None;
     for attempt in 0..2 {
         let (system, user) = if attempt == 0 {
             (EN_SYSTEM_PROMPT.to_string(), zh.clone())
@@ -213,6 +215,12 @@ pub async fn translate_prompt_to_english(prompt: String) -> Result<String, Strin
             }
             Err(e) => {
                 warn!("[回译] 第 {} 次校验未过：{e}", attempt + 1);
+                // 🔴 结构完好、只是超长的草稿要留下来：模型下一轮可能把它改坏
+                //    （2026-10-30 实测第二遍把 `subject_definitions:` 写没了），
+                //    兜底若只认最后一份，就等于白丢一版能压缩的稿子。
+                if prompt_repair::validate_structure(&out).is_ok() {
+                    best = Some(out.clone());
+                }
                 last_err = e;
                 draft = out;
             }
@@ -220,14 +228,24 @@ pub async fn translate_prompt_to_english(prompt: String) -> Result<String, Strin
     }
 
     // 🔴 模型没压进预算 ⇒ 代码兜底（删散文尾巴，不删镜头/台词/标记）。
-    if let Some(fitted) = force_fit_budget(&draft, MAX_BODY_CHARS) {
-        if validate_back_translation(&fitted).is_ok() {
-            warn!(
-                "[回译] 模型未压进预算，改用代码兜底：{} → {} 字",
-                draft.chars().count(),
-                fitted.chars().count()
-            );
-            return Ok(fitted);
+    //    优先用结构完好的那一版；没有再退回最后一份草稿。
+    let mut candidates: Vec<&str> = Vec::new();
+    if let Some(b) = best.as_deref() {
+        candidates.push(b);
+    }
+    if !candidates.contains(&draft.as_str()) {
+        candidates.push(&draft);
+    }
+    for candidate in candidates {
+        if let Some(fitted) = force_fit_budget(candidate, MAX_BODY_CHARS) {
+            if validate_back_translation(&fitted).is_ok() {
+                warn!(
+                    "[回译] 模型未压进预算，改用代码兜底：{} → {} 字",
+                    candidate.chars().count(),
+                    fitted.chars().count()
+                );
+                return Ok(fitted);
+            }
         }
     }
     Err(format!("{PREFIX}回译未通过结构校验：{last_err}"))

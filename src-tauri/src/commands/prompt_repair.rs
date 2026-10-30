@@ -219,6 +219,19 @@ STRUCTURE THAT MUST HOLD
 ///    [`repair_prompt_shape`] 开头被判成「已经合规」直接原样返回，前端拿到「没变」
 ///    就把状态记成失败、把超长清单摆给用户 —— 2026-10-28 冒烟自测就是这么卡住的。
 pub fn validate_prompt_shape(text: &str) -> Result<(), String> {
+    validate_structure(text)?;
+    check_length(text)?;
+    Ok(())
+}
+
+/// 只跑**结构项**，不判字数。
+///
+/// 用途：区分「结构完好、只是超长」与「结构已经写坏了」这两种草稿 —— 前者是
+/// [`force_fit_budget`] 的合法输入，后者压完也过不了校验。回译侧
+/// （[`super::translate_display::translate_prompt_to_english`]）靠它挑兜底草稿：
+/// 2026-10-30 实测，第一遍草稿结构全绿只超 278 字，却被第二遍写坏字段名的草稿顶掉，
+/// 结果整单报「翻译失败」（用户重点一次就好了，纯属白丢一版可用草稿）。
+pub(crate) fn validate_structure(text: &str) -> Result<(), String> {
     check_fields(text)?;
     check_shots(&detailed_section(text))?;
     check_d_pairs(text)?;
@@ -226,7 +239,6 @@ pub fn validate_prompt_shape(text: &str) -> Result<(), String> {
     check_speaker_ids(&detailed_section(text))?;
     check_voiceover_lips(text)?;
     check_summary_tag(text)?;
-    check_length(text)?;
     Ok(())
 }
 
@@ -846,6 +858,21 @@ mod tests {
         let err = validate_prompt_shape(&bad).unwrap_err();
         assert!(err.contains("字预算"), "{err}");
         assert!(length_advice(&bad).contains("Cut at least"), "{}", length_advice(&bad));
+    }
+
+    /// 回译兜底靠这条判据挑草稿（2026-10-30 实战）：
+    /// 「结构全绿、只超字数」= 可压缩；「字段名被改坏」= 压了也白压。
+    #[test]
+    fn structure_check_ignores_length_but_catches_broken_fields() {
+        let pad = "Distant traffic hums over the wet asphalt. ".repeat(200);
+        let long = OK.replace("Wind.", &format!("Wind. {pad}"));
+        assert!(char_count(&long) > MAX_BODY_CHARS);
+        assert!(validate_structure(&long).is_ok(), "{:?}", validate_structure(&long));
+        assert!(validate_prompt_shape(&long).is_err(), "超长必须由整篇校验拦下");
+
+        let broken = long.replace("subject_definitions:", "subject definitions:");
+        assert_ne!(broken, long);
+        assert!(validate_structure(&broken).is_err(), "写坏字段名必须判结构不通过");
     }
 
     #[test]
