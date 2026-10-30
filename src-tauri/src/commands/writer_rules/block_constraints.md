@@ -76,14 +76,11 @@
    （写「片中唯一的人声是旁白的朗诵」即可），
    **不许**写 `only wind, water, and fabric`——
    那是告诉模型人声不该出现，会把旁白压掉或吞掉。反过来，也**不许**在这两段复述台词原文。
-   🔴 **逐镜声音与声音两段按官方 §6 分工，不许重复**：官方向：
-   *Dialogue, singing, and sound events synchronized to a particular shot remain in
-   `detailed_description`.* ⇒ 正文逐镜只写**跟本镜某个动作直接同步的那一声**，
-   **必须织进产生它的那个动作句里**（例：「他放下杯子，杯底磕在桌面上发出一声轻响」）；
-   **禁止**给每镜套一句「本镜听得见……／This shot carries……」的模板句，也**禁止**在镜头末尾
-   另起一句罗列声音（「木地板上脚步声低沉回响，披风布料沙沙作响。」就是这一种）——
-   另起一句等于把 `overall_soundscape` 的活儿在镜内先干一遍，官方的「summarize」就变成了重复。
-   🔴 `overall_soundscape` 按官方 §4.6 写全片 1–4 句**概述**：环境声 + **物理动作声**（脚步、衣料、碰撞）+ 非语言人声（呼吸、笑、喘）—— 这些**官方点名要写**；但既然是 *summarize*，就**不许把镜内某一句原样搬进来**（换措辞再概述）。**只有**对白／歌声／画内音乐 *should not be repeated here*，一句都不许进 `overall_soundscape`。
+      🔴 **「当前声音」按官方写**（官方 Description detail：*For each shot, clearly establish the current composition, subject appearance and position, environment and lighting, actions and state changes, camera movement, current sound, and the points where referenced content actually appears or takes effect.*）：
+   逐镜写本镜里听得见、跟动作同步的声音即可，**句子怎么组织官方没有规定** —— 官方完整范例
+   Shot 3 的结尾就是一句独立的镜末声音句（*A classic canned audience laugh begins immediately after the line and continues through the final frame.*）。
+   🔴 **声音事件只写在 `detailed_description`**：*Dialogue, singing, and sound events synchronized to a particular shot remain in `detailed_description`.*（官方 §6）
+   🔴 `overall_soundscape` 按官方 §4.6 写全片 1–4 句**概述**：环境声 + **物理动作声**（脚步、衣料、碰撞）+ 非语言人声（呼吸、笑、喘）—— 这些**官方点名要写**；**不许**在这里重复的只有对白／歌声／画内音乐（官方：*should not be repeated here*）。
 14. 🔴 运镜只能取自官方 `Available Expression` 表：12 类 motion type（Zoom In/Out、Push In/Pull Out、
    Pan Left/Right、Truck Left/Right、Tilt Up/Down、Pedestal Up/Down、Arc Shot、Tracking Shot、
    Static Shot、Shake Slightly/Strongly、POV、Roll Clockwise/Counterclockwise）

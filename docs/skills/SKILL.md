@@ -7,7 +7,7 @@ welcome_message: |
   新影时代提供技术支撑
 ---
 
-<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.3.20 -->
+<!-- SECURITY_MARKER: xiaoya-ai-cinema-travel-protected-skill-v1.3.21 -->
 
 # 分路声明（先读这一节，再读下面正文）
 
@@ -173,7 +173,7 @@ non_diegetic_music:
 🔴🔴 **跨切连续性说明只写官方英文串，标签后不写中文**：`<scenetrans>` / `<cutoff>` 一律写在 `<d>` 外面，**说明写在标签前面、标签紧贴切口，标签后面只接 `</d>` 或 `<d>`**。连续性说明用官方四条英文原句之一（`continues seamlessly across the cut` / `continues uninterrupted into the next shot` / `carries over from the previous shot` / `remains audible across the transition`），逐字照用，不许译成中文、不许写成「中文（英文）」括注 —— 实测 `<scenetrans>` 后面紧跟的中文会被模型当成旁白整句念出来（「声音跨切连续到下一镜」曾被念出）。✅ 切口前：`…says in an off-screen voiceover: <d>[Chinese] 前半句，</d> The audio continues seamlessly across the cut. <scenetrans>`；✅ 切口后：`The audio carries over from the previous shot. <scenetrans> <d>[Chinese] 后半句。</d> while her lips remain completely closed.`；✅ 片尾截断：`…<d>[Chinese] 说到一半的台词</d> <cutoff>`（标签紧贴 `</d>`，后面不写中文）。
 
 
-🔴 **「当前声音」按官方 §6 分工**：*Dialogue, singing, and sound events synchronized to a particular shot remain in `detailed_description`.* ⇒ 逐镜只写**跟本镜某个动作直接同步的那一声**，**并且必须织进产生它的那个动作句里**（例：「他放下杯子，杯底磕在桌面上发出一声轻响」）。**禁止**给每镜套一句「本镜听得见……／This shot carries……」的模板句，也**禁止**在镜头末尾另起一句罗列声音（「木地板上脚步声低沉回响，披风布料沙沙作响。」就是这一种）—— 另起一句 = 把 `overall_soundscape` 的活儿在镜内先干一遍，官方要求的「summarize」就变成了重复。`overall_soundscape` 本身按官方 §4.6 原句写（*summarize the ambient sound, physical action sounds, and non-verbal human sounds…*）—— 全片 1–4 句**概述**；既然是 *summarize*，就**不许把镜内某一句原样搬进来**（换了措辞再概述）。对白／歌声／画内音乐 *should not be repeated here*（官方同段）。
+🔴 **「当前声音」按官方写**：*For each shot, clearly establish the current composition, subject appearance and position, environment and lighting, actions and state changes, camera movement, current sound, and the points where referenced content actually appears or takes effect.*（官方 Description detail）—— 逐镜写**本镜里听得见、跟动作同步的声音**即可。**句子怎么组织，官方没有规定**：官方完整范例的 Shot 3 结尾就是一句独立的镜末声音句（*A classic canned audience laugh begins immediately after the line and continues through the final frame.*），镜末单独写一句声音**是合法的**，不要改写它。🔴 **声音事件只写在 `detailed_description`**：*Dialogue, singing, and sound events synchronized to a particular shot remain in `detailed_description`.*（官方 §6）🔴 `overall_soundscape` 按官方 §4.6 原句写：*Use 1–4 English sentences in one continuous paragraph to summarize the ambient sound, physical action sounds, and non-verbal human sounds across the full video, such as wind, rain, traffic, footsteps, fabric movement, impacts, breathing, laughter, or panting. Dialogue, singing, and diegetic music already belong in the multimodal description and should not be repeated here.* —— 全片 1–4 句**概述**；**物理动作声与呼吸这类非语言人声是官方点名要写的**；**不许**在这里重复的只有对白／歌声／画内音乐。
 
 🔴 **不许把全片声音限死成「只有」环境声**：全片有画外人声时，必须正面承认人声在场（写「全片人声只有画外吟诵者的念诵」即可），**不许**写「只有风声、水声与衣料声」——那是告诉模型人声不该出现，会把旁白压掉或吞掉。反过来，也**不许**在声音两段复述台词原文。
 

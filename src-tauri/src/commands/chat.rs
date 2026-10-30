@@ -30,6 +30,56 @@ const ANALYSIS_MAX_TOKENS: u32 = 2048;
 /// 【通用约束】+ 输出契约 + 内容铁律 —— 正文的唯一存放处。
 const BLOCK_CONSTRAINTS: &str = include_str!("writer_rules/block_constraints.md");
 
+/// 内置份对应的技能包版本号。与 `docs/skills/version.txt` 的 `version=` 保持一致；
+/// 改动 `block_constraints.md` 的内置内容时**必须同步改这里**，否则热更份永远盖不过它。
+const BLOCK_CONSTRAINTS_VERSION: &str = "1.3.20";
+
+/// 热更份必须包含的锚点 —— 防截断包、防误覆盖成别的文件。
+const BLOCK_CONSTRAINTS_ANCHORS: [&str; 3] = ["六段", "detailed_description", "禁止"];
+
+/// 读通用约束块：热更份优先，校验不过回落到内置份。
+fn load_block_constraints() -> std::borrow::Cow<'static, str> {
+    match try_load_hot_block_constraints() {
+        Some((text, version)) => {
+            info!("[Chat] 通用约束块来源：热更 v{}（自定义校验通过）", version);
+            std::borrow::Cow::Owned(text)
+        }
+        None => std::borrow::Cow::Borrowed(BLOCK_CONSTRAINTS),
+    }
+}
+
+/// 尝试加载热更份。任何一项校验不过都返回 `None`（= 用内置份）。
+fn try_load_hot_block_constraints() -> Option<(String, String)> {
+    let dir = get_skill_dir().ok()?;
+    let text = std::fs::read_to_string(dir.join("block_constraints.md")).ok()?;
+    let version = std::fs::read_to_string(dir.join("version.txt"))
+        .ok()
+        .and_then(|v| parse_version_field(&v))?;
+
+    if !version_greater(&version, BLOCK_CONSTRAINTS_VERSION) {
+        warn!(
+            "[Chat] 热更通用约束块版本 {} 不高于内置 {}，忽略",
+            version, BLOCK_CONSTRAINTS_VERSION
+        );
+        return None;
+    }
+    if let Some(missing) = BLOCK_CONSTRAINTS_ANCHORS.iter().find(|a| !text.contains(*a)) {
+        warn!("[Chat] 热更通用约束块缺少锚点「{}」，拒绝使用", missing);
+        return None;
+    }
+    let ratio = text.len() as f64 / BLOCK_CONSTRAINTS.len() as f64;
+    if !(0.6..=1.6).contains(&ratio) {
+        warn!(
+            "[Chat] 热更通用约束块体积异常（内置 {} 字节 / 热更 {} 字节），拒绝使用",
+            BLOCK_CONSTRAINTS.len(),
+            text.len()
+        );
+        return None;
+    }
+    Some((text, version))
+}
+
+
 /// 【分镜映射】JSON 铁律（宫格链路）—— 正文的唯一存放处。
 const BLOCK_MAPPING: &str = include_str!("writer_rules/block_mapping.md");
 
@@ -457,7 +507,7 @@ pub(crate) async fn chat_send_message(
     //
     // ⇒ 次序恒定：CRITICAL（路由）→ 通用约束 → 分镜映射。
     system_prompt.push_str(BLOCK_CRITICAL);
-    system_prompt.push_str(BLOCK_CONSTRAINTS);
+    system_prompt.push_str(&load_block_constraints());
     system_prompt.push_str(BLOCK_MAPPING);
 
     // 🔴 「STEP 门机」形状块 —— **只在锚点轮注入**。
