@@ -100,6 +100,7 @@ export function ChatBubble({ message, isStreaming, phase, stage }: ChatBubblePro
               key={block.id}
               block={block}
               messageId={message.id}
+              messageCreatedAt={message.timestamp}
             />
           ))}
         </div>

@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, resolveSelectedRefImages, type PromptBlock } from '@/stores/chatStore';
-import { getPromptMirror, looksChineseWritten, promptFingerprint } from '@/commands/translateDisplay';
-import { hasAttemptedPromptRepair, repairPromptShape } from '@/commands/promptRepair';
+import { looksChineseWritten } from '@/commands/translateDisplay';
+import { hasAttemptedPromptRepair, isFreshInThisSession, repairPromptShape } from '@/commands/promptRepair';
 import { checkPromptShape } from '@/features/videoGeneration/promptShapeCheck';
 import { FillGridButtons } from './FillGridButtons';
 
 interface EditablePromptBlockProps {
   block: PromptBlock;
   messageId: string;
+  /** 所属消息的生成时刻 —— 用来区分「本次新生成」与「历史会话」（见 `isFreshInThisSession`）。 */
+  messageCreatedAt?: number;
 }
 
 /**
@@ -18,14 +20,18 @@ interface EditablePromptBlockProps {
  *    英文只在点「生成视频」那一刻由独立回译规则产出（`translate_rules/prompt_to_english.md`）。
  * 因此这里：
  *   · 正文是中文 ⇒ 直接显示、直接编辑（`onEdit` 改的就是真相源 `block.content`）；
- *   · 正文是英文（老会话）⇒ 中文只作显示镜像，只读；
+ *   · 正文是英文（老项目）⇒ 原样只读显示，不翻译、不打网关；
  *   · 结构自检 —— 出片**之前**把能机械核对的规范项摆出来，别等花了视频钱才发现不对。
  */
-export function EditablePromptBlock({ block, messageId }: EditablePromptBlockProps) {
+export function EditablePromptBlock({ block, messageId, messageCreatedAt }: EditablePromptBlockProps) {
   const { t } = useTranslation();
   const isVideo = block.type === 'video';
+  /**
+   * 🔴 只有**本次运行里新生成**的正文才自动过一遍 skill / 结构校正（用户 2026-10-31 定调）。
+   *    历史会话打开就只是读：不翻译、不校正、不打网关。
+   */
+  const freshBlock = isFreshInThisSession(messageCreatedAt);
 
-  const setPromptBlockMirror = useChatStore((s) => s.setPromptBlockMirror);
   const updatePromptBlock = useChatStore((s) => s.updatePromptBlock);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   const conversations = useChatStore((s) => s.conversations);
@@ -35,45 +41,17 @@ export function EditablePromptBlock({ block, messageId }: EditablePromptBlockPro
     c.messages.some((m) => m.id === messageId)
   )?.id;
 
-  const [lang, setLang] = useState<'zh' | 'en'>('zh');
-  const [mirrorPending, setMirrorPending] = useState(false);
-  const [mirrorError, setMirrorError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(block.content);
 
-  // 正文是中文 ⇒ 直接编辑（这是真相源）；英文老会话 ⇒ 只看中文镜像，只读
+  // 正文是中文 ⇒ 直接编辑（这是真相源）；英文正文只可能是老项目 ⇒ 原样只读显示（2026-10-31）
   const promptIsChinese = useMemo(() => looksChineseWritten(block.content), [block.content]);
-  const showingMirror = isVideo && !promptIsChinese;
-  const canEdit = !isVideo || !showingMirror;
+  const canEdit = !isVideo || promptIsChinese;
 
   const handleSave = useCallback(() => {
     updatePromptBlock(messageId, block.id, editValue);
     setIsEditing(false);
   }, [messageId, block.id, editValue, updatePromptBlock]);
-
-  const fingerprint = useMemo(() => promptFingerprint(block.content), [block.content]);
-  const mirrorFresh = !!block.contentZh && block.contentZhFrom === fingerprint;
-  const needsMirror = showingMirror && !mirrorFresh && block.content.trim().length > 0;
-
-  // 需要镜像就取一次；取不到不阻塞显示，退回英文原文
-  useEffect(() => {
-    if (!needsMirror) return;
-    let cancelled = false;
-    setMirrorPending(true);
-    setMirrorError(null);
-    getPromptMirror(block.content).then((res) => {
-      if (cancelled) return;
-      setMirrorPending(false);
-      if (res.zh) {
-        setPromptBlockMirror(messageId, block.id, res.zh, promptFingerprint(block.content));
-      } else {
-        setMirrorError(res.reason);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [needsMirror, block.id, block.content, messageId, setPromptBlockMirror]);
 
   const shape = useMemo(
     () => (isVideo ? checkPromptShape(block.content) : null),
@@ -87,6 +65,10 @@ export function EditablePromptBlock({ block, messageId }: EditablePromptBlockPro
   //    `failed` 只是状态，不渲染任何文案。
   useEffect(() => {
     if (!isVideo || !shape || shape.level !== 'error') return;
+    // 🔴 历史会话不自动校正（2026-10-31 用户定调）：以前生成的正文就是既成事实，
+    //    skill 只服务本次新生成。少了这道闸，打开老项目会把每条历史提示词都送网关
+    //    复检一遍，白烧 tokens。用户要修可以自己手改。
+    if (!freshBlock) return;
     // 🔴 校正过的正文（含上次启动）不再亮提示、不再打网关：用户原话
     //    「为什么每次启动 chat 都会出现这个？校正一次就可以了」。
     if (hasAttemptedPromptRepair(block.content)) return;
@@ -106,15 +88,7 @@ export function EditablePromptBlock({ block, messageId }: EditablePromptBlockPro
     return () => {
       cancelled = true;
     };
-  }, [isVideo, shape, block.content, block.id, messageId, updatePromptBlock]);
-
-  const zhText = mirrorFresh ? block.contentZh : null;
-  const showingZh = showingMirror && lang === 'zh';
-  // 🔴 中文是**默认显示**的那一份。译文还没回来时**不退回英文** ——
-  //    用户看到的第一屏就是一大段英文，会以为产品默认就是英文。
-  //    等译文到了再填进来；只有**真失败**（`mirrorError`）才退回英文原文，并给出提示。
-  const mirrorWaiting = showingZh && !zhText && !mirrorError && block.content.trim().length > 0;
-  const bodyText = showingZh ? (zhText ?? (mirrorError ? block.content : '')) : block.content;
+  }, [isVideo, freshBlock, shape, block.content, block.id, messageId, updatePromptBlock]);
 
   return (
     <div
@@ -123,7 +97,7 @@ export function EditablePromptBlock({ block, messageId }: EditablePromptBlockPro
         ${isVideo ? 'border-purple-500/30' : 'border-emerald-500/30'}
       `}
     >
-      {/* Header — 标签 + 语言切换 */}
+      {/* Header — 标签 */}
       <div
         className={`
           flex items-center justify-between gap-2 px-3 py-1.5 text-xs font-medium
@@ -133,28 +107,6 @@ export function EditablePromptBlock({ block, messageId }: EditablePromptBlockPro
         <span>
           {isVideo ? t('chat.videoPromptLabel') : t('chat.gridPromptLabel')}
         </span>
-
-        {showingMirror && (
-          <div
-            className="flex items-center rounded-lg overflow-hidden border border-current/20"
-            role="group"
-            aria-label={t('chat.prompt.langToggle')}
-          >
-            {(['zh', 'en'] as const).map((key) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setLang(key)}
-                className={`
-                  px-2 py-0.5 text-[11px] transition-colors
-                  ${lang === key ? 'bg-current/20 font-semibold' : 'hover:bg-current/10'}
-                `}
-              >
-                {key === 'zh' ? t('chat.prompt.langZh') : t('chat.prompt.langEn')}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
 
       {/* Content */}
@@ -191,23 +143,8 @@ export function EditablePromptBlock({ block, messageId }: EditablePromptBlockPro
           </div>
         ) : (
         <>
-        {mirrorWaiting && (
-          <div className="text-[11px] text-[var(--text-muted)]">
-            {t('chat.prompt.mirrorPending')}
-          </div>
-        )}
-        {/* 只在**真的失败**之后才提示；否则首帧会闪一下琥珀色警告 */}
-        {showingZh && !mirrorPending && !zhText && !!mirrorError && (
-          <div className="mb-2 text-[11px] text-amber-600 dark:text-amber-400">
-            {t('chat.prompt.mirrorFailed')}
-            {mirrorError && !mirrorError.startsWith('translation_unavailable') ? (
-              <span className="opacity-70"> · {mirrorError}</span>
-            ) : null}
-          </div>
-        )}
-
         <div className="text-sm text-[var(--text)] whitespace-pre-wrap break-words leading-relaxed">
-          {bodyText}
+          {block.content}
         </div>
 
         {/* Grid fill button — always 6-grid (2x3) */}

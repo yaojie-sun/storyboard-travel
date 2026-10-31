@@ -25,12 +25,7 @@ import { deriveDockSubtitle } from './dockTitle';
 import { inferRefTypes, REF_TYPE_LABELS } from './refTypes';
 import { auditAndFixDTags, rememberDTagAudit, summarizeDTagAudit } from './dTagAudit';
 import { fetchVideoGenRules, type VideoGenRuleMode } from './videoGenRules';
-import {
-  getPromptMirror,
-  looksChineseWritten,
-  promptFingerprint,
-  translatePromptForSubmit,
-} from '@/commands/translateDisplay';
+import { looksChineseWritten, prepareVideoPromptForSubmit } from '@/commands/translateDisplay';
 import { looksGeneratedPrompt } from './promptShapeCheck';
 import {
   ASPECT_RATIO_OPTIONS,
@@ -775,55 +770,19 @@ function VideoGenDialogInner({
   const [videoModel] = useState<string>('minimax/minimax-h3');
   const [prompt, setPrompt] = useState('');
   /**
-   * 🔴 输入框里**显示**的是中文镜像；提交给视频模型的永远是 `prompt`（英文原文）。
-   * 两层关系不变：`prompt` 才是 `saveConfig` / 历史 / `finalPrompt` 的唯一来源。
+   * `prompt` 是**唯一真相源**：`saveConfig` / 历史 / `finalPrompt` 都取它；
+   * 送视频模型的英文只在点「生成视频」那一刻由英文闸门产出（`prepareVideoPromptForSubmit`：
+   * 中文回译 / 英文原地整理，两条都过同一套官方 A 档判据）。
    *
-   * `promptLocked` = 这份提示词由脚本生成（不是用户自己敲的）⇒ 不可手改，可切中英显示；
-   * 空白框（手工写提示词的入口）不锁，边打边显示英文。
+   * 🔴 2026-10-31 用户定调：**老的正文一律不管**。写手现在出的正文本来就是中文 ⇒ 正常情况下
+   *    这里永远是中文；正文是英文的只可能是 2026-10-28 之前的老项目，那就**原样显示、只读**。
+   *    不翻译、不校正、不打任何网关 —— 整条数据流除 H3 提交那一刻外没有翻译。
+   *
+   * `promptLocked` = 这份提示词由脚本生成（不是用户自己敲的）。
    */
   const [promptLocked, setPromptLocked] = useState(false);
-  const [promptLang, setPromptLang] = useState<'zh' | 'en'>('zh');
-  const [promptZh, setPromptZh] = useState<{ zh: string; from: string } | null>(null);
-  const [promptZhPending, setPromptZhPending] = useState(false);
-  // 只在**取失败之后**才提示「暂不可用」，否则首帧会闪一下琥珀色警告
-  const [promptZhFailed, setPromptZhFailed] = useState(false);
-  const [gridFrames, setGridFrames] = useState<string[]>(initialGridFrames);
-
-  // 中文显示镜像（只给人看）。指纹不匹配即视为过期，立刻退回英文原文。
-  const promptFp = useMemo(() => promptFingerprint(prompt), [prompt]);
-  const promptZhText = promptZh && promptZh.from === promptFp ? promptZh.zh : null;
-  /**
-   * 🔴 2026-10-28 二次定调：**提示词本体就是中文**（写手出中文、用户可改中文），
-   *    英文只在点「生成视频」那一刻由回译规则产出。
-   *    所以「显示中文」不再依赖镜像：正文本身是中文 ⇒ 直接显示、直接编辑；
-   *    只有**老会话**（正文是英文）才走镜像显示。
-   */
   const promptIsChinese = useMemo(() => (prompt.trim() ? looksChineseWritten(prompt) : false), [prompt]);
-  const showingMirror = promptLocked && promptLang === 'zh' && !promptIsChinese;
-  // 🔴 中文是**默认显示**的那一份（用户定调「chat 页面和这里默认都显示中文」）。
-  //    译文还没回来时**不退回英文** —— 那会让人以为产品默认就是英文；
-  //    框里留空、只显示「正在生成中文对照…」，等译文到了再填进去。
-  //    ⚠️ 只有**取不到**（`promptZhFailed`）才退回英文原文，并给出提示。
-  const promptMirrorWaiting =
-    showingMirror && !promptZhText && !promptZhFailed && Boolean(prompt.trim());
-  const displayPrompt = showingMirror ? (promptZhText ?? (promptZhFailed ? prompt : '')) : prompt;
-
-  // 🔴 只在**英文正文 + 要显示中文镜像**时取镜像：手工输入时每敲一个字都会变指纹，会把网关打穿。
-  useEffect(() => {
-    if (!promptLocked || promptIsChinese || !prompt.trim()) return;
-    let cancelled = false;
-    setPromptZhPending(true);
-    setPromptZhFailed(false);
-    getPromptMirror(prompt).then((res) => {
-      if (cancelled) return;
-      setPromptZhPending(false);
-      if (res.zh) setPromptZh({ zh: res.zh, from: promptFp });
-      else setPromptZhFailed(true);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [promptLocked, promptIsChinese, promptFp, prompt]);
+  const [gridFrames, setGridFrames] = useState<string[]>(initialGridFrames);
 
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>(initRefImages);
   // 音色参考：最多 3 段，每段可绑定一个角色（官方 r2va）。第一段同时写进旧的单段字段。
@@ -1436,26 +1395,28 @@ function VideoGenDialogInner({
       //    （`src-tauri/src/commands/translate_rules/prompt_to_english.md`）。
       //    ⚠️ 翻不出来**不能退回中文原文提交**：规则头要求英文正文，中英混排正是
       //    「旁白听不懂 / 旁白时人物张嘴」的病根，花钱换一段坏片不值得 ⇒ 直接报错让用户重试。
+      // 🔴 2026-10-31 用户定调：这道英文闸门管**全部**送 H3 的正文，不只是回译出来的那份。
+      //    中文 ⇒ 回译；英文（老项目）⇒ finalize_english_prompt 原地过同一套官方闸门。
+      //    任一分支不过 ⇒ 拦在扣费之前，绝不把不合格英文送去出片。
       const rawContent = dAudit.text;
-      const needsTranslation = looksChineseWritten(rawContent);
-      const translatedForH3 = needsTranslation ? await translatePromptForSubmit(rawContent) : null;
-      if (needsTranslation && !translatedForH3) {
-        console.error('[VideoGenDialog] 提示词回译失败，已拦截提交');
+      const contentForH3 = await prepareVideoPromptForSubmit(rawContent);
+      if (!contentForH3) {
+        console.error('[VideoGenDialog] 英文闸门未通过，已拦截提交');
         setIsGenerating(false);
         setGenerationPhase(null);
         setQueueAhead(0);
         queueTokenRef.current = null;
         setError(
           t('videoGen.promptTranslateFailed', {
-            defaultValue: '提示词翻译成英文失败，请稍后重试（不会扣费）。',
+            defaultValue: '提示词未通过官方英文校验，已拦截本次提交（不会扣费）。',
           })
         );
         return;
       }
-      const userContent = translatedForH3 ?? rawContent;
-      if (translatedForH3) {
+      const userContent = contentForH3;
+      if (contentForH3 !== rawContent) {
         console.log(
-          `[VideoGenDialog] 提示词已回译为英文：${rawContent.length} → ${translatedForH3.length} 字`
+          `[VideoGenDialog] 送 H3 正文已过闸门：${rawContent.length} → ${contentForH3.length} 字`
         );
       }
 
@@ -1997,31 +1958,7 @@ function VideoGenDialogInner({
                 <label className="text-xs font-medium text-text-muted">
                   {t('videoGen.prompt', '提示词')}
                 </label>
-                <div className="flex items-center gap-2">
-                  {showingMirror && prompt.trim().length > 0 && (
-                    <div
-                      className="flex items-center overflow-hidden rounded-md border border-[rgba(255,255,255,0.12)] text-[11px]"
-                      role="group"
-                      aria-label={t('chat.prompt.langToggle')}
-                    >
-                      {(['zh', 'en'] as const).map((key) => (
-                        <button
-                          key={key}
-                          type="button"
-                          onClick={() => setPromptLang(key)}
-                          className={`
-                            px-1.5 py-0.5 transition-colors
-                            ${promptLang === key
-                              ? 'bg-purple-500/20 font-medium text-purple-300'
-                              : 'text-text-muted hover:text-text'}
-                          `}
-                        >
-                          {key === 'zh' ? t('chat.prompt.langZh') : t('chat.prompt.langEn')}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <button
+                <div className="flex items-center gap-2">                  <button
                     type="button"
                     onClick={() => setShowPromptPicker(true)}
                     className="text-xs text-purple-400 hover:text-purple-300 transition-colors"
@@ -2031,17 +1968,6 @@ function VideoGenDialogInner({
                 </div>
               </div>
 
-              {promptLocked && promptLang === 'zh' && promptZhPending && !promptZhText && (
-                <div className="mb-1 text-[11px] text-text-muted">
-                  {t('chat.prompt.mirrorPending')}
-                </div>
-              )}
-              {promptLocked && promptLang === 'zh' && promptZhFailed && !promptZhText && (
-                <div className="mb-1 text-[11px] text-amber-500">
-                  {t('chat.prompt.mirrorFailed')}
-                </div>
-              )}
-
               <div className="relative">
                 {/* 高亮叠加层：对 `<Picture N>` / @图N 着色，其余透明，露出下方 textarea 文字 */}
                 <div
@@ -2050,8 +1976,8 @@ function VideoGenDialogInner({
                   style={{ fontFamily: 'inherit', lineHeight: '1.5', wordBreak: 'break-word' }}
                   ref={(el) => { highlightRef.current = el; }}
                 >
-                  {displayPrompt
-                    ? displayPrompt.split(/(<Picture \d+>|@图\d+)/g).map((part, i) =>
+                  {prompt
+                    ? prompt.split(/(<Picture \d+>|@图\d+)/g).map((part, i) =>
                         /^(<Picture \d+>|@图\d+)$/.test(part) ? (
                           <mark key={i} className="rounded-sm bg-purple-500/20 text-purple-300 font-medium">
                             {part}
@@ -2064,17 +1990,12 @@ function VideoGenDialogInner({
                 </div>
                 <textarea
                   ref={textareaRef}
-                  value={displayPrompt}
+                  value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  // 🔴 2026-10-28 用户定调：**提示词可以手改**（chat 页与这里都能改）。
-                  //    正文是中文 ⇒ 直接编辑；提交那一刻由回译规则译成官方英文。
-                  //    只有「英文老会话 + 想看中文镜像」这一种情况是只读（镜像不是真相源）。
-                  readOnly={showingMirror}
-                  placeholder={
-                    promptMirrorWaiting
-                      ? t('chat.prompt.mirrorPending')
-                      : t('videoGen.promptPlaceholder', '描述你想要生成的视频内容...')
-                  }
+                  // 🔴 2026-10-28：**提示词可以手改**（chat 页与这里都能改），提交那一刻由回译规则译成官方英文。
+                  // 🔴 2026-10-31：英文正文只可能是 2026-10-28 之前的老项目 ⇒ 原样显示、只读，不改不翻。
+                  readOnly={promptLocked && !promptIsChinese}
+                  placeholder={t('videoGen.promptPlaceholder', '描述你想要生成的视频内容...')}
                   // 15 行：比原来的 13 行多两行，但不把下面的「音色参考」挤出第一屏
                   //（20 行实测会把音色参考压到折叠线以下）。
                   rows={15}

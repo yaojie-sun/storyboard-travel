@@ -102,6 +102,21 @@ export function hasAttemptedPromptRepair(content: string): boolean {
   return attempted.has(promptFingerprint(content));
 }
 
+/**
+ * 本次进程启动时刻 —— 只有**本次运行里新生成**的正文才允许自动校正。
+ *
+ * 🔴 2026-10-31 用户定调：「访问以前项目的 chat 面板时，还是会调用 skill 来优化以前的
+ *    提示词，这个功能不需要。以前生成的，就是已经生成了。skill 只面向用户的新生成，
+ *    不是把以前的全部检查复检一遍，反而在无形中浪费我们的 tokens。」
+ *    ⇒ 历史会话的正文一律不自动打网关；打开面板就是纯读，零请求。
+ */
+const SESSION_START = Date.now();
+
+/** 这条消息是不是本次运行里新产生的（历史消息从磁盘读出，时间戳早于进程启动）。 */
+export function isFreshInThisSession(createdAt?: number): boolean {
+  return typeof createdAt === 'number' && createdAt >= SESSION_START;
+}
+
 export function resetPromptRepairAttempts(): void {
   attempted.clear();
   inflight.clear();

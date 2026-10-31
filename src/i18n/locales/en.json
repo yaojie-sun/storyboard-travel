@@ -709,7 +709,7 @@
     "promptLockedHint": "The prompt is generated from your script and cannot be edited by hand. To change it, edit the script and generate again.",
     "promptEditableHint": "You can edit this prompt. It is translated into the official English format when you start generating.",
     "promptTooLongGate": "The prompt is {{len}} characters, over the {{limit}}-character limit, which will likely fail. Please shorten the prompt and try again.",
-    "promptTranslateFailed": "Failed to translate the prompt into English. Please try again later (you will not be charged).",
+    "promptTranslateFailed": "The prompt did not pass the official English check (translation or cleanup failed), so this submission was blocked. Please try again later (you will not be charged).",
     "referenceImageLoadFailed": "Reference image {{index}} could not be read, so the request was cancelled. Please re-add that image and try again.",
     "extractFromStoryboard": "From Storyboard",
     "referenceImages": "Reference Images",

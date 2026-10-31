@@ -5,10 +5,11 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
  *
  * - **英 → 中** `getPromptMirror`：老会话（正文是英文）的显示镜像，只给人看，
  *   一个字节都不回流到提交链路。
- * - **中 → 英** `translatePromptForSubmit`：写手现在出的是中文正文（2026-10-28 定调），
+ * - **中 → 英** `prepareVideoPromptForSubmit`：写手现在出的是中文正文（2026-10-28 定调），
  *   用户在对话页/视频生成页改的也是中文，所以在点「生成视频」那一刻按官方规范
  *   回译成英文再交给视频模型。翻译规则是独立文件
  *   `src-tauri/src/commands/translate_rules/prompt_to_english.md`。
+ *   英文正文（2026-10-28 之前的老项目）走同一个出口的 `finalize_english_prompt` 分支。
  *
  * 🔴 **中 → 英失败会挡住提交**（**不是**退回原文）：`VideoGenDialog` 拿到 `null` 就
  *    `setError` 后 return —— 提交流程在**扣费之前**就结束了。原因：视频模型只吃英文，
@@ -236,20 +237,31 @@ export function clearPromptMirrorCache(): void {
 const backCache = new Map<string, Promise<string>>();
 let backQueue: Promise<unknown> = Promise.resolve();
 
-export function translatePromptForSubmit(content: string): Promise<string | null> {
+/**
+ * 提交前把正文变成**可以交给 H3 的官方英文** —— 唯一出口，两个分支走同一把刀：
+ *
+ * - 中文（新生成 / 用户改过的）⇒ `translate_prompt_to_english`：回译 + 结构校验 +
+ *   **源锚定逐字**（台词、时间码、官方声明句由代码钉回源稿）；
+ * - 英文（2026-10-28 之前的老项目）⇒ `finalize_english_prompt`：同一套 A 档闸门
+ *   原地校验/修复。
+ *
+ * 🔴 2026-10-31 用户定调：闸门必须管**全部**送 H3 的英文，不是只管回译出来的那份。
+ * 返回 `null` = 整理失败 ⇒ 调用方**拦在扣费之前**，绝不把不合格英文送去出片。
+ */
+export function prepareVideoPromptForSubmit(content: string): Promise<string | null> {
   const text = (content || '').trim();
   if (!text) return Promise.resolve(null);
-  // 已经是英文 ⇒ 不需要回译，返回 null 让调用方走原文（避免多一次网关调用）
-  if (!looksChineseWritten(text)) return Promise.resolve(null);
-  if (!isTauri()) return Promise.resolve(null);
+  const isChinese = looksChineseWritten(text);
+  if (!isTauri()) return Promise.resolve(isChinese ? null : text);
 
   const key = promptFingerprint(text);
   const cached = backCache.get(key);
   if (cached) return cached.catch(() => null);
 
+  const command = isChinese ? 'translate_prompt_to_english' : 'finalize_english_prompt';
   const task = backQueue
     .catch(() => undefined)
-    .then(() => invoke<string>('translate_prompt_to_english', { prompt: text }));
+    .then(() => invoke<string>(command, { prompt: text }));
   backQueue = task.catch(() => undefined);
 
   // 失败不缓存（下次点生成还能再试一次）

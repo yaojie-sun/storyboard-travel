@@ -709,7 +709,7 @@
     "promptLockedHint": "提示词由脚本生成，不支持手动修改；要调整请修改脚本后重新生成。",
     "promptEditableHint": "提示词可以手改；点「生成视频」时自动按官方规范译成英文交给视频模型。",
     "promptTooLongGate": "提示词共 {{len}} 字，超过 {{limit}} 字上限，容易导致生成失败，建议缩减提示词后重试。",
-    "promptTranslateFailed": "提示词翻译成英文失败，请稍后重试（本次不会扣费）。",
+    "promptTranslateFailed": "提示词未通过官方英文校验（翻译或整理失败），已拦截本次提交，请稍后重试（不会扣费）。",
     "referenceImageLoadFailed": "第 {{index}} 张参考图读取失败，已取消提交。请重新添加这张图后再生成。",
     "extractFromStoryboard": "从分镜提取",
     "referenceImages": "参考图",

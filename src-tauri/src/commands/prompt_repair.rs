@@ -285,8 +285,102 @@ pub(crate) fn validate_structure(text: &str) -> Result<(), String> {
     check_summary_tag(text)?;
     check_silent_mouth(text)?;
     check_shot_sizes(&detailed_section(text))?;
+    check_shot_size_vocabulary(text)?;
+    check_first_shot_timestamp(text)?;
+    check_retention_format(text)?;
     check_same_shot_split(&detailed_section(text))?;
     Ok(())
+}
+
+/// 景别**只许写官方 5 个字面量**：表外英文词与中文景别名都算违规。
+///
+/// 🔴 与前端 `promptShapeCheck.ts` 第 11 项 `hasOffVocabularyShotSize` **逐条对齐**：
+///    第 12 项（[`check_shot_sizes`]）查「压根没写」，这一项查「写了但词不对」。
+///    2026-10-31 审计实测：一份同时写了 `a close-up` 和 `a wide shot` 的英文正文，
+///    前端判 error、Rust 这条当时**还没有** ⇒ 提交那一刻前端根本不跑检查，
+///    Rust 是唯一裁判 ⇒ 表外景别静默进片。
+fn check_shot_size_vocabulary(text: &str) -> Result<(), String> {
+    if body_is_chinese(text) {
+        for word in ["远景", "全景", "中景", "近景", "特写"] {
+            if text.contains(word) {
+                return Err(format!(
+                    "中文正文里出现了中文景别 `{word}`：官方 5 档必须直接写英文原词（an extreme close-up / a close-up / a close shot / a medium shot / a medium-wide shot）"
+                ));
+            }
+        }
+        return Ok(());
+    }
+    // 英文正文：先剥掉官方 5 个合法写法，再看有没有表外同族词。
+    let mut stripped = text.to_ascii_lowercase();
+    for literal in SHOT_SIZE_LITERALS {
+        stripped = stripped.replace(literal, " ");
+    }
+    // 表外写法：a full/wide/long/medium long shot、an extreme wide shot、a medium close-up、an extreme close shot
+    let words: [&str; 4] = ["full", "wide", "long", "medium long"];
+    for w in words {
+        if stripped.contains(&format!("a {w} shot")) {
+            return Err(format!(
+                "英文正文出现了官方没有的景别 `a {w} shot`：只能用 a medium-wide shot / a medium shot / a close shot / a close-up / an extreme close-up"
+            ));
+        }
+    }
+    for off in ["an extreme wide shot", "a medium close-up", "a medium closeup", "an extreme close shot"] {
+        if stripped.contains(off) {
+            return Err(format!("英文正文出现了官方没有的景别 `{off}`"));
+        }
+    }
+    Ok(())
+}
+
+/// 官方写法**唯一确定**的形式错误 —— 由代码按**对照表**直换，不叫模型。
+///
+/// 表在 [`crate::commands::official_en_table`]：每条都是「错误写法 ⇒ 官方写法」的一对一。
+/// 🔴 只收「合格写法只有一种」的项。**不做任何猜测性替换** ——
+///    例如 `a wide shot` 该改判 `a medium-wide shot` 还是 `a medium shot` 取决于画面，
+///    代码不许替用户决定，只能把缺陷清单递回模型原地改（[`check_shot_size_vocabulary`]）。
+///
+/// 出处：官方 §2.2 范例 *`<Picture 3> is a storyboard reference for [Shot 1] and [Shot 2],
+/// defining their viewpoint, subject placement, and shot order.`*（逐字，冠词与物主代词不许换）。
+pub fn apply_official_literal_fixes(text: &str) -> String {
+    // 表在 `official_en_table.rs`：一处维护，回译 / 英文直通 / 修复环路共用同一份。
+    crate::commands::official_en_table::apply(text)
+}
+
+/// **提交前的英文正文闸门（唯一出口）**。
+///
+/// 不管这份英文是回译来的、还是正文本来就是英文（2026-10-28 之前的老项目），
+/// 只要它要交给 H3，就必须从这里过一遍：
+///
+/// 1. 代码直换能唯一确定的形式错误（[`apply_official_literal_fixes`]）；
+/// 2. 跑**全部 A 档结构项** + 长度预算（[`validate_prompt_shape`]）；
+/// 3. 仍不合规 ⇒ 走 [`repair_prompt_shape`] 的原地修复环路（模型 3 次 + 代码兜底），
+///    修复产物再直换一次、再验一次；
+/// 4. 验不过就 `Err` —— 调用方必须**拦在扣费之前**，绝不把不合格英文放进片。
+pub async fn gate_english_body(body: &str) -> Result<String, String> {
+    let fixed = apply_official_literal_fixes(body.trim());
+    if validate_prompt_shape(&fixed).is_ok() {
+        return Ok(fixed);
+    }
+    let listed = validate_prompt_shape(&fixed).err().unwrap_or_default();
+    warn!("[英文闸门] 首轮不合规：{listed} —— 递回原地修");
+    let repaired = repair_prompt_shape(fixed, listed).await?;
+    let repaired = apply_official_literal_fixes(&repaired);
+    validate_prompt_shape(&repaired)
+        .map_err(|e| format!("{PREFIX}英文正文未通过官方闸门：{e}"))?;
+    Ok(repaired)
+}
+
+/// 提交前的英文闸门命令：正文**本来就是英文**时走这里（中文走回译命令，出口同一把刀）。
+#[tauri::command]
+pub async fn finalize_english_prompt(prompt: String) -> Result<String, String> {
+    let body = prompt.trim().to_string();
+    if body.is_empty() {
+        return Err(format!("{PREFIX}提示词为空，没有可校验的内容。"));
+    }
+    info!("[英文闸门] 收到英文正文 {} 字，开始校验", char_count(&body));
+    let out = gate_english_body(&body).await?;
+    info!("[英文闸门] 通过，输出 {} 字", char_count(&out));
+    Ok(out)
 }
 
 /// 没有 `<d>` 的行**不许写「会动的嘴」**（官方 §4.4 只给了闭唇一种不说话的写法）。
@@ -881,6 +975,94 @@ fn detailed_section(text: &str) -> &str {
         Some(len) => &text[start..start + len],
         None => &text[start..],
     }
+}
+
+/// 取出 `retention_analysis:` 那一段（到 `detailed_description:` 为止）。
+fn retention_section(text: &str) -> &str {
+    let Some(start) = text.find("retention_analysis:") else {
+        return "";
+    };
+    let rest = &text[start + "retention_analysis:".len()..];
+    match rest.find("detailed_description:") {
+        Some(len) => &rest[..len],
+        None => rest,
+    }
+}
+
+/// `retention_analysis` 的**行格式**（官方 §4.1，英文输出格式）。
+///
+/// 官方给的三行范例（逐字）：
+/// ```text
+/// <Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - ...
+/// <Picture 2> ([Shot 1] first frame): fully_preserved - ...
+/// <Video 1> (source video editing): fully_preserved - ...
+/// ```
+/// ⇒ 每行必须是 `<标签> (说明): 标记 - 解释`。四个标记是官方明写的
+/// *fixed English values in the output format*，` - ` 是官方行的分隔符。
+///
+/// 🔴 只判**英文**：中文中间稿允许「<Subject 1> 在本段全程 fully_preserved」这种中文叙述
+///    （写手规则里保留标记本身，格式由回译规则落成官方英文），不能拿英文格式去卡中文稿，
+///    否则对话页的原地修复会去改中文正文。
+/// 🔴 2026-10-31 审计实测：`<Subject 1> is fully_preserved throughout this segment — in Shot 1 …`
+///    这种「散文式」写法结构、长度、无中文全过，闸门放行 —— 官方格式丢了也照样进片。
+fn check_retention_format(text: &str) -> Result<(), String> {
+    if body_is_chinese(text) {
+        return Ok(());
+    }
+    let sec = retention_section(text);
+    if sec.trim().is_empty() {
+        return Ok(());
+    }
+    for line in sec.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.eq_ignore_ascii_case("n/a") {
+            continue;
+        }
+        // `<标签> (说明): 标记 - 解释` —— 标签以 `<` 开头，说明用括号收在 `): ` 前面
+        let head_ok = line.starts_with('<') && line.contains("): ");
+        let marker_ok = ["fully_preserved", "partially_preserved", "attribute_transfer", "weak_reference"]
+            .iter()
+            .any(|m| line.contains(m));
+        let sep_ok = line.contains(" - ");
+        if !(head_ok && marker_ok && sep_ok) {
+            return Err(format!(
+                "retention_analysis 的行不是官方格式（应为 `<Subject 1> (appears in [Shot 1]): fully_preserved - 说明`）：`{}`",
+                line.chars().take(60).collect::<String>()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 官方 §4.2：*Do not add a timestamp to the first shot.*
+///
+/// 判 `detailed_description` 里 `[Shot 1]` 到 `[Shot 2]` 之间有没有 `At MM:SS.mmm`。
+/// 2026-10-31 审计：老项目英文正文 `[Shot 1] At 00:00.000, …` 一路放行（官方明令不许）。
+fn check_first_shot_timestamp(text: &str) -> Result<(), String> {
+    let detailed = detailed_section(text);
+    let Some(start) = detailed.find("[Shot 1]") else {
+        return Ok(());
+    };
+    let rest = &detailed[start + "[Shot 1]".len()..];
+    let block = match rest.find("[Shot 2]") {
+        Some(len) => &rest[..len],
+        None => rest,
+    };
+    if let Some(pos) = find_timestamp(block) {
+        return Err(format!(
+            "第一镜不许带时间码（官方 §4.2：Do not add a timestamp to the first shot）：`{}`",
+            block[pos..].chars().take(24).collect::<String>()
+        ));
+    }
+    Ok(())
+}
+
+/// 找 `At MM:SS.mmm`，返回字节位置。
+fn find_timestamp(s: &str) -> Option<usize> {
+    regex::Regex::new(r"At \d{2}:\d{2}\.\d{3}")
+        .ok()?
+        .find(s)
+        .map(|m| m.start())
 }
 
 const FIELDS: [&str; 6] = [

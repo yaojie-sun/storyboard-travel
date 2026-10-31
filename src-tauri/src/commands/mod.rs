@@ -5,6 +5,7 @@ pub mod chat;
 pub mod enhance;
 pub mod enhance_ai;
 pub mod image;
+pub mod official_en_table;
 pub mod invoice_api;
 pub mod notification_api;
 pub mod project_state;

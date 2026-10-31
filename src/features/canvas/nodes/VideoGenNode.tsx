@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo } from 'react';
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { Film } from 'lucide-react';
 import { openPath } from '@tauri-apps/plugin-opener';
@@ -28,7 +28,6 @@ import {
 } from '@/features/canvas/ui/nodeControlStyles';
 import { UiChipButton } from '@/components/ui';
 import { useCanvasStore } from '@/stores/canvasStore';
-import { getPromptMirror, looksChineseWritten } from '@/commands/translateDisplay';
 
 type VideoGenNodeProps = NodeProps & {
   id: string;
@@ -117,27 +116,13 @@ export const VideoGenNode = memo(({ id, data, selected, width, height }: VideoGe
   const hasVideo = Boolean(data.generatedVideoUrl);
 
   /**
-   * 🔴 节点上的提示词**必须是中文**（2026-10-28 用户定调）：用户在画布上一眼要看懂这段提示词。
-   * - 正文本身就是中文（写手出新稿）⇒ 直接显示；
-   * - 老会话的正文是英文 ⇒ 取一份中文镜像来显示（进程内有缓存，取不到就退回英文原文）。
+   * 节点上的提示词：新生成的正文本身就是**中文**（写手出中文），直接显示。
+   * 🔴 2026-10-31 用户定调：**历史正文不再自动翻译** —— 这段原来会给每条英文老提示词
+   *    打一次翻译网关，而画布上每个视频节点都渲染一次 ⇒ 打开一个老项目就烧掉 N 次调用，
+   *    且进程缓存不落盘、每次启动重来。现在老节点直接显示原文。
    * ⚠️ 只影响预览，`data.prompt` 一个字节都不改（§12.4：显示不能反过来动数据）。
    */
-  const promptIsChinese = useMemo(() => (promptText ? looksChineseWritten(promptText) : false), [promptText]);
-  const [promptMirror, setPromptMirror] = useState<string | null>(null);
-  useEffect(() => {
-    if (!promptText || promptIsChinese) {
-      setPromptMirror(null);
-      return;
-    }
-    let cancelled = false;
-    getPromptMirror(promptText).then((res) => {
-      if (!cancelled) setPromptMirror(res.zh);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [promptText, promptIsChinese]);
-  const displayPrompt = promptIsChinese ? promptText : (promptMirror ?? promptText);
+  const displayPrompt = promptText;
 
   const handleOpenDialog = useCallback(() => {
     setSelectedNode(id);

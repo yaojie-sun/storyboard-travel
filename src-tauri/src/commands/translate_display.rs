@@ -1,31 +1,29 @@
-//! 提示词**显示用**中文镜像 —— 英文进视频模型，中文只给用户看。
+//! 提交前后的**语言与闸门**模块 —— 用户看中文，H3 只吃官方英文。
 //!
-//! 移植自 `D:\Story-Local\src-tauri\src\commands\translate_display.rs`（同一套判据）。
+//! ## 方向
 //!
-//! ## 两个方向
-//!
-//! - **英 → 中** [`translate_prompt_to_zh`]：显示镜像，**永不回流**到提交链路。
-//! - **中 → 英** [`translate_prompt_to_english`]：**2026-10-28 用户定调「允许用户修改
-//!   生成的提示词」后补齐的回译**。用户改的是中文镜像那一份，改完必须有一条路
-//!   把它变回官方英文再提交，否则中文改动无处落地（本文件旧注释正是这句预言）。
-//!   回译产物**要过 `prompt_repair::validate_prompt_shape`**（六段结构 + 字数预算），
-//!   过不了就修，修不动就返回 `Err` 让前端退回原文，绝不把半成品塞给视频模型。
+//! - **中 → 英** [`translate_prompt_to_english`]：**2026-10-28 起正文全程中文**，
+//!   只在点「生成视频」那一刻回译一次。回译产物要过 [`validate_back_translation`]
+//!   （官方结构 + 字数预算 + 无残留中文 + **源锚定逐字**），过不了先修、修不动作 `Err`
+//!   让调用方**拦在扣费之前**，绝不把半成品塞给视频模型。
+//! - **英 → 中** [`translate_prompt_to_zh`]：已无 UI 调用点（2026-10-31 摘掉显示镜像后），
+//!   保留仅为旧接口兼容与判据复用，**不参与提交链路**。
 //!
 //! ## 三条铁律
 //!
-//! 1. 🔴 **英文是真相源。** 送视频模型的永远是英文那一份；本模块的产物**只走显示**，
-//!    一个字节都不进提交链路（`PromptBlock.content` / `config.prompt` 恒为英文）。
-//! 2. 🔴 **中文是新增 optional 字段。** 老会话没有它 ⇒ 显示英文，行为与改动前一致（§12.4 第 5 条）。
+//! 1. 🔴 **送 H3 的永远是英文，而且必须过闸门。** 出口只有一把刀：
+//!    [`super::prompt_repair::gate_english_body`]（回译路径与「正文本来就是英文」路径共用）。
+//! 2. 🔴 **中文是真相源、用户可见可改。** `PromptBlock.content` / `config.prompt` 存的是中文；
+//!    英文只在提交那一刻产生，**不写回任何持久化字段**。
 //! 3. 🔴 **判「这份正文是不是中文写的」必须先屏蔽 `<d>` 再说。**
 //!    官方英文正文**必然**含 `<d>[Chinese] 台词</d>`，拿「含 CJK」当判据会把每一单都跳过翻译。
-//!    判据落在前端 `looksChineseWritten`（结构性判据，见 `src/commands/translateDisplay.ts`），
-//!    Rust 侧**不做**前置判断 —— 老的中文正文会白翻一趟，但过不了下面的六段字段名判据，
-//!    前端照旧退回原文，不产生错显。
+//!    判据落在前端 `looksChineseWritten`（结构性判据，见 `src/commands/translateDisplay.ts`）。
 //!
 //! ## 边界
 //!
-//! - 校验**只管结构**，管不了语义（「男主转身」译成「女主转身」抓不住）。
-//! - 中文镜像不参与任何计费：走网关但不传 `billing_tag`（与 `analyze_story` 同一条路）。
+//! - 机械校验管不了语义（「男主转身」译成「女主转身」抓不住），但**逐字项**（台词、
+//!   时间码、官方声明句）由代码钉回源稿，不靠模型自觉。
+//! - 两个方向都不参与计费：走网关但不传 `billing_tag`（与 `analyze_story` 同一条路）。
 
 use reqwest::Client;
 use tokio::time::Duration;
@@ -208,18 +206,23 @@ pub async fn translate_prompt_to_english(prompt: String) -> Result<String, Strin
             .map_err(|e| format!("{PREFIX}翻译不可用：{e}"))?;
         let out = strip_leading_marker(&out);
 
-        match validate_back_translation(&out) {
+        // 🔴 源锚定：先由**代码**把「必须逐字」的部分钉回源稿（台词、官方声明句），
+        //    再判合规。模型改写台词/改词（2026-10-31 实测把 `defining their viewpoint`
+        //    改成 `defining the viewpoint`）时，结构、长度、无中文全都过 —— 只有这一层抓得住。
+        let aligned = align_source_literals(&zh, &out);
+
+        match validate_back_translation(&zh, &aligned) {
             Ok(()) => {
-                info!("[回译] 第 {} 次通过，输出 {} 字", attempt + 1, out.chars().count());
-                return Ok(out);
+                info!("[回译] 第 {} 次通过，输出 {} 字", attempt + 1, aligned.chars().count());
+                return Ok(aligned);
             }
             Err(e) => {
                 warn!("[回译] 第 {} 次校验未过：{e}", attempt + 1);
                 // 🔴 结构完好、只是超长的草稿要留下来：模型下一轮可能把它改坏
                 //    （2026-10-30 实测第二遍把 `subject_definitions:` 写没了），
                 //    兜底若只认最后一份，就等于白丢一版能压缩的稿子。
-                if prompt_repair::validate_structure(&out).is_ok() {
-                    best = Some(out.clone());
+                if prompt_repair::validate_structure(&aligned).is_ok() {
+                    best = Some(aligned.clone());
                 }
                 last_err = e;
                 draft = out;
@@ -238,7 +241,8 @@ pub async fn translate_prompt_to_english(prompt: String) -> Result<String, Strin
     }
     for candidate in candidates {
         if let Some(fitted) = force_fit_budget(candidate, MAX_BODY_CHARS) {
-            if validate_back_translation(&fitted).is_ok() {
+            let fitted = align_source_literals(&zh, &fitted);
+            if validate_back_translation(&zh, &fitted).is_ok() {
                 warn!(
                     "[回译] 模型未压进预算，改用代码兜底：{} → {} 字",
                     candidate.chars().count(),
@@ -248,13 +252,98 @@ pub async fn translate_prompt_to_english(prompt: String) -> Result<String, Strin
             }
         }
     }
-    Err(format!("{PREFIX}回译未通过结构校验：{last_err}"))
+
+    // 🔴 最后一米：改走**提交前英文闸门**（模型原地修 3 次 + 代码兜底），
+    //    与「正文本来就是英文」那条路是同一把刀（[`prompt_repair::gate_english_body`]）。
+    let fallback = best.as_deref().unwrap_or(draft.as_str()).to_string();
+    let fallback = align_source_literals(&zh, &fallback);
+    match prompt_repair::gate_english_body(&fallback).await {
+        Ok(out) => {
+            let out = align_source_literals(&zh, &out);
+            if validate_back_translation(&zh, &out).is_ok() {
+                warn!("[回译] 回译环路未过，改走提交前英文闸门：输出 {} 字", out.chars().count());
+                return Ok(out);
+            }
+            Err(format!("{PREFIX}回译未通过结构校验：{last_err}"))
+        }
+        Err(e) => Err(format!("{PREFIX}回译未通过结构校验：{last_err}（{e}）")),
+    }
 }
 
-/// 回译产物的门：官方结构 + 字数预算 + 「真的译成英文了」。
-fn validate_back_translation(en: &str) -> Result<(), String> {
+/// 回译产物的门：官方结构 + 字数预算 + 「真的译成英文了」+ **源锚定逐字**。
+///
+/// 🔴 源锚定这三条是 2026-10-31 审计补的：原来的门只看译稿自己合不合规，
+///    一句同义改写（`defining their viewpoint` → `defining the viewpoint`）照样放行，
+///    而用户看到的中文一个字没变 ⇒ 谁也发现不了。用户口径：英文端要有刀，且**不限回译**。
+fn validate_back_translation(src: &str, en: &str) -> Result<(), String> {
     prompt_repair::validate_prompt_shape(en)?;
-    check_body_is_english(en)
+    check_body_is_english(en)?;
+    check_dialogue(src, en)?;
+    check_timestamps(src, en)?;
+    check_storyboard_literal(src, en)?;
+    Ok(())
+}
+
+/// 源稿与译稿之间**必须逐字相同**的部分，由代码直接钉回源稿（不叫模型）。
+///
+/// - 台词 `<d>…</d>`：官方要求逐字，模型没有任何改写权限；
+/// - 官方声明句：`is a storyboard reference` / `defining their viewpoint`（唯一正确写法）。
+fn align_source_literals(src: &str, out: &str) -> String {
+    let fixed = prompt_repair::apply_official_literal_fixes(out);
+    align_dialogue(src, &fixed).unwrap_or(fixed)
+}
+
+/// 把输出里第 i 个 `<d>…</d>` 换回源稿的第 i 个。
+///
+/// 台词块数量对不上（模型多写/漏写）时返回 `None`，交给校验去报 —— 那种情况
+/// 代码不该猜「多出来的是哪一句」，只能让模型自己删。
+fn align_dialogue(src: &str, out: &str) -> Option<String> {
+    let src_blocks = collect_dialogue(src);
+    let out_blocks = collect_dialogue(out);
+    if src_blocks.len() != out_blocks.len() {
+        return None;
+    }
+    if src_blocks == out_blocks {
+        return Some(out.to_string());
+    }
+    let mut result = String::with_capacity(out.len());
+    let mut rest = out;
+    let mut i = 0usize;
+    while let Some(a) = rest.find("<d>") {
+        result.push_str(&rest[..a]);
+        let after = &rest[a..];
+        let Some(b) = after.find("</d>") else { break };
+        let end = b + 4;
+        if let Some(block) = src_blocks.get(i) {
+            result.push_str(block);
+        } else {
+            result.push_str(&after[..end]);
+        }
+        rest = &after[end..];
+        i += 1;
+    }
+    result.push_str(rest);
+    Some(result)
+}
+
+/// 源稿里有官方故事板声明句（官方 §2.2）⇒ 译稿必须逐字还在，物主代词不许换。
+fn check_storyboard_literal(src: &str, en: &str) -> Result<(), String> {
+    if !src.contains("is a storyboard reference") {
+        return Ok(());
+    }
+    if !en.contains("is a storyboard reference") {
+        return Err(
+            "回译把官方的 `<Picture N> is a storyboard reference …` 声明句弄丢了（官方 §2.2 原句必须逐字保留）"
+                .to_string(),
+        );
+    }
+    if !en.contains("defining their viewpoint") {
+        return Err(
+            "回译把官方声明句改成了 `defining the viewpoint`（官方 §2.2 原句是 `defining their viewpoint`，冠词与物主代词不许换）"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// 英文正文里**不许再剩下中文**（`<d>` 台词、双引号里的画面可见文字、固定口型句除外）。

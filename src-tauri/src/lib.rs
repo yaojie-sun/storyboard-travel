@@ -302,6 +302,7 @@ pub fn run() {
             translate_display::translate_prompt_to_zh,
             translate_display::translate_prompt_to_english,
             prompt_repair::repair_prompt_shape,
+            prompt_repair::finalize_english_prompt,
             sync_commands::sync_pull,
             sync_commands::sync_push,
             sync_commands::sync_get_status,
